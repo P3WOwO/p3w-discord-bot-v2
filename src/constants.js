@@ -7,9 +7,9 @@ const TOP_LIMIT = 10;
 const MAX_HISTORY = 8;
 const HOME_GUILD_ONLY_REPLY = 'Увы, я не на родном сервере, нечем не помогу';
 
-const MEMORY_RELEVANT_NOTES_LIMIT = 6;
-const MEMORY_SUMMARY_LIMIT = 900;
-const MEMORY_NOTE_LIMIT = 220;
+const MEMORY_RELEVANT_NOTES_LIMIT = 8;
+const MEMORY_SUMMARY_LIMIT = 1200;
+const MEMORY_NOTE_LIMIT = 280;
 const MEMORY_EXTRACTION_MODEL_TEMPERATURE = 0.2;
 const MEMORY_CHAT_TEMPERATURE = 0.72;
 const MEMORY_MAX_OUTPUT_TOKENS = 1800;
@@ -47,7 +47,10 @@ const SYSTEM_PROMPT = `
 - если в памяти есть полезный контекст, используй его
 - если в памяти есть устойчивые предпочтения, стиль или выводы, учитывай их
 - если вопрос просит мнение, формируй явную позицию на основе памяти и фактов, а не нейтральную отписку
-- если памяти нет или она не подходит, не выдумывай
+- если память спорная, старая или не подходит, не выдумывай и лучше уточни
+- при ответе опирайся только на подтверждённые факты из памяти; свежие догадки не выдавай за истину
+- если в памяти есть чёткое предпочтение пользователя, подстраивайся под него
+- если пользователь просит сохранить что-то, это должно попадать в память коротко и структурно
 `;
 
 const DEFAULT_LIFE_STATE = {

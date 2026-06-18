@@ -9,6 +9,7 @@ const {
   createEmptyChannel,
   buildMemoryContext,
   applyMemoryUpdate,
+  deriveHeuristicMemoryUpdate,
   truncate,
   normalizeScopeKey,
   rebalanceMemory,
@@ -252,6 +253,27 @@ class StateStore {
       userId,
       userName,
       update,
+    }));
+  }
+
+  applyHeuristicMemoryExtraction({ guildId, channelId, userId, userName, channelName = '', userText = '', botReply = '', sourceMessageId = '' }) {
+    const heuristicUpdate = deriveHeuristicMemoryUpdate({
+      guildId,
+      channelId,
+      userId,
+      userName,
+      channelName,
+      userText,
+      botReply,
+      sourceMessageId,
+    });
+    if (!heuristicUpdate || (!heuristicUpdate.should_store && !Array.isArray(heuristicUpdate.memory_actions))) return;
+    this.state.aiMemory = rebalanceMemory(applyMemoryUpdate(this.getAiMemory(), {
+      guildId,
+      channelId,
+      userId,
+      userName,
+      update: heuristicUpdate,
     }));
   }
 

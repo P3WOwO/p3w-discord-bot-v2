@@ -34,6 +34,23 @@ function normalizeLooseText(value) {
   return String(value ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function clampStatusText(text, max = 2000) {
+  return clampText(String(text ?? ''), max);
+}
+
+function buildProgressMessage(stages = [], body = '') {
+  const lines = Array.isArray(stages) ? stages.filter(Boolean) : [];
+  const header = lines.join('\n');
+  const cleanBody = String(body ?? '').trim();
+  if (!header) return clampStatusText(cleanBody);
+  if (!cleanBody) return clampStatusText(header);
+
+  const separator = '\n\n';
+  const budget = Math.max(80, 2000 - header.length - separator.length);
+  const safeBody = clampStatusText(cleanBody, budget);
+  return `${header}${separator}${safeBody}`;
+}
+
 function isAffirmativeReply(text) {
   const q = normalizeLooseText(text);
   return /^(?:да|ага|угу|ок|окей|подтверждаю|верно|правда|согласен|согласна|yes|yep|yeah|confirm)(?:[.!?…]*)$/.test(q);
@@ -102,7 +119,10 @@ class DiscordBot {
       });
       if (approved) {
         await this.stateStore.save();
-        await message.reply(`✅ Запомнил: ${item.suggestedNote?.text || item.text}`);
+        await message.reply(buildProgressMessage([
+          '📝 Обновляю память...',
+          '✅ Запомнил.'
+        ], `**${item.suggestedNote?.text || item.text}**`));
         return true;
       }
     }
@@ -115,7 +135,10 @@ class DiscordBot {
       });
       if (rejected) {
         await this.stateStore.save();
-        await message.reply('Ок, не буду это запоминать.');
+        await message.reply(buildProgressMessage([
+          '🗑️ Удаляю спорные данные...',
+          '✅ Убрал из памяти.'
+        ]));
         return true;
       }
     }
@@ -127,14 +150,20 @@ class DiscordBot {
     if (isForgetUserRequest(text)) {
       this.stateStore.clearUserMemory(message.guild.id, message.author.id);
       await this.stateStore.save();
-      await message.reply('🧹 Хорошо, я удалил всё, что помнил о тебе.');
+      await message.reply(buildProgressMessage([
+        '🗑️ Удаляю данные...',
+        '✅ Хорошо, я удалил всё, что помнил о тебе.'
+      ]));
       return true;
     }
 
     if (isForgetChannelRequest(text) && this.isAdmin(message.memberPermissions)) {
       this.stateStore.clearChannelMemory(message.channel.id);
       await this.stateStore.save();
-      await message.reply('🧹 Хорошо, я очистил память по этому каналу.');
+      await message.reply(buildProgressMessage([
+        '🧹 Очищаю память канала...',
+        '✅ Память по этому каналу очищена.'
+      ]));
       return true;
     }
 
@@ -423,9 +452,27 @@ class DiscordBot {
     return { answer, recent, memoryContext, channelName };
   }
 
-  async storeConversationTurn({ guildId, channel, userId, userName, userText, botReply, recentMessages, memoryContext, channelName }) {
+  async storeConversationTurn({ guildId, channel, userId, userName, userText, botReply, recentMessages, memoryContext, channelName, sourceMessageId = '', statusMessage = null }) {
     this.stateStore.pushChannelMessage(channel.id, 'user', userName, userText);
     this.stateStore.pushChannelMessage(channel.id, 'model', 'Bot', botReply);
+
+    if (statusMessage) {
+      await statusMessage.edit(buildProgressMessage([
+        '📝 Обновляю память...',
+        '🔎 Проверяю факты и контекст...'
+      ])).catch(() => {});
+    }
+
+    this.stateStore.applyHeuristicMemoryExtraction({
+      guildId,
+      channelId: channel.id,
+      userId,
+      userName,
+      channelName,
+      userText,
+      botReply,
+      sourceMessageId,
+    });
 
     let extractedUpdate = null;
     if (this.config.GEMINI_API_KEY) {
@@ -475,6 +522,13 @@ class DiscordBot {
     }
 
     await this.stateStore.save();
+
+    if (statusMessage) {
+      await statusMessage.edit(buildProgressMessage([
+        '📝 Обновляю память...',
+        '✅ Память обновлена.'
+      ])).catch(() => {});
+    }
   }
 
   async handleAiMessage({ message, text }) {
@@ -483,7 +537,7 @@ class DiscordBot {
     }
 
     const userName = message.member?.displayName || message.author.username;
-    const thinkingMsg = await message.reply('Думаю...');
+    const thinkingMsg = await message.reply('🧠 Анализирую запрос...');
 
     try {
       const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
@@ -494,7 +548,7 @@ class DiscordBot {
         text,
       });
 
-      await thinkingMsg.edit(clampText(answer, 2000));
+      await thinkingMsg.edit('💬 Формирую ответ...');
 
       await this.storeConversationTurn({
         guildId: message.guild.id,
@@ -506,10 +560,19 @@ class DiscordBot {
         recentMessages: recent,
         memoryContext,
         channelName,
+        sourceMessageId: message.id,
+        statusMessage: thinkingMsg,
       });
+
+      await thinkingMsg.edit(buildProgressMessage([
+        '🧠 Анализирую запрос...',
+        '💬 Формирую ответ...',
+        '📝 Обновляю память...',
+        '✅ Готово'
+      ], answer));
     } catch (e) {
       console.error('Gemini error:', e);
-      await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.');
+      await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
     }
   }
 
@@ -519,7 +582,7 @@ class DiscordBot {
     if (!cleanText) return;
     if (!this.config.GEMINI_API_KEY) return message.reply('⚠️ Gemini пока не подключён.');
 
-    const thinkingMsg = await message.reply('Думаю...');
+    const thinkingMsg = await message.reply('🧠 Анализирую запрос...');
     try {
       const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
         channel: message.channel,
@@ -529,7 +592,7 @@ class DiscordBot {
         text: cleanText,
       });
 
-      await thinkingMsg.edit(clampText(answer, 2000));
+      await thinkingMsg.edit('💬 Формирую ответ...');
       await this.storeConversationTurn({
         guildId: message.guild.id,
         channel: message.channel,
@@ -540,10 +603,19 @@ class DiscordBot {
         recentMessages: recent,
         memoryContext,
         channelName,
+        sourceMessageId: message.id,
+        statusMessage: thinkingMsg,
       });
+
+      await thinkingMsg.edit(buildProgressMessage([
+        '🧠 Анализирую запрос...',
+        '💬 Формирую ответ...',
+        '📝 Обновляю память...',
+        '✅ Готово'
+      ], answer));
     } catch (e) {
       console.error('Gemini error:', e);
-      await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.');
+      await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
     }
   }
 
@@ -662,6 +734,7 @@ class DiscordBot {
             recentMessages: recent,
             memoryContext,
             channelName,
+            sourceMessageId: interaction.id,
           });
         } catch (e) {
           console.error('Gemini error:', e);

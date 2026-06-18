@@ -26,6 +26,33 @@ const STOPWORDS = new Set([
   'более', 'всегда', 'конечно', 'всю', 'между', 'это', 'эти', 'тогда', 'там', 'сюда', 'туда', 'зато'
 ]);
 
+
+const SYNONYM_GROUPS = [
+  ['javascript', 'js', 'яваскрипт', 'джс'],
+  ['typescript', 'ts', 'тайпскрипт', 'тс'],
+  ['python', 'py', 'питон', 'пайтон'],
+  ['discord', 'дискорд', 'dc'],
+  ['supabase', 'супабейс'],
+  ['gemini', 'джемини', 'гугл-аи'],
+  ['prompt', 'промпт', 'запрос'],
+  ['memory', 'память', 'memor', 'mem'],
+  ['project', 'проект', 'задача', 'таск'],
+  ['preference', 'предпочт', 'люблю', 'нравится'],
+  ['constraint', 'ограничение', 'нельзя', 'не могу'],
+  ['fact', 'факт', 'истина'],
+];
+
+function expandTokens(tokens) {
+  const set = new Set(tokens);
+  const lower = [...set];
+  for (const group of SYNONYM_GROUPS) {
+    const hits = group.filter(term => lower.includes(term));
+    if (!hits.length) continue;
+    for (const term of group) set.add(term);
+  }
+  return [...set];
+}
+
 const CATEGORY_BONUS = {
   opinion: 2.6,
   preference: 2.2,
@@ -132,8 +159,8 @@ function tokenize(value) {
 }
 
 function overlapScore(a, b) {
-  const setA = new Set(tokenize(a));
-  const setB = new Set(tokenize(b));
+  const setA = new Set(expandTokens(tokenize(a)));
+  const setB = new Set(expandTokens(tokenize(b)));
   if (!setA.size || !setB.size) return 0;
 
   let overlap = 0;
@@ -165,24 +192,36 @@ function sanitizeProfile(profile) {
 
 function sanitizeNote(note) {
   if (!note || typeof note !== 'object') return null;
-  const text = truncate(note.text || note.note || '', NOTE_LIMIT);
+  const text = truncate(note.text || note.note || note.value || '', NOTE_LIMIT);
   if (!text) return null;
-  const category = normalizeText(note.category || 'other').toLowerCase().slice(0, 32) || 'other';
+  const category = normalizeText(note.category || note.type || 'other').toLowerCase().slice(0, 32) || 'other';
   const importance = Math.max(1, Math.min(5, Number(note.importance ?? 3) || 3));
   const confidence = Math.max(0, Math.min(1, Number(note.confidence ?? 0.75) || 0.75));
   const createdAt = note.createdAt || note.updatedAt || new Date().toISOString();
   const updatedAt = note.updatedAt || note.createdAt || new Date().toISOString();
+  const subject = truncate(note.subject || note.entity || note.target || '', 80);
   const key = normalizeText(note.key || note.id || stableKeyFromText(text, category)).toLowerCase().slice(0, 120);
+  const aliases = Array.isArray(note.aliases) ? note.aliases : Array.isArray(note.tags) ? note.tags : [];
+  const cleanAliases = [...new Set(aliases.map(v => normalizeText(v).toLowerCase()).filter(Boolean))].slice(0, 12);
 
   return {
     id: normalizeText(note.id || key).toLowerCase().slice(0, 120),
     key,
     text,
+    value: truncate(note.value || text, 120),
+    subject,
+    aliases: cleanAliases,
+    tags: cleanAliases,
     importance,
     category,
     confidence,
     createdAt,
     updatedAt,
+    lastConfirmedAt: note.lastConfirmedAt || null,
+    expiresAt: note.expiresAt || null,
+    status: normalizeText(note.status || 'active').toLowerCase().slice(0, 20) || 'active',
+    sourceMessageId: normalizeText(note.sourceMessageId || '').slice(0, 120),
+    evidence: truncate(note.evidence || note.sourceText || '', 220),
     source: normalizeText(note.source || 'memory-extractor').slice(0, 80),
   };
 }
@@ -264,8 +303,25 @@ function notesAreSimilar(a, b) {
   const textB = normalizeText(b?.text).toLowerCase();
   if (!textA || !textB) return false;
   if (textA === textB) return true;
-  if (textA.includes(textB) || textB.includes(textA)) return true;
   if (a?.key && b?.key && a.key === b.key) return true;
+
+  const catA = normalizeText(a?.category || a?.entityType || '').toLowerCase();
+  const catB = normalizeText(b?.category || b?.entityType || '').toLowerCase();
+  const polarCats = new Set(['preference', 'constraint']);
+  if (polarCats.has(catA) || polarCats.has(catB)) {
+    if (catA !== catB) return false;
+  }
+
+  if (textA.includes(textB) || textB.includes(textA)) return true;
+
+  const aliasesA = new Set([...(a?.aliases || []), ...(a?.tags || [])].map(v => normalizeText(v).toLowerCase()).filter(Boolean));
+  const aliasesB = new Set([...(b?.aliases || []), ...(b?.tags || [])].map(v => normalizeText(v).toLowerCase()).filter(Boolean));
+  for (const alias of aliasesA) if (aliasesB.has(alias)) return true;
+
+  const subjectA = normalizeText(a?.subject || '').toLowerCase();
+  const subjectB = normalizeText(b?.subject || '').toLowerCase();
+  if (subjectA && subjectA === subjectB && catA && catB && catA === catB) return true;
+
   return overlapScore(textA, textB) >= 0.72;
 }
 
@@ -775,7 +831,10 @@ function relevantNotes(notes, queryText, limit = PROMPT_NOTE_LIMIT) {
 
 function formatNoteLine(note) {
   const prefix = note.importance >= 4 ? '★' : note.importance === 3 ? '•' : '·';
-  return `${prefix} ${truncate(note.text, 180)}`;
+  const meta = [note.category || 'other', note.subject ? `@${truncate(note.subject, 24)}` : '', note.confidence >= 0.9 ? '✓' : note.confidence >= 0.6 ? '~' : '?']
+    .filter(Boolean)
+    .join(' ');
+  return `${prefix} ${truncate(note.text, 180)}${meta ? ` (${meta})` : ''}`;
 }
 
 function compactRecentMessages(recentMessages, queryText, limit = 4) {
@@ -806,16 +865,16 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
   const userScope = memory.users[normalizeScopeKey(guildId, userId)] || null;
   const channelScope = memory.channels[channelId] || null;
 
-  const userNotes = relevantNotes(userScope?.notes || [], queryText, 3);
-  const channelNotes = relevantNotes(channelScope?.notes || [], queryText, 2);
+  const userNotes = relevantNotes(userScope?.notes || [], queryText, 4);
+  const channelNotes = relevantNotes(channelScope?.notes || [], queryText, 3);
   const globalOpinionNotes = relevantNotes(
     (memory.globalNotes || []).filter(note => normalizeText(note?.category || '').toLowerCase() === 'opinion'),
     queryText,
-    2
+    3
   );
-  const globalNotes = relevantNotes(memory.globalNotes || [], queryText, 2);
-  const recent = compactRecentMessages(recentMessages, queryText, 4);
-  const channelLegacy = trimLegacyHistory(channelScope?.legacyHistory || [], 2);
+  const globalNotes = relevantNotes(memory.globalNotes || [], queryText, 3);
+  const recent = compactRecentMessages(recentMessages, queryText, 5);
+  const channelLegacy = trimLegacyHistory(channelScope?.legacyHistory || [], 3);
   const sections = [];
 
   if (memory.assistantProfile?.summary) {
@@ -850,7 +909,7 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
     if (userScope?.summary) lines.push(`Сводка: ${truncate(userScope.summary, 180)}`);
     if (userScope?.digest) lines.push(`Недавнее: ${truncate(userScope.digest, 180)}`);
     if (userNotes.length) {
-      lines.push('Важное:');
+      lines.push('Ключевые факты:');
       for (const note of userNotes) lines.push(formatNoteLine(note));
     }
     sections.push(`Память о ${title}:
@@ -898,18 +957,13 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     .join('\n');
 
   return [
-    'Ты — модуль долговременной памяти Discord-бота. Ты НЕ отвечаешь пользователю, а только решаешь, что хранить, что обновить, что удалить, а что отправить на подтверждение.',
-    'Главная цель: память должна оставаться короткой, актуальной и перезаписываемой. Не дописывай бесконечные сводки — вместо этого выдавай короткие обновления.',
-    'Запоминай только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы, решения и реальные изменения.',
-    'Если это одноразовая шутка, шум, эмоция, случайный флуд или слишком слабая деталь — не запоминай.',
-    'Если пользователь прямо просит забыть себя, удалить данные, очистить память, стереть всё или удалить конкретную тему — используй memory_actions и ничего нового о нём не сохраняй.',
-    'Если запись устарела, дублирует другую, стала неверной или неважной — используй notes_remove / pending_reviews_remove / memory_actions, а не добавляй новую копию.',
-    'Если есть спорное утверждение о другом человеке, унижение, возможная клевета, приватные данные без подтверждения или рискованная информация — не сохраняй это как факт сразу.',
-    'Вместо этого добавь pending_reviews_add с reason="needs_confirmation" или "possible_defamation" и нейтральной формулировкой.',
-    'Для каждого пользователя храни его память отдельно. Не смешивай людей между собой.',
-    'Старайся возвращать 0–2 новых факта за ход, только если они действительно полезны.',
-    'Если ничего не меняется — верни {"should_store": false}.',
-    'Верни ТОЛЬКО JSON без markdown, пояснений и лишнего текста.',
+    'Ты — модуль долговременной памяти Discord-бота.',
+    'Ты НЕ отвечаешь пользователю: твоя задача только решать, что запомнить, что обновить, что удалить, а что отправить на подтверждение.',
+    'Сохраняй только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы и реальные изменения.',
+    'Не записывай одноразовый шум, флуд, эмоциональные всплески и повторные переформулировки.',
+    'Если пользователь просит забыть, очистить или удалить память, используй memory_actions и не добавляй новые факты по этому сообщению.',
+    'Если запись спорная, токсичная, обвинительная, похожа на клевету, содержит приватные данные или выглядит сомнительной — не сохраняй её как факт сразу; отправь в pending_reviews_add.',
+    'Возвращай только валидный JSON без markdown, пояснений и лишнего текста.',
     '',
     'Формат JSON:',
     '{',
@@ -919,29 +973,39 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     '  "channel_summary_update": "краткая сводка текущего канала или темы",',
     '  "user_summary_update": "краткая сводка о пользователе без длинных перечислений",',
     '  "notes_add": [',
-    '    {"scope":"user|channel|global", "text":"до 180 символов", "importance": 1, "category":"preference|fact|project|plan|style|constraint|opinion|other", "confidence": 0.0}',
+    '    {"scope":"user|channel|global", "text":"до 180 символов", "value":"краткое значение", "subject":"о ком/чём это", "key":"стабильный ключ", "aliases":["синоним"], "tags":["тег"], "importance": 1, "category":"preference|fact|project|plan|style|constraint|opinion|identity|other", "confidence": 0.0, "evidence":"краткое доказательство", "expiresAt":"ISO или null"}',
     '  ],',
     '  "notes_remove": [',
     '    {"scope":"user|channel|global", "match":"что убрать"}',
     '  ],',
     '  "pending_reviews_add": [',
-    '    {"scope":"user|channel|global", "text":"спорная информация", "reason":"needs_confirmation|possible_defamation|uncertain|sensitive", "severity": 1, "confidence": 0.3, "suggested_note": {"scope":"user|channel|global", "text":"что сохранить после подтверждения", "importance": 1, "category":"fact", "confidence": 0.5}}',
+    '    {"scope":"user|channel|global", "text":"спорная информация", "reason":"needs_confirmation|possible_defamation|uncertain|sensitive", "severity": 1, "confidence": 0.3, "suggested_note": {"scope":"user|channel|global", "text":"что сохранить после подтверждения", "category":"fact", "importance": 1, "confidence": 0.5}}',
     '  ],',
     '  "pending_reviews_remove": [',
     '    {"scope":"user|channel|global", "match":"что снять с проверки"}',
     '  ],',
     '  "memory_actions": [',
-    '    {"action":"forget_user|forget_channel|forget_global|forget_everything|remove_note|delete_note|clear_pending", "scope":"user|channel|global", "match":"что удалить"}',
+    '    {"action":"forget_user|forget_channel|forget_global|forget_everything|remove_note|delete_note|clear_pending|confirm_note", "scope":"user|channel|global", "match":"что удалить/подтвердить"}',
     '  ]',
     '}',
+    '',
+    'Правила:',
+    '- Если ничего не меняется, верни {"should_store": false}.',
+    '- Выдавай не более 0–2 новых фактов за ход.',
+    '- Для каждой записи выбирай короткий key, чтобы факты можно было обновлять, а не дублировать.',
+    '- Если факт уже есть почти дословно, не дублируй его.',
+    '- Если новая запись противоречит старой, лучше предложить удалить старую или обновить её, чем хранить обе.',
     '',
     `Пользователь: ${userName || 'unknown'}`,
     `Канал: ${channelName || 'unknown'}`,
     `Сообщение пользователя: ${truncate(userText, 1200)}`,
     `Ответ бота: ${truncate(botReply, 1200)}`,
     '',
-    existingContext ? `Текущая память:\n${existingContext}` : 'Текущая память: пусто',
-    recent ? `\nПоследние сообщения:\n${recent}` : '',
+    existingContext ? `Текущая память:
+${existingContext}` : 'Текущая память: пусто',
+    recent ? `
+Последние сообщения:
+${recent}` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -964,6 +1028,199 @@ function extractJsonPayload(text) {
   }
 }
 
+
+
+
+function deriveHeuristicMemoryUpdate({ guildId, channelId, userId, userName = '', channelName = '', userText = '', botReply = '', sourceMessageId = '' }) {
+  const text = normalizeText(userText);
+  if (!text) return {};
+  const lower = text.toLowerCase();
+  const userLabel = userName || 'пользователь';
+  const notes_add = [];
+  const pending_reviews_add = [];
+  const memory_actions = [];
+
+  const add = (note) => {
+    if (note) notes_add.push(note);
+  };
+
+  const cleanClause = (value) => normalizeText(String(value || '').split(/(?:\s+и\s+не\s+люблю|\s+но\s+не\s+люблю|\s+и\s+не\s+нравится|\s+но\s+не\s+нравится|[,.!?;]+)/i)[0]);
+
+  const pushNote = ({
+    category = 'fact',
+    textValue,
+    subject = userLabel,
+    importance = 4,
+    confidence = 0.82,
+    scope = 'user',
+    aliases = [],
+    tags = [],
+    evidence = text,
+    value = textValue || text,
+    key = stableKeyFromText(textValue || text, category, subject),
+    expiresAt = null,
+  }) => {
+    add({
+      scope,
+      text: truncate(textValue || text, 220),
+      value: truncate(value, 120),
+      subject: truncate(subject, 80),
+      key,
+      aliases,
+      tags,
+      importance,
+      category,
+      confidence,
+      evidence: truncate(evidence, 220),
+      expiresAt,
+      source: 'heuristic',
+      sourceMessageId,
+    });
+  };
+
+  const rememberTriggers = ['запомни', 'не забудь', 'remember'];
+  const rememberTrigger = rememberTriggers.find(trig => lower.includes(trig));
+  if (rememberTrigger) {
+    const rememberIdx = lower.indexOf(rememberTrigger);
+    const tail = cleanClause(text.slice(rememberIdx + rememberTrigger.length));
+    const hasSpecific = /(?:люблю|обожаю|нравится|предпочитаю|не люблю|ненавижу|не нравится|избегаю|делаю|строю|пишу|работаю над|разрабатываю|создаю|нельзя|не могу|меня зовут|моё имя|мое имя)/i.test(text);
+    if (tail && !hasSpecific) {
+      pushNote({
+        category: 'fact',
+        textValue: tail,
+        subject: userLabel,
+        importance: 4,
+        confidence: 0.72,
+        tags: ['remember'],
+        key: stableKeyFromText(tail, 'fact', userLabel),
+      });
+    }
+  }
+
+  const identityMatch = text.match(/(?:меня\s+зовут|моё\s+имя|мое\s+имя)\s+([^.,!?\r\n]{2,60})/i);
+  if (identityMatch) {
+    const name = normalizeText(identityMatch[1]);
+    pushNote({
+      category: 'identity',
+      textValue: `Имя пользователя: ${name}`,
+      subject: userLabel,
+      importance: 5,
+      confidence: 0.98,
+      aliases: [name.toLowerCase()],
+      tags: ['identity', 'name'],
+      key: stableKeyFromText(`имя ${name}`, 'identity', userLabel),
+    });
+  }
+
+  const firstTriggerIndex = (...triggers) => {
+    let best = -1;
+    for (const trig of triggers) {
+      const idx = lower.indexOf(trig);
+      if (idx >= 0 && (best === -1 || idx < best)) best = idx;
+    }
+    return best;
+  };
+
+  const extractAfter = (...triggers) => {
+    const idx = firstTriggerIndex(...triggers);
+    if (idx < 0) return '';
+    return cleanClause(text.slice(idx + triggers.find(t => lower.indexOf(t) === idx).length));
+  };
+
+  const positive = extractAfter('люблю', 'обожаю', 'нравится', 'предпочитаю');
+  if (positive) {
+    pushNote({
+      category: 'preference',
+      textValue: `Пользователь предпочитает ${positive}`,
+      subject: userLabel,
+      importance: 5,
+      confidence: 0.93,
+      aliases: [positive.toLowerCase()],
+      tags: ['preference', 'like'],
+      key: stableKeyFromText(positive, 'preference', userLabel),
+    });
+  }
+
+  const negative = extractAfter('не люблю', 'ненавижу', 'не нравится', 'избегаю');
+  if (negative) {
+    pushNote({
+      category: 'constraint',
+      textValue: `Пользователь не любит ${negative}`,
+      subject: userLabel,
+      importance: 4,
+      confidence: 0.9,
+      aliases: [negative.toLowerCase()],
+      tags: ['constraint', 'dislike'],
+      key: stableKeyFromText(negative, 'constraint', userLabel),
+    });
+  }
+
+  const project = extractAfter('делаю', 'строю', 'пишу', 'работаю над', 'разрабатываю', 'создаю');
+  if (project) {
+    pushNote({
+      category: 'project',
+      textValue: `Пользователь работает над: ${project}`,
+      subject: userLabel,
+      importance: 4,
+      confidence: 0.84,
+      aliases: [project.toLowerCase()],
+      tags: ['project'],
+      key: stableKeyFromText(project, 'project', userLabel),
+    });
+  }
+
+  const constraint = extractAfter('мне нельзя', 'нельзя', 'я не могу', 'не могу');
+  if (constraint) {
+    pushNote({
+      category: 'constraint',
+      textValue: `Ограничение пользователя: ${constraint}`,
+      subject: userLabel,
+      importance: 4,
+      confidence: 0.86,
+      aliases: [constraint.toLowerCase()],
+      tags: ['constraint'],
+      key: stableKeyFromText(constraint, 'constraint', userLabel),
+    });
+  }
+
+  if ((lower.includes('кажется') || lower.includes('возможно') || lower.includes('наверное') || lower.includes('не уверен') || lower.includes('не знаю') || lower.includes('maybe')) && notes_add.length === 0) {
+    pending_reviews_add.push({
+      scope: 'user',
+      text: truncate(text, 240),
+      reason: 'uncertain',
+      severity: 2,
+      confidence: 0.35,
+      suggested_note: {
+        scope: 'user',
+        text: truncate(text, 220),
+        category: 'fact',
+        importance: 2,
+        confidence: 0.45,
+        subject: userLabel,
+      },
+    });
+  }
+
+  if ((lower.includes('удали') || lower.includes('забудь') || lower.includes('очисти')) && (lower.includes('обо мне') || lower.includes('про меня') || lower.includes('мою память') || lower.includes('всё обо мне') || lower.includes('все обо мне') || lower.includes('всю память'))) {
+    memory_actions.push({ action: 'forget_user', scope: 'user', match: 'all', guildId, userId, channelId });
+  }
+
+  const channelDigest = channelName ? truncate(`${userName || 'Пользователь'}: ${truncate(userText, 120)}`, 220) : '';
+  return {
+    notes_add,
+    pending_reviews_add,
+    memory_actions,
+    should_store: notes_add.length > 0 || pending_reviews_add.length > 0 || memory_actions.length > 0,
+    global_summary_update: '',
+    assistant_profile_update: '',
+    channel_summary_update: channelDigest,
+    user_summary_update: truncate(userText, 220),
+    global_digest_update: truncate(botReply || '', 160),
+    channel_digest_update: channelDigest,
+    user_digest_update: truncate(userText, 220),
+  };
+}
+
 module.exports = {
   createEmptyMemory,
   createEmptyProfile,
@@ -975,6 +1232,7 @@ module.exports = {
   buildMemoryExtractionPrompt,
   extractJsonPayload,
   applyMemoryUpdate,
+  deriveHeuristicMemoryUpdate,
   scopeForUser,
   scopeForChannel,
   relevantNotes,
