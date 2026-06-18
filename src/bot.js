@@ -21,13 +21,38 @@ const {
   HOME_GUILD_ONLY_REPLY,
   PRESENCE_VERBS,
   PRESENCE_NOUNS,
-  MEMORY_REBUILD_INTERVAL_MS,
-  MEMORY_REBUILD_MIN_TURNS,
 } = require('./constants');
 
 const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText } = require('./utils');
 const { askGemini, buildPrompt, buildMemoryPrompt, parseMemoryUpdate, MEMORY_EXTRACTION_MODEL_TEMPERATURE, MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS } = require('./ai');
-const { buildMemoryRebuildPrompt } = require('./memory');
+
+const FORGET_PATTERNS = [
+  /(?:забудь|удали|очисти|стёр|стерли|стирай|erase|forget|delete|remove)/i,
+];
+
+function normalizeLooseText(value) {
+  return String(value ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function isAffirmativeReply(text) {
+  const q = normalizeLooseText(text);
+  return /^(?:да|ага|угу|ок|окей|подтверждаю|верно|правда|согласен|согласна|yes|yep|yeah|confirm)(?:[.!?…]*)$/.test(q);
+}
+
+function isNegativeReply(text) {
+  const q = normalizeLooseText(text);
+  return /^(?:нет|неа|не надо|не нужно|неверно|ошибка|ложь|отмена|отклоняю|no|nope|deny)(?:[.!?…]*)$/.test(q);
+}
+
+function isForgetUserRequest(text) {
+  const q = normalizeLooseText(text);
+  return FORGET_PATTERNS.some(re => re.test(q)) && /(обо мне|меня|про меня|мою|мою инфу|мою информацию|всю инфу обо мне|всё обо мне|все обо мне|удали всё про меня)/i.test(q);
+}
+
+function isForgetChannelRequest(text) {
+  const q = normalizeLooseText(text);
+  return FORGET_PATTERNS.some(re => re.test(q)) && /(чат|канал|разговор|переписку|историю чата|историю канала|наш чат|этот канал|этот чат)/i.test(q);
+}
 
 class DiscordBot {
   constructor(config, stateStore) {
@@ -61,6 +86,59 @@ class DiscordBot {
 
   getKey(guildId, userId) {
     return `${guildId}:${userId}`;
+  }
+
+  async handlePendingReviewReply(message, text) {
+    const pendingItems = this.stateStore.getPendingReviewsForUser(message.guild.id, message.author.id);
+    if (!pendingItems.length) return false;
+
+    const item = pendingItems[0];
+    if (isAffirmativeReply(text)) {
+      const approved = this.stateStore.approvePendingReview({
+        guildId: message.guild.id,
+        userId: message.author.id,
+        channelId: message.channel.id,
+        reviewId: item.id,
+      });
+      if (approved) {
+        await this.stateStore.save();
+        await message.reply(`✅ Запомнил: ${item.suggestedNote?.text || item.text}`);
+        return true;
+      }
+    }
+
+    if (isNegativeReply(text)) {
+      const rejected = this.stateStore.rejectPendingReview({
+        guildId: message.guild.id,
+        userId: message.author.id,
+        reviewId: item.id,
+      });
+      if (rejected) {
+        await this.stateStore.save();
+        await message.reply('Ок, не буду это запоминать.');
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async handleForgetRequest(message, text) {
+    if (isForgetUserRequest(text)) {
+      this.stateStore.clearUserMemory(message.guild.id, message.author.id);
+      await this.stateStore.save();
+      await message.reply('🧹 Хорошо, я удалил всё, что помнил о тебе.');
+      return true;
+    }
+
+    if (isForgetChannelRequest(text) && this.isAdmin(message.memberPermissions)) {
+      this.stateStore.clearChannelMemory(message.channel.id);
+      await this.stateStore.save();
+      await message.reply('🧹 Хорошо, я очистил память по этому каналу.');
+      return true;
+    }
+
+    return false;
   }
 
   addTime(guildId, userId, seconds) {
@@ -349,6 +427,7 @@ class DiscordBot {
     this.stateStore.pushChannelMessage(channel.id, 'user', userName, userText);
     this.stateStore.pushChannelMessage(channel.id, 'model', 'Bot', botReply);
 
+    let extractedUpdate = null;
     if (this.config.GEMINI_API_KEY) {
       try {
         const memoryPrompt = buildMemoryPrompt({
@@ -369,14 +448,14 @@ class DiscordBot {
           retries: 1,
         });
 
-        const update = parseMemoryUpdate(rawUpdate);
-        if (update) {
+        extractedUpdate = parseMemoryUpdate(rawUpdate);
+        if (extractedUpdate) {
           this.stateStore.applyMemoryExtraction({
             guildId,
             channelId: channel.id,
             userId,
             userName,
-            update,
+            update: extractedUpdate,
           });
         }
       } catch (e) {
@@ -384,67 +463,18 @@ class DiscordBot {
       }
     }
 
-    this.stateStore.touchMemoryActivity();
-    await this.stateStore.save();
-    await this.maybeRebuildMemory('conversation', {
-      guildId,
-      channelId: channel.id,
-      channelName,
-    });
-  }
-
-  shouldRebuildMemory() {
-    const memory = this.stateStore.getAiMemory();
-    const meta = memory.memoryMeta || {};
-    const turnCount = Math.max(0, Number(meta.turnCount || 0) || 0);
-    const lastRebuildAt = new Date(meta.lastRebuildAt || 0).getTime();
-    const elapsed = Number.isFinite(lastRebuildAt) ? Date.now() - lastRebuildAt : Number.POSITIVE_INFINITY;
-    if (turnCount < MEMORY_REBUILD_MIN_TURNS) return false;
-    if (Number.isFinite(elapsed) && elapsed < MEMORY_REBUILD_INTERVAL_MS) return false;
-    return true;
-  }
-
-  async maybeRebuildMemory(reason = 'scheduled', extra = {}) {
-    if (!this.config.GEMINI_API_KEY) return false;
-    if (this.memoryRebuildInFlight) return false;
-
-    const memory = this.stateStore.getAiMemory();
-    const meta = memory.memoryMeta || {};
-    const turnCount = Math.max(0, Number(meta.turnCount || 0) || 0);
-    if (turnCount < MEMORY_REBUILD_MIN_TURNS) return false;
-    if (reason === 'scheduled' && !this.shouldRebuildMemory()) return false;
-
-    this.memoryRebuildInFlight = true;
-    try {
-      const snapshot = this.stateStore.getAiMemory();
-      const prompt = buildMemoryRebuildPrompt(snapshot, {
-        reason,
-        ...extra,
-      });
-
-      const raw = await askGemini({
-        apiKey: this.config.GEMINI_API_KEY,
-        model: this.config.GEMINI_MODEL,
-        prompt,
-        temperature: 0.15,
-        maxOutputTokens: 2200,
-        retries: 1,
-      });
-
-      const rebuilt = parseMemoryUpdate(raw);
-      if (!rebuilt || typeof rebuilt !== 'object') return false;
-
-      this.stateStore.replaceAiMemory(rebuilt);
-      this.stateStore.markMemoryRebuilt(reason);
-      await this.stateStore.save();
-      console.log(`🧠 Memory rebuilt (${reason})`);
-      return true;
-    } catch (e) {
-      console.error('Memory rebuild error:', e?.message || e);
-      return false;
-    } finally {
-      this.memoryRebuildInFlight = false;
+    if (Array.isArray(extractedUpdate?.pending_reviews_add) && extractedUpdate.pending_reviews_add.length) {
+      const pending = extractedUpdate.pending_reviews_add[0];
+      const summary = pending?.suggested_note?.text || pending?.suggestedNote?.text || pending?.text;
+      if (summary) {
+        await channel.send({
+          content: `⚠️ Я не уверен в этой информации и не хочу запоминать её как факт без подтверждения: **${summary}**
+Ответь **да** чтобы сохранить или **нет** чтобы удалить.`,
+        }).catch(() => {});
+      }
     }
+
+    await this.stateStore.save();
   }
 
   async handleAiMessage({ message, text }) {
@@ -526,12 +556,10 @@ class DiscordBot {
       await this.registerCommands().catch(console.error);
       await this.restoreCurrentVoiceSessions();
       await this.refreshPresence();
-      await this.maybeRebuildMemory('startup').catch(() => {});
 
       this.checkpointTimer = setInterval(() => this.checkpointSessions(false), CHECKPOINT_MS);
       this.presenceRefreshTimer = setInterval(() => this.refreshPresence().catch(console.error), PRESENCE_REFRESH_MS);
       this.presenceRotateTimer = setInterval(() => this.rotatePresencePhrase().catch(console.error), PRESENCE_ROTATE_MS);
-      this.memoryRebuildTimer = setInterval(() => this.maybeRebuildMemory('scheduled').catch(console.error), MEMORY_REBUILD_INTERVAL_MS);
 
       console.log(`🌿 Статус: "Слушает ${this.ensureLifeState().phrase}"`);
     });
@@ -560,6 +588,7 @@ class DiscordBot {
       }
 
       const authorName = message.member?.displayName || message.author.username;
+      const cleanMessageText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
 
       if (message.content.startsWith(this.config.PREFIX)) {
         const args = message.content.slice(1).trim().split(/\s+/);
@@ -572,6 +601,14 @@ class DiscordBot {
         }
       }
 
+      if (cleanMessageText) {
+        const handledForget = await this.handleForgetRequest(message, cleanMessageText);
+        if (handledForget) return;
+
+        const handledPending = await this.handlePendingReviewReply(message, cleanMessageText);
+        if (handledPending) return;
+      }
+
       const isMentioned = message.mentions.has(this.client.user);
       let isReplyToBot = false;
       if (message.reference?.messageId) {
@@ -580,8 +617,7 @@ class DiscordBot {
       }
       if (!isMentioned && !isReplyToBot) return;
 
-      const cleanText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
-      if (!cleanText) return;
+      if (!cleanMessageText) return;
       return this.handleMentionOrReply(message);
     });
 
@@ -736,7 +772,6 @@ class DiscordBot {
       await this.checkpointSessions(true);
       await this.stateStore.save();
       if (this.httpServer) this.httpServer.close(() => {});
-      if (this.memoryRebuildTimer) clearInterval(this.memoryRebuildTimer);
       if (this.client?.destroy) this.client.destroy();
     } catch (e) {
       console.error('Shutdown error:', e);

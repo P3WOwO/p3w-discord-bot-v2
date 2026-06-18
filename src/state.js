@@ -5,10 +5,10 @@ const { DEFAULT_LIFE_STATE, MAX_HISTORY } = require('./constants');
 const {
   normalizeMemory,
   createEmptyMemory,
+  createEmptyUser,
+  createEmptyChannel,
   buildMemoryContext,
   applyMemoryUpdate,
-  buildMemoryRebuildPrompt,
-  extractJsonPayload,
   truncate,
   normalizeScopeKey,
   rebalanceMemory,
@@ -166,6 +166,73 @@ class StateStore {
     return memory.channels[channelId] || null;
   }
 
+  getPendingReviewsForUser(guildId, userId) {
+    const memory = this.getAiMemory();
+    const scopeKey = normalizeScopeKey(guildId, userId);
+    return Array.isArray(memory.users[scopeKey]?.pendingReviews) ? memory.users[scopeKey].pendingReviews : [];
+  }
+
+  getPendingReviewCountForUser(guildId, userId) {
+    return this.getPendingReviewsForUser(guildId, userId).length;
+  }
+
+  clearUserMemory(guildId, userId) {
+    const memory = this.getAiMemory();
+    const scopeKey = normalizeScopeKey(guildId, userId);
+    memory.users[scopeKey] = createEmptyUser('');
+    this.state.aiMemory = rebalanceMemory(memory);
+  }
+
+  clearChannelMemory(channelId) {
+    const memory = this.getAiMemory();
+    memory.channels[channelId] = createEmptyChannel('');
+    this.state.aiMemory = rebalanceMemory(memory);
+  }
+
+  clearGlobalMemory() {
+    const memory = this.getAiMemory();
+    memory.globalSummary = '';
+    memory.globalDigest = '';
+    memory.globalNotes = [];
+    memory.globalPendingReviews = [];
+    this.state.aiMemory = rebalanceMemory(memory);
+  }
+
+  approvePendingReview({ guildId, userId, channelId, reviewId }) {
+    const memory = this.getAiMemory();
+    const scopeKey = normalizeScopeKey(guildId, userId);
+    const user = memory.users[scopeKey];
+    if (!user || !Array.isArray(user.pendingReviews) || !user.pendingReviews.length) return false;
+
+    const idx = user.pendingReviews.findIndex(item => item.id === reviewId || item.text === reviewId);
+    if (idx === -1) return false;
+    const [pending] = user.pendingReviews.splice(idx, 1);
+    const note = pending.suggestedNote || {
+      text: pending.text,
+      importance: Math.max(1, Math.min(5, pending.severity || 2)),
+      category: pending.reason === 'possible_defamation' ? 'opinion' : 'fact',
+      confidence: Math.max(0.5, pending.confidence || 0.5),
+      source: 'pending-review-approved',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    user.notes = Array.isArray(user.notes) ? [...user.notes, note] : [note];
+    user.lastUpdatedAt = new Date().toISOString();
+    this.state.aiMemory = rebalanceMemory(memory);
+    return true;
+  }
+
+  rejectPendingReview({ guildId, userId, reviewId }) {
+    const memory = this.getAiMemory();
+    const scopeKey = normalizeScopeKey(guildId, userId);
+    const user = memory.users[scopeKey];
+    if (!user || !Array.isArray(user.pendingReviews) || !user.pendingReviews.length) return false;
+    const before = user.pendingReviews.length;
+    user.pendingReviews = user.pendingReviews.filter(item => item.id !== reviewId && item.text !== reviewId);
+    this.state.aiMemory = rebalanceMemory(memory);
+    return user.pendingReviews.length !== before;
+  }
+
   getMemoryContext({ guildId, channelId, userId, userName, channelName = '', queryText = '', recentMessages = [] }) {
     return buildMemoryContext(this.getAiMemory(), {
       guildId,
@@ -186,27 +253,6 @@ class StateStore {
       userName,
       update,
     }));
-  }
-
-  replaceAiMemory(nextMemory) {
-    this.state.aiMemory = rebalanceMemory(normalizeMemory(nextMemory));
-  }
-
-  touchMemoryActivity() {
-    const memory = this.getAiMemory();
-    memory.memoryMeta = memory.memoryMeta || {};
-    memory.memoryMeta.lastUpdateAt = new Date().toISOString();
-    return memory.memoryMeta;
-  }
-
-  markMemoryRebuilt(reason = 'manual') {
-    const memory = this.getAiMemory();
-    memory.memoryMeta = memory.memoryMeta || {};
-    memory.memoryMeta.lastRebuildAt = new Date().toISOString();
-    memory.memoryMeta.lastRebuildReason = String(reason || '').slice(0, 80);
-    memory.memoryMeta.rebuildCount = Math.max(0, Number(memory.memoryMeta.rebuildCount || 0) || 0) + 1;
-    memory.memoryMeta.turnCount = 0;
-    return memory.memoryMeta;
   }
 
   pushChannelMessage(channelId, role, name, text) {

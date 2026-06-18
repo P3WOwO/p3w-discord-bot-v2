@@ -1,14 +1,16 @@
+const DEFAULT_MEMORY_VERSION = 6;
 
-const DEFAULT_MEMORY_VERSION = 4;
-const GLOBAL_NOTE_LIMIT = 12;
-const CHANNEL_NOTE_LIMIT = 10;
-const USER_NOTE_LIMIT = 14;
-const SUMMARY_LIMIT = 900;
+const GLOBAL_NOTE_LIMIT = 8;
+const CHANNEL_NOTE_LIMIT = 6;
+const USER_NOTE_LIMIT = 8;
+const SUMMARY_LIMIT = 220;
+const DIGEST_LIMIT = 260;
 const NOTE_LIMIT = 220;
-const PROMPT_NOTE_LIMIT = 6;
-const REBUILD_USER_LIMIT = 18;
-const REBUILD_CHANNEL_LIMIT = 12;
-const REBUILD_NOTE_LIMIT = 8;
+const PROMPT_NOTE_LIMIT = 4;
+const GLOBAL_PENDING_REVIEW_LIMIT = 6;
+const CHANNEL_PENDING_REVIEW_LIMIT = 5;
+const USER_PENDING_REVIEW_LIMIT = 6;
+const LEGACY_HISTORY_LIMIT = 8;
 
 const STOPWORDS = new Set([
   'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а', 'то', 'все', 'она', 'так', 'его', 'но',
@@ -21,34 +23,60 @@ const STOPWORDS = new Set([
   'были', 'куда', 'зачем', 'всех', 'никогда', 'можно', 'при', 'наконец', 'два', 'об', 'другой', 'хоть', 'после',
   'над', 'больше', 'тот', 'через', 'эти', 'нас', 'про', 'всего', 'них', 'какая', 'много', 'разве', 'три', 'эту',
   'моя', 'впрочем', 'хорошо', 'свою', 'этой', 'перед', 'иногда', 'лучше', 'чуть', 'том', 'нельзя', 'такой', 'им',
-  'более', 'всегда', 'конечно', 'всю', 'между'
+  'более', 'всегда', 'конечно', 'всю', 'между', 'это', 'эти', 'тогда', 'там', 'сюда', 'туда', 'зато'
 ]);
 
 const CATEGORY_BONUS = {
   opinion: 2.6,
-  preference: 2.0,
+  preference: 2.2,
   fact: 1.8,
-  constraint: 1.7,
+  constraint: 1.9,
   style: 1.5,
-  project: 1.2,
-  plan: 1.1,
+  project: 1.3,
+  plan: 1.0,
   other: 1.0,
 };
+
+const RISK_KEYWORDS = [
+  'вор', 'ворует', 'обманщик', 'лжец', 'лгун', 'мошенник', 'преступник', 'наркоман', 'алкоголик',
+  'извращенец', 'педофил', 'насильник', 'убил', 'убийца', 'угрожал', 'домогался', 'клеит', 'клевета',
+  'сплетня', 'токсичн', 'мерзкий', 'подлый', 'грязный', 'опасный', 'болен', 'диагноз', 'секрет', 'адрес',
+  'телефон', 'паспорт', 'дox', 'dox', 'doxx', 'doxxing'
+];
 
 function createEmptyProfile() {
   return {
     summary: '',
+    digest: '',
     lastUpdatedAt: null,
+    lastRebuiltAt: null,
   };
 }
 
-function createEmptyMeta() {
+function createEmptyUser(displayName = '') {
   return {
-    lastUpdateAt: null,
-    lastRebuildAt: null,
-    lastRebuildReason: '',
-    rebuildCount: 0,
-    turnCount: 0,
+    displayName: normalizeText(displayName),
+    summary: '',
+    digest: '',
+    notes: [],
+    pendingReviews: [],
+    lastUpdatedAt: null,
+    lastSeenAt: null,
+    lastRebuiltAt: null,
+  };
+}
+
+function createEmptyChannel(channelName = '') {
+  return {
+    summary: '',
+    digest: '',
+    notes: [],
+    pendingReviews: [],
+    displayName: normalizeText(channelName),
+    lastUpdatedAt: null,
+    lastSeenAt: null,
+    lastRebuiltAt: null,
+    legacyHistory: [],
   };
 }
 
@@ -56,11 +84,17 @@ function createEmptyMemory() {
   return {
     schemaVersion: DEFAULT_MEMORY_VERSION,
     globalSummary: '',
+    globalDigest: '',
     globalNotes: [],
+    globalPendingReviews: [],
     assistantProfile: createEmptyProfile(),
     channels: {},
     users: {},
-    memoryMeta: createEmptyMeta(),
+    memoryMeta: {
+      lastUpdateAt: null,
+      lastCompactionAt: null,
+      compactionCount: 0,
+    },
   };
 }
 
@@ -113,22 +147,19 @@ function normalizeScopeKey(guildId, userId) {
   return `${guildId}:${userId}`;
 }
 
+function stableKeyFromText(text, category = 'other') {
+  const tokens = tokenize(text).slice(0, 5).sort();
+  const base = tokens.join('|') || normalizeText(text).toLowerCase().slice(0, 40);
+  return normalizeText(`${category}:${base}`).toLowerCase().replace(/\s+/g, '_').slice(0, 120);
+}
+
 function sanitizeProfile(profile) {
   if (!profile || typeof profile !== 'object') return createEmptyProfile();
   return {
     summary: truncate(profile.summary || profile.text || '', SUMMARY_LIMIT),
+    digest: truncate(profile.digest || '', DIGEST_LIMIT),
     lastUpdatedAt: profile.lastUpdatedAt || profile.updatedAt || null,
-  };
-}
-
-function sanitizeMeta(meta) {
-  if (!meta || typeof meta !== 'object') return createEmptyMeta();
-  return {
-    lastUpdateAt: meta.lastUpdateAt || meta.updatedAt || null,
-    lastRebuildAt: meta.lastRebuildAt || null,
-    lastRebuildReason: normalizeText(meta.lastRebuildReason || ''),
-    rebuildCount: Math.max(0, Number(meta.rebuildCount || 0) || 0),
-    turnCount: Math.max(0, Number(meta.turnCount || 0) || 0),
+    lastRebuiltAt: profile.lastRebuiltAt || null,
   };
 }
 
@@ -136,20 +167,85 @@ function sanitizeNote(note) {
   if (!note || typeof note !== 'object') return null;
   const text = truncate(note.text || note.note || '', NOTE_LIMIT);
   if (!text) return null;
+  const category = normalizeText(note.category || 'other').toLowerCase().slice(0, 32) || 'other';
   const importance = Math.max(1, Math.min(5, Number(note.importance ?? 3) || 3));
+  const confidence = Math.max(0, Math.min(1, Number(note.confidence ?? 0.75) || 0.75));
+  const createdAt = note.createdAt || note.updatedAt || new Date().toISOString();
+  const updatedAt = note.updatedAt || note.createdAt || new Date().toISOString();
+  const key = normalizeText(note.key || note.id || stableKeyFromText(text, category)).toLowerCase().slice(0, 120);
+
   return {
-    id: normalizeText(note.id || text).toLowerCase().slice(0, 120),
+    id: normalizeText(note.id || key).toLowerCase().slice(0, 120),
+    key,
     text,
     importance,
-    category: normalizeText(note.category || 'other').toLowerCase().slice(0, 32),
-    confidence: Math.max(0, Math.min(1, Number(note.confidence ?? 0.75) || 0.75)),
-    createdAt: note.createdAt || note.updatedAt || new Date().toISOString(),
-    updatedAt: note.updatedAt || note.createdAt || new Date().toISOString(),
+    category,
+    confidence,
+    createdAt,
+    updatedAt,
     source: normalizeText(note.source || 'memory-extractor').slice(0, 80),
   };
 }
 
-function scoreNote(note) {
+function sanitizePendingReview(item) {
+  if (!item || typeof item !== 'object') return null;
+  const text = truncate(item.text || item.note || '', 240);
+  if (!text) return null;
+  const suggestedNote = sanitizeNote(item.suggested_note || item.suggestedNote || null);
+  const scope = normalizeText(item.scope || 'user').toLowerCase().slice(0, 20) || 'user';
+
+  return {
+    id: normalizeText(item.id || `${scope}:${stableKeyFromText(text, item.category || 'pending')}`).toLowerCase().slice(0, 120),
+    scope,
+    text,
+    reason: truncate(item.reason || '', 180),
+    severity: Math.max(1, Math.min(5, Number(item.severity ?? 3) || 3)),
+    confidence: Math.max(0, Math.min(1, Number(item.confidence ?? 0.5) || 0.5)),
+    status: normalizeText(item.status || 'pending').toLowerCase().slice(0, 20) || 'pending',
+    createdAt: item.createdAt || item.updatedAt || new Date().toISOString(),
+    updatedAt: item.updatedAt || item.createdAt || new Date().toISOString(),
+    expiresAt: item.expiresAt || null,
+    source: normalizeText(item.source || 'memory-extractor').slice(0, 80),
+    suggestedNote,
+  };
+}
+
+function scorePendingReview(item) {
+  const severity = Math.max(1, Math.min(5, Number(item?.severity || 1) || 1));
+  const confidence = Math.max(0, Math.min(1, Number(item?.confidence ?? 0.5) || 0.5));
+  const updated = new Date(item?.updatedAt || item?.createdAt || 0).getTime();
+  const recency = Number.isFinite(updated) ? updated / 1e13 : 0;
+  return severity * 10 + confidence * 3 + recency;
+}
+
+function dedupePendingReviews(items) {
+  const deduped = [];
+  for (const raw of Array.isArray(items) ? items : []) {
+    const item = sanitizePendingReview(raw);
+    if (!item) continue;
+    const idx = deduped.findIndex(existing => {
+      const sameId = existing.id && item.id && existing.id === item.id;
+      const sameText = normalizeText(existing.text).toLowerCase() === normalizeText(item.text).toLowerCase();
+      return sameId || sameText || overlapScore(existing.text, item.text) >= 0.8;
+    });
+    if (idx === -1) {
+      deduped.push(item);
+      continue;
+    }
+    if (scorePendingReview(item) >= scorePendingReview(deduped[idx])) {
+      deduped[idx] = { ...deduped[idx], ...item, updatedAt: new Date().toISOString() };
+    }
+  }
+  return deduped;
+}
+
+function prunePendingReviews(items, limit) {
+  return dedupePendingReviews(items)
+    .sort((a, b) => scorePendingReview(b) - scorePendingReview(a))
+    .slice(0, limit);
+}
+
+function noteScore(note) {
   const importance = Math.max(1, Math.min(5, Number(note?.importance || 1) || 1));
   const confidence = Math.max(0, Math.min(1, Number(note?.confidence ?? 0.75) || 0.75));
   const updated = new Date(note?.updatedAt || note?.createdAt || 0).getTime();
@@ -160,7 +256,7 @@ function scoreNote(note) {
 }
 
 function sortNotes(notes) {
-  return [...notes].sort((a, b) => scoreNote(b) - scoreNote(a));
+  return [...notes].sort((a, b) => noteScore(b) - noteScore(a));
 }
 
 function notesAreSimilar(a, b) {
@@ -169,82 +265,119 @@ function notesAreSimilar(a, b) {
   if (!textA || !textB) return false;
   if (textA === textB) return true;
   if (textA.includes(textB) || textB.includes(textA)) return true;
+  if (a?.key && b?.key && a.key === b.key) return true;
   return overlapScore(textA, textB) >= 0.72;
 }
 
-function noteLooksStale(note, { maxAgeDays = 180 } = {}) {
-  const importance = Math.max(1, Math.min(5, Number(note?.importance || 1) || 1));
-  const confidence = Math.max(0, Math.min(1, Number(note?.confidence ?? 0.75) || 0.75));
-  const created = new Date(note?.updatedAt || note?.createdAt || 0).getTime();
-  if (!Number.isFinite(created) || created <= 0) return false;
-  const ageDays = (Date.now() - created) / (1000 * 60 * 60 * 24);
-  if (ageDays < maxAgeDays) return false;
-  return importance <= 2 && confidence < 0.8;
+function isExpiredNote(note) {
+  const expiresAt = note?.expiresAt ? new Date(note.expiresAt).getTime() : null;
+  if (!Number.isFinite(expiresAt)) return false;
+  return expiresAt <= Date.now();
 }
 
-function dedupeNotes(notes) {
-  const deduped = [];
-  for (const rawNote of notes) {
-    const note = sanitizeNote(rawNote);
-    if (!note) continue;
-    if (noteLooksStale(note)) continue;
+function addOrMergeNote(notes, incoming) {
+  const note = sanitizeNote(incoming);
+  if (!note) return notes;
+  if (isExpiredNote(note)) return notes;
 
-    const idx = deduped.findIndex(existing => notesAreSimilar(existing, note));
-    if (idx === -1) {
-      deduped.push(note);
-      continue;
+  const existingIndex = notes.findIndex(item => notesAreSimilar(item, note));
+  if (existingIndex >= 0) {
+    const existing = notes[existingIndex];
+    const next = {
+      ...existing,
+      ...note,
+      importance: Math.max(existing.importance || 1, note.importance || 1),
+      confidence: Math.max(existing.confidence || 0, note.confidence || 0),
+      category: note.category || existing.category || 'other',
+      key: existing.key || note.key,
+      updatedAt: new Date().toISOString(),
+    };
+    // Prefer the most recent clear formulation, but keep the better-scoring metadata.
+    if (noteScore(note) >= noteScore(existing) * 0.92) {
+      next.text = note.text;
     }
-
-    const existing = deduped[idx];
-    const existingScore = scoreNote(existing);
-    const nextScore = scoreNote(note);
-    if (nextScore >= existingScore) {
-      deduped[idx] = {
-        ...existing,
-        ...note,
-        updatedAt: new Date().toISOString(),
-      };
-    } else {
-      deduped[idx] = {
-        ...note,
-        ...existing,
-        updatedAt: new Date().toISOString(),
-      };
-    }
+    notes[existingIndex] = next;
+    return notes;
   }
-  return deduped;
+
+  notes.push(note);
+  return notes;
 }
 
 function pruneNotes(notes, limit) {
-  return sortNotes(dedupeNotes(notes)).slice(0, limit);
-}
-
-function compactSummary(existing, update, max = SUMMARY_LIMIT) {
-  const pieces = [];
-  const seen = [];
-
-  for (const source of [existing, update]) {
-    for (const sentence of splitSentences(source)) {
-      const normalized = sentence.toLowerCase();
-      if (!normalized) continue;
-      const duplicate = seen.some(prev => prev === normalized || overlapScore(prev, normalized) >= 0.78);
-      if (duplicate) continue;
-      seen.push(normalized);
-      pieces.push(sentence);
+  const cleaned = [];
+  for (const raw of Array.isArray(notes) ? notes : []) {
+    const note = sanitizeNote(raw);
+    if (!note || isExpiredNote(note)) continue;
+    const same = cleaned.findIndex(existing => notesAreSimilar(existing, note));
+    if (same === -1) {
+      cleaned.push(note);
+      continue;
     }
+    if (noteScore(note) >= noteScore(cleaned[same])) cleaned[same] = { ...cleaned[same], ...note, updatedAt: new Date().toISOString() };
   }
 
-  return truncate(pieces.join(' '), max);
+  const pruned = cleaned
+    .sort((a, b) => noteScore(b) - noteScore(a))
+    .filter(note => {
+      const ageMs = Date.now() - new Date(note.updatedAt || note.createdAt || 0).getTime();
+      const ageDays = Number.isFinite(ageMs) ? ageMs / 86400000 : 0;
+      return ageDays < 45 || note.importance >= 3 || note.confidence >= 0.7;
+    })
+    .slice(0, limit);
+
+  return pruned;
+}
+
+function compactPhrase(text, limit = 80) {
+  return truncate(
+    normalizeText(text)
+      .replace(/^(это|это\s+был|это\s+была|это\s+было)\s+/i, '')
+      .replace(/^(пользователь|человек|юзер|бот)\s+/i, ''),
+    limit
+  );
+}
+
+function buildScopeSummary(notes, fallback = '', kind = 'user') {
+  const top = sortNotes(notes).slice(0, kind === 'channel' ? 2 : 3);
+  if (!top.length) return truncate(fallback, kind === 'channel' ? 180 : SUMMARY_LIMIT);
+
+  const seen = new Set();
+  const parts = [];
+  for (const note of top) {
+    const phrase = compactPhrase(note.text, kind === 'channel' ? 80 : 90);
+    const key = phrase.toLowerCase();
+    if (!phrase || seen.has(key)) continue;
+    seen.add(key);
+    parts.push(phrase);
+  }
+
+  const joined = parts.join(' • ');
+  return truncate(joined || fallback, kind === 'channel' ? 180 : SUMMARY_LIMIT);
 }
 
 function mergeSummary(existing, update, max = SUMMARY_LIMIT) {
-  const next = truncate(update, max);
-  if (!next) return truncate(existing, max);
-  if (!existing) return next;
-  return compactSummary(existing, next, max);
+  const current = normalizeText(existing);
+  const next = normalizeText(update);
+  if (!current) return truncate(next, max);
+  if (!next) return truncate(current, max);
+
+  const seen = new Set();
+  const sentences = [];
+  for (const source of [current, next]) {
+    for (const sentence of splitSentences(source)) {
+      const normalized = sentence.toLowerCase();
+      if (!normalized) continue;
+      const duplicate = [...seen].some(prev => prev === normalized || overlapScore(prev, normalized) >= 0.8);
+      if (duplicate) continue;
+      seen.add(normalized);
+      sentences.push(sentence);
+    }
+  }
+  return truncate(sentences.join(' '), max);
 }
 
-function trimLegacyHistory(entries, limit = 8) {
+function trimLegacyHistory(entries, limit = LEGACY_HISTORY_LIMIT) {
   if (!Array.isArray(entries)) return [];
   return entries
     .filter(item => item && typeof item === 'object')
@@ -253,27 +386,38 @@ function trimLegacyHistory(entries, limit = 8) {
       name: normalizeText(item.name || '').slice(0, 80),
       text: truncate(item.text || '', 300),
     }))
+    .filter(item => item.text)
     .slice(-limit);
 }
 
 function normalizeChannel(value) {
+  const notes = pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], CHANNEL_NOTE_LIMIT);
+  const pendingReviews = prunePendingReviews(Array.isArray(value?.pendingReviews) ? value.pendingReviews.map(sanitizePendingReview).filter(Boolean) : [], CHANNEL_PENDING_REVIEW_LIMIT);
   return {
-    summary: truncate(value?.summary || '', SUMMARY_LIMIT),
-    notes: pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], CHANNEL_NOTE_LIMIT),
+    summary: buildScopeSummary(notes, value?.summary || '', 'channel'),
+    digest: truncate(value?.digest || value?.summary || '', DIGEST_LIMIT),
+    notes,
+    pendingReviews,
     displayName: normalizeText(value?.displayName || ''),
     lastUpdatedAt: value?.lastUpdatedAt || null,
     lastSeenAt: value?.lastSeenAt || null,
-    legacyHistory: trimLegacyHistory(value?.legacyHistory, 8),
+    lastRebuiltAt: value?.lastRebuiltAt || null,
+    legacyHistory: trimLegacyHistory(value?.legacyHistory, LEGACY_HISTORY_LIMIT),
   };
 }
 
 function normalizeUser(value) {
+  const notes = pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], USER_NOTE_LIMIT);
+  const pendingReviews = prunePendingReviews(Array.isArray(value?.pendingReviews) ? value.pendingReviews.map(sanitizePendingReview).filter(Boolean) : [], USER_PENDING_REVIEW_LIMIT);
   return {
     displayName: normalizeText(value?.displayName || ''),
-    summary: truncate(value?.summary || '', SUMMARY_LIMIT),
-    notes: pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], USER_NOTE_LIMIT),
+    summary: buildScopeSummary(notes, value?.summary || '', 'user'),
+    digest: truncate(value?.digest || value?.summary || '', DIGEST_LIMIT),
+    notes,
+    pendingReviews,
     lastUpdatedAt: value?.lastUpdatedAt || null,
     lastSeenAt: value?.lastSeenAt || null,
+    lastRebuiltAt: value?.lastRebuiltAt || null,
   };
 }
 
@@ -282,10 +426,10 @@ function migrateLegacyMemory(raw) {
   if (!raw || typeof raw !== 'object') return memory;
 
   if (typeof raw.globalSummary === 'string') memory.globalSummary = truncate(raw.globalSummary, SUMMARY_LIMIT);
+  if (typeof raw.globalDigest === 'string') memory.globalDigest = truncate(raw.globalDigest, DIGEST_LIMIT);
   if (Array.isArray(raw.globalNotes)) memory.globalNotes = pruneNotes(raw.globalNotes.map(sanitizeNote).filter(Boolean), GLOBAL_NOTE_LIMIT);
-  if (raw.assistantProfile && typeof raw.assistantProfile === 'object') {
-    memory.assistantProfile = sanitizeProfile(raw.assistantProfile);
-  }
+  if (Array.isArray(raw.globalPendingReviews)) memory.globalPendingReviews = prunePendingReviews(raw.globalPendingReviews.map(sanitizePendingReview).filter(Boolean), GLOBAL_PENDING_REVIEW_LIMIT);
+  if (raw.assistantProfile && typeof raw.assistantProfile === 'object') memory.assistantProfile = sanitizeProfile(raw.assistantProfile);
 
   if (raw.channels && typeof raw.channels === 'object' && !Array.isArray(raw.channels)) {
     for (const [channelId, value] of Object.entries(raw.channels)) {
@@ -299,203 +443,244 @@ function migrateLegacyMemory(raw) {
     }
   }
 
-  // Legacy format: ai_memory[channelId] = [{role,name,text}, ...]
+  // Legacy pre-v4 format: channelId -> history array.
   for (const [key, value] of Object.entries(raw)) {
-    if (['schemaVersion', 'globalSummary', 'globalNotes', 'assistantProfile', 'channels', 'users', 'memoryMeta'].includes(key)) continue;
+    if (['schemaVersion', 'globalSummary', 'globalDigest', 'globalNotes', 'globalPendingReviews', 'assistantProfile', 'channels', 'users', 'memoryMeta'].includes(key)) continue;
     if (!Array.isArray(value)) continue;
     memory.channels[key] = {
       summary: '',
+      digest: '',
       notes: [],
+      pendingReviews: [],
       displayName: '',
       lastUpdatedAt: null,
       lastSeenAt: null,
-      legacyHistory: trimLegacyHistory(value, 8),
+      lastRebuiltAt: null,
+      legacyHistory: trimLegacyHistory(value, LEGACY_HISTORY_LIMIT),
     };
   }
 
-  memory.memoryMeta = sanitizeMeta(raw.memoryMeta);
   return memory;
 }
 
 function normalizeMemory(raw) {
   if (!raw || typeof raw !== 'object') return createEmptyMemory();
+  if (raw.schemaVersion === DEFAULT_MEMORY_VERSION) return rebalanceMemory(raw);
+  return rebalanceMemory(migrateLegacyMemory(raw));
+}
 
-  if (raw.schemaVersion === DEFAULT_MEMORY_VERSION) {
-    const memory = {
-      schemaVersion: DEFAULT_MEMORY_VERSION,
-      globalSummary: truncate(raw.globalSummary || '', SUMMARY_LIMIT),
-      globalNotes: pruneNotes(Array.isArray(raw.globalNotes) ? raw.globalNotes.map(sanitizeNote).filter(Boolean) : [], GLOBAL_NOTE_LIMIT),
-      assistantProfile: sanitizeProfile(raw.assistantProfile),
-      channels: Object.fromEntries(
-        Object.entries(raw.channels || {}).map(([channelId, value]) => [channelId, normalizeChannel(value)])
-      ),
-      users: Object.fromEntries(
-        Object.entries(raw.users || {}).map(([scopeKey, value]) => [scopeKey, normalizeUser(value)])
-      ),
-      memoryMeta: sanitizeMeta(raw.memoryMeta),
-    };
-    return rebalanceMemory(memory);
-  }
-
-  const migrated = migrateLegacyMemory(raw);
-  return rebalanceMemory(migrated);
+function rebuildGlobalSummary(memory) {
+  const base = buildScopeSummary(memory.globalNotes || [], memory.globalSummary || '', 'global');
+  return truncate(base || memory.globalDigest || '', SUMMARY_LIMIT);
 }
 
 function rebalanceMemory(memoryInput) {
   const memory = clone(memoryInput || createEmptyMemory());
+  const nowIso = new Date().toISOString();
 
   memory.schemaVersion = DEFAULT_MEMORY_VERSION;
-  memory.globalSummary = truncate(memory.globalSummary || '', SUMMARY_LIMIT);
+  memory.memoryMeta = memory.memoryMeta && typeof memory.memoryMeta === 'object'
+    ? { ...createEmptyMemory().memoryMeta, ...memory.memoryMeta }
+    : { ...createEmptyMemory().memoryMeta };
+
   memory.globalNotes = pruneNotes(memory.globalNotes || [], GLOBAL_NOTE_LIMIT);
+  memory.globalPendingReviews = prunePendingReviews(memory.globalPendingReviews || [], GLOBAL_PENDING_REVIEW_LIMIT);
+  memory.globalSummary = rebuildGlobalSummary(memory);
+  memory.globalDigest = truncate(memory.globalDigest || '', DIGEST_LIMIT);
   memory.assistantProfile = sanitizeProfile(memory.assistantProfile);
-  memory.memoryMeta = sanitizeMeta(memory.memoryMeta);
 
-  memory.channels = Object.fromEntries(
-    Object.entries(memory.channels || {}).map(([channelId, value]) => {
-      const channel = normalizeChannel(value);
-      if (channel.summary) {
-        channel.notes = channel.notes.filter(note => overlapScore(note.text, channel.summary) < 0.9);
+  const rebalanceScopeCollection = (collection, kind) => Object.fromEntries(
+    Object.entries(collection || {}).map(([scopeKey, value]) => {
+      const normalized = kind === 'channel' ? normalizeChannel(value) : normalizeUser(value);
+      normalized.summary = buildScopeSummary(normalized.notes || [], normalized.summary || '', kind);
+      normalized.digest = truncate(normalized.digest || '', DIGEST_LIMIT);
+      normalized.pendingReviews = prunePendingReviews(normalized.pendingReviews || [], kind === 'channel' ? CHANNEL_PENDING_REVIEW_LIMIT : USER_PENDING_REVIEW_LIMIT);
+      normalized.lastRebuiltAt = nowIso;
+      if (kind === 'channel') {
+        normalized.legacyHistory = trimLegacyHistory(normalized.legacyHistory || [], LEGACY_HISTORY_LIMIT);
       }
-      return [channelId, channel];
+      return [scopeKey, normalized];
     })
   );
 
-  memory.users = Object.fromEntries(
-    Object.entries(memory.users || {}).map(([scopeKey, value]) => {
-      const user = normalizeUser(value);
-      if (user.summary) {
-        user.notes = user.notes.filter(note => overlapScore(note.text, user.summary) < 0.9);
-      }
-      return [scopeKey, user];
-    })
-  );
+  memory.channels = rebalanceScopeCollection(memory.channels, 'channel');
+  memory.users = rebalanceScopeCollection(memory.users, 'user');
+
+  memory.memoryMeta.compactionCount = Number(memory.memoryMeta.compactionCount || 0) + 1;
+  memory.memoryMeta.lastCompactionAt = nowIso;
 
   return memory;
 }
 
 function scopeForUser(memory, guildId, userId, displayName = '') {
   const scopeKey = normalizeScopeKey(guildId, userId);
-  if (!memory.users[scopeKey]) {
-    memory.users[scopeKey] = {
-      displayName: normalizeText(displayName),
-      summary: '',
-      notes: [],
-      lastUpdatedAt: null,
-      lastSeenAt: null,
-    };
-  }
+  if (!memory.users[scopeKey]) memory.users[scopeKey] = createEmptyUser(displayName);
   const user = memory.users[scopeKey];
-  if (displayName && (!user.displayName || user.displayName !== displayName)) {
-    user.displayName = normalizeText(displayName);
-  }
+  if (displayName && (!user.displayName || user.displayName !== displayName)) user.displayName = normalizeText(displayName);
   user.lastSeenAt = new Date().toISOString();
   return { scopeKey, user };
 }
 
 function scopeForChannel(memory, channelId, channelName = '') {
-  if (!memory.channels[channelId]) {
-    memory.channels[channelId] = {
-      summary: '',
-      notes: [],
-      displayName: normalizeText(channelName),
-      lastUpdatedAt: null,
-      lastSeenAt: null,
-      legacyHistory: [],
-    };
-  }
+  if (!memory.channels[channelId]) memory.channels[channelId] = createEmptyChannel(channelName);
   const channel = memory.channels[channelId];
-  if (channelName && (!channel.displayName || channel.displayName !== channelName)) {
-    channel.displayName = normalizeText(channelName);
-  }
+  if (channelName && (!channel.displayName || channel.displayName !== channelName)) channel.displayName = normalizeText(channelName);
   channel.lastSeenAt = new Date().toISOString();
   return channel;
 }
 
-function addOrMergeNote(notes, incoming) {
-  const note = sanitizeNote(incoming);
-  if (!note) return notes;
-
-  const key = normalizeText(note.text).toLowerCase();
-  const existingIndex = notes.findIndex(item => {
-    const existingKey = normalizeText(item.text).toLowerCase();
-    return existingKey === key || notesAreSimilar(item, note);
-  });
-
-  if (existingIndex >= 0) {
-    const existing = notes[existingIndex];
-    notes[existingIndex] = {
-      ...existing,
-      ...note,
-      importance: Math.max(existing.importance || 1, note.importance || 1),
-      confidence: Math.max(existing.confidence || 0, note.confidence || 0),
-      category: note.category || existing.category || 'other',
-      updatedAt: new Date().toISOString(),
-    };
-    return notes;
-  }
-
-  notes.push(note);
-  return notes;
+function shouldFlagForConfirmation(text, category = '') {
+  const normalized = normalizeText(text).toLowerCase();
+  if (!normalized) return false;
+  const cat = normalizeText(category).toLowerCase();
+  if (['sensitive', 'defamation', 'accusation', 'insult', 'rumor'].includes(cat)) return true;
+  if (RISK_KEYWORDS.some(word => normalized.includes(word))) return true;
+  const thirdPersonHints = [' он ', ' она ', ' его ', ' её ', ' их ', ' someone ', ' кто-то ', ' человек ', 'пользователь '];
+  const accusationHints = ['вор', 'лжец', 'мошенник', 'преступник', 'насил', 'угрожа', 'клевет', 'сплет', 'обман'];
+  return thirdPersonHints.some(hint => normalized.includes(hint)) && accusationHints.some(hint => normalized.includes(hint));
 }
 
-function dropLowValueNotes(notes, limit) {
-  const prepared = dedupeNotes(notes);
-  if (prepared.length <= limit) return prepared;
-  const scored = prepared.map(note => {
-    const age = new Date(note.updatedAt || note.createdAt || Date.now()).getTime();
-    const ageBoost = Number.isFinite(age) ? age / 1e13 : 0;
-    const score = scoreNote(note) + ageBoost;
-    return { note, score };
+function addPendingReview(collection, incoming, limit) {
+  const item = sanitizePendingReview(incoming);
+  if (!item) return collection;
+  const idx = collection.findIndex(existing => existing.id === item.id || normalizeText(existing.text).toLowerCase() === normalizeText(item.text).toLowerCase());
+  if (idx >= 0) {
+    if (scorePendingReview(item) >= scorePendingReview(collection[idx])) collection[idx] = { ...collection[idx], ...item, updatedAt: new Date().toISOString() };
+    return collection;
+  }
+  collection.push(item);
+  return prunePendingReviews(collection, limit);
+}
+
+function removeNotesByMatch(notes, match) {
+  const needle = normalizeText(match).toLowerCase();
+  if (!needle) return notes;
+  return (notes || []).filter(note => {
+    const text = normalizeText(note.text).toLowerCase();
+    const key = normalizeText(note.key || note.id || '').toLowerCase();
+    return !(key === needle || text.includes(needle) || overlapScore(text, needle) >= 0.55);
   });
-  return scored
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(item => item.note);
+}
+
+function removePendingByMatch(items, match) {
+  const needle = normalizeText(match).toLowerCase();
+  if (!needle) return items;
+  return (items || []).filter(item => {
+    const text = normalizeText(item.text).toLowerCase();
+    const id = normalizeText(item.id).toLowerCase();
+    return !(id === needle || text.includes(needle) || overlapScore(text, needle) >= 0.55);
+  });
+}
+
+function rebuildDigestFromUpdate(updateText, fallback = '') {
+  const source = normalizeText(updateText) || normalizeText(fallback);
+  return truncate(source, DIGEST_LIMIT);
 }
 
 function applyMemoryUpdate(memoryInput, { guildId, channelId, userId, userName, update = {} }) {
   const next = rebalanceMemory(memoryInput);
   const nowIso = new Date().toISOString();
-
+  const userScope = scopeForUser(next, guildId, userId, userName).user;
+  const channelScope = scopeForChannel(next, channelId);
   const shouldStore = update.should_store !== false;
+
+  const memoryActions = Array.isArray(update.memory_actions) ? update.memory_actions : [];
+  for (const rawAction of memoryActions) {
+    const action = normalizeText(rawAction?.action || '').toLowerCase();
+    const scope = normalizeText(rawAction?.scope || 'user').toLowerCase();
+    const match = normalizeText(rawAction?.match || rawAction?.text || '').toLowerCase();
+    if (!action) continue;
+
+    if (action === 'forget_everything') {
+      return rebalanceMemory(createEmptyMemory());
+    }
+
+    if (action === 'forget_user' || (action === 'forget_all' && scope === 'user')) {
+      next.users[normalizeScopeKey(guildId, userId)] = createEmptyUser(userName);
+      continue;
+    }
+
+    if (action === 'forget_channel' || (action === 'forget_all' && scope === 'channel')) {
+      next.channels[channelId] = createEmptyChannel(channelScope.displayName || '');
+      continue;
+    }
+
+    if (action === 'forget_global' || (action === 'forget_all' && scope === 'global')) {
+      next.globalSummary = '';
+      next.globalDigest = '';
+      next.globalNotes = [];
+      next.globalPendingReviews = [];
+      continue;
+    }
+
+    if (action === 'remove_note' || action === 'delete_note') {
+      if (!match) continue;
+      if (scope === 'global') next.globalNotes = removeNotesByMatch(next.globalNotes || [], match);
+      else if (scope === 'channel') channelScope.notes = removeNotesByMatch(channelScope.notes || [], match);
+      else userScope.notes = removeNotesByMatch(userScope.notes || [], match);
+      continue;
+    }
+
+    if (action === 'clear_pending') {
+      if (!match) continue;
+      if (scope === 'global') next.globalPendingReviews = removePendingByMatch(next.globalPendingReviews || [], match);
+      else if (scope === 'channel') channelScope.pendingReviews = removePendingByMatch(channelScope.pendingReviews || [], match);
+      else userScope.pendingReviews = removePendingByMatch(userScope.pendingReviews || [], match);
+      continue;
+    }
+  }
+
   if (!shouldStore) return rebalanceMemory(next);
 
-  const { user } = scopeForUser(next, guildId, userId, userName);
-  const channel = scopeForChannel(next, channelId);
-
-  next.memoryMeta.lastUpdateAt = nowIso;
-  next.memoryMeta.turnCount = Math.max(0, Number(next.memoryMeta.turnCount || 0) || 0) + 1;
-
   if (typeof update.global_summary_update === 'string' && update.global_summary_update.trim()) {
-    next.globalSummary = mergeSummary(next.globalSummary, update.global_summary_update);
+    next.globalDigest = rebuildDigestFromUpdate(update.global_summary_update, next.globalDigest);
   }
 
   if (typeof update.assistant_profile_update === 'string' && update.assistant_profile_update.trim()) {
-    next.assistantProfile.summary = mergeSummary(next.assistantProfile.summary, update.assistant_profile_update);
+    next.assistantProfile.summary = rebuildDigestFromUpdate(update.assistant_profile_update, next.assistantProfile.summary);
     next.assistantProfile.lastUpdatedAt = nowIso;
   }
 
   if (typeof update.channel_summary_update === 'string' && update.channel_summary_update.trim()) {
-    channel.summary = mergeSummary(channel.summary, update.channel_summary_update);
-    channel.lastUpdatedAt = nowIso;
+    channelScope.digest = rebuildDigestFromUpdate(update.channel_summary_update, channelScope.digest);
+    channelScope.lastUpdatedAt = nowIso;
   }
 
   if (typeof update.user_summary_update === 'string' && update.user_summary_update.trim()) {
-    user.summary = mergeSummary(user.summary, update.user_summary_update);
-    user.lastUpdatedAt = nowIso;
+    userScope.digest = rebuildDigestFromUpdate(update.user_summary_update, userScope.digest);
+    userScope.lastUpdatedAt = nowIso;
   }
 
   const addNotes = Array.isArray(update.notes_add) ? update.notes_add : [];
   for (const item of addNotes) {
+    const note = sanitizeNote(item);
+    if (!note) continue;
     const scope = normalizeText(item?.scope || 'user').toLowerCase();
+    if (shouldFlagForConfirmation(note.text, note.category) || scope === 'pending') {
+      const pending = sanitizePendingReview({
+        id: item?.id || note.id,
+        scope: scope === 'global' ? 'global' : scope === 'channel' ? 'channel' : 'user',
+        text: note.text,
+        reason: item?.reason || 'needs_confirmation',
+        severity: item?.severity || 4,
+        confidence: Math.min(note.confidence, 0.7),
+        source: note.source,
+        suggested_note: note,
+      });
+      if (scope === 'global') next.globalPendingReviews = addPendingReview(next.globalPendingReviews || [], pending, GLOBAL_PENDING_REVIEW_LIMIT);
+      else if (scope === 'channel') channelScope.pendingReviews = addPendingReview(channelScope.pendingReviews || [], pending, CHANNEL_PENDING_REVIEW_LIMIT);
+      else userScope.pendingReviews = addPendingReview(userScope.pendingReviews || [], pending, USER_PENDING_REVIEW_LIMIT);
+      continue;
+    }
+
     if (scope === 'global') {
-      next.globalNotes = addOrMergeNote(next.globalNotes || [], item);
+      next.globalNotes = addOrMergeNote(next.globalNotes || [], note);
     } else if (scope === 'channel') {
-      channel.notes = addOrMergeNote(channel.notes || [], item);
-      channel.lastUpdatedAt = nowIso;
+      channelScope.notes = addOrMergeNote(channelScope.notes || [], note);
+      channelScope.lastUpdatedAt = nowIso;
     } else {
-      user.notes = addOrMergeNote(user.notes || [], item);
-      user.lastUpdatedAt = nowIso;
+      userScope.notes = addOrMergeNote(userScope.notes || [], note);
+      userScope.lastUpdatedAt = nowIso;
     }
   }
 
@@ -504,33 +689,68 @@ function applyMemoryUpdate(memoryInput, { guildId, channelId, userId, userName, 
     const scope = normalizeText(item?.scope || 'user').toLowerCase();
     const match = normalizeText(item?.match || '').toLowerCase();
     if (!match) continue;
-
-    const filterFn = note => {
-      const text = normalizeText(note.text).toLowerCase();
-      return !(text.includes(match) || overlapScore(text, match) >= 0.55);
-    };
-
-    if (scope === 'global') next.globalNotes = (next.globalNotes || []).filter(filterFn);
-    else if (scope === 'channel') channel.notes = (channel.notes || []).filter(filterFn);
-    else user.notes = (user.notes || []).filter(filterFn);
+    if (scope === 'global') next.globalNotes = removeNotesByMatch(next.globalNotes || [], match);
+    else if (scope === 'channel') channelScope.notes = removeNotesByMatch(channelScope.notes || [], match);
+    else userScope.notes = removeNotesByMatch(userScope.notes || [], match);
   }
 
-  next.globalNotes = dropLowValueNotes(next.globalNotes || [], GLOBAL_NOTE_LIMIT);
-  channel.notes = dropLowValueNotes(channel.notes || [], CHANNEL_NOTE_LIMIT);
-  user.notes = dropLowValueNotes(user.notes || [], USER_NOTE_LIMIT);
-
-  if (Array.isArray(channel.legacyHistory)) {
-    channel.legacyHistory = trimLegacyHistory(channel.legacyHistory, 8);
+  const addPending = Array.isArray(update.pending_reviews_add) ? update.pending_reviews_add : [];
+  for (const raw of addPending) {
+    const pending = sanitizePendingReview(raw);
+    if (!pending) continue;
+    const scope = normalizeText(pending.scope || 'user').toLowerCase();
+    if (scope === 'global') {
+      next.globalPendingReviews = addPendingReview(next.globalPendingReviews || [], pending, GLOBAL_PENDING_REVIEW_LIMIT);
+    } else if (scope === 'channel') {
+      channelScope.pendingReviews = addPendingReview(channelScope.pendingReviews || [], pending, CHANNEL_PENDING_REVIEW_LIMIT);
+      channelScope.lastUpdatedAt = nowIso;
+    } else {
+      userScope.pendingReviews = addPendingReview(userScope.pendingReviews || [], pending, USER_PENDING_REVIEW_LIMIT);
+      userScope.lastUpdatedAt = nowIso;
+    }
   }
 
+  const removePending = Array.isArray(update.pending_reviews_remove) ? update.pending_reviews_remove : [];
+  for (const item of removePending) {
+    const scope = normalizeText(item?.scope || 'user').toLowerCase();
+    const match = normalizeText(item?.match || item?.text || item?.id || '').toLowerCase();
+    if (!match) continue;
+    if (scope === 'global') next.globalPendingReviews = removePendingByMatch(next.globalPendingReviews || [], match);
+    else if (scope === 'channel') channelScope.pendingReviews = removePendingByMatch(channelScope.pendingReviews || [], match);
+    else userScope.pendingReviews = removePendingByMatch(userScope.pendingReviews || [], match);
+  }
+
+  // Prune and rebuild snapshots from what is actually stored now.
+  next.globalNotes = pruneNotes(next.globalNotes || [], GLOBAL_NOTE_LIMIT);
+  next.globalPendingReviews = prunePendingReviews(next.globalPendingReviews || [], GLOBAL_PENDING_REVIEW_LIMIT);
+  next.globalSummary = rebuildGlobalSummary(next);
+  next.globalDigest = truncate(next.globalDigest || '', DIGEST_LIMIT);
+
+  next.assistantProfile = sanitizeProfile(next.assistantProfile);
+  next.assistantProfile.summary = truncate(next.assistantProfile.summary || '', SUMMARY_LIMIT);
+  next.assistantProfile.digest = truncate(next.assistantProfile.digest || '', DIGEST_LIMIT);
+
+  channelScope.notes = pruneNotes(channelScope.notes || [], CHANNEL_NOTE_LIMIT);
+  channelScope.pendingReviews = prunePendingReviews(channelScope.pendingReviews || [], CHANNEL_PENDING_REVIEW_LIMIT);
+  channelScope.summary = buildScopeSummary(channelScope.notes || [], channelScope.summary || '', 'channel');
+  channelScope.digest = truncate(channelScope.digest || '', DIGEST_LIMIT);
+  channelScope.legacyHistory = trimLegacyHistory(channelScope.legacyHistory || [], LEGACY_HISTORY_LIMIT);
+  channelScope.lastUpdatedAt = channelScope.lastUpdatedAt || nowIso;
+
+  userScope.notes = pruneNotes(userScope.notes || [], USER_NOTE_LIMIT);
+  userScope.pendingReviews = prunePendingReviews(userScope.pendingReviews || [], USER_PENDING_REVIEW_LIMIT);
+  userScope.summary = buildScopeSummary(userScope.notes || [], userScope.summary || '', 'user');
+  userScope.digest = truncate(userScope.digest || '', DIGEST_LIMIT);
+  userScope.lastUpdatedAt = userScope.lastUpdatedAt || nowIso;
+
+  next.memoryMeta = next.memoryMeta && typeof next.memoryMeta === 'object' ? { ...createEmptyMemory().memoryMeta, ...next.memoryMeta } : { ...createEmptyMemory().memoryMeta };
+  next.memoryMeta.lastUpdateAt = nowIso;
   return rebalanceMemory(next);
 }
 
 function queryWantsOpinion(queryText) {
   const q = normalizeText(queryText).toLowerCase();
-  return [
-    'думаешь', 'считаешь', 'мнение', 'как тебе', 'что лучше', 'стоит ли', 'оцен', 'посовет', 'предпоч',
-  ].some(token => q.includes(token));
+  return ['думаешь', 'считаешь', 'мнение', 'как тебе', 'что лучше', 'стоит ли', 'оцен', 'посовет', 'предпоч', 'лучше'].some(token => q.includes(token));
 }
 
 function relevantNotes(notes, queryText, limit = PROMPT_NOTE_LIMIT) {
@@ -553,78 +773,9 @@ function relevantNotes(notes, queryText, limit = PROMPT_NOTE_LIMIT) {
     .map(item => item.note);
 }
 
-function extractRelevantSentences(summary, queryText, limit = 2) {
-  const sentences = splitSentences(summary);
-  if (!sentences.length) return [];
-  return sentences
-    .map(sentence => ({
-      sentence,
-      score: overlapScore(sentence, queryText) + Math.min(0.4, sentence.length / 800),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(item => item.sentence);
-}
-
 function formatNoteLine(note) {
   const prefix = note.importance >= 4 ? '★' : note.importance === 3 ? '•' : '·';
   return `${prefix} ${truncate(note.text, 180)}`;
-}
-
-function formatSearchHit(hit) {
-  const prefix = hit.kind === 'summary' ? '↳' : '•';
-  return `${prefix} ${hit.label}: ${truncate(hit.text, 180)}`;
-}
-
-function searchMemory(memoryInput, { guildId, channelId, userId, userName = '', channelName = '', queryText = '', limit = 6 } = {}) {
-  const memory = rebalanceMemory(normalizeMemory(memoryInput));
-  const userScope = memory.users[normalizeScopeKey(guildId, userId)] || null;
-  const channelScope = memory.channels[channelId] || null;
-  const q = normalizeText(queryText);
-
-  const hits = [];
-  const pushHit = (scope, kind, label, text, score) => {
-    const clean = truncate(text, kind === 'summary' ? SUMMARY_LIMIT : NOTE_LIMIT);
-    if (!clean) return;
-    hits.push({ scope, kind, label, text: clean, score });
-  };
-
-  if (userScope) {
-    for (const sentence of extractRelevantSentences(userScope.summary, q, 2)) {
-      pushHit('user', 'summary', userScope.displayName || userName || 'Пользователь', sentence, overlapScore(sentence, q) + 1.2);
-    }
-    for (const note of relevantNotes(userScope.notes, q, 4)) {
-      pushHit('user', 'note', userScope.displayName || userName || 'Пользователь', note.text, overlapScore(note.text, q) + scoreNote(note));
-    }
-  }
-
-  if (channelScope) {
-    const channelLabel = channelScope.displayName || channelName || 'Канал';
-    for (const sentence of extractRelevantSentences(channelScope.summary, q, 2)) {
-      pushHit('channel', 'summary', channelLabel, sentence, overlapScore(sentence, q) + 1.0);
-    }
-    for (const note of relevantNotes(channelScope.notes, q, 3)) {
-      pushHit('channel', 'note', channelLabel, note.text, overlapScore(note.text, q) + scoreNote(note));
-    }
-  }
-
-  const globalCandidates = [
-    ...extractRelevantSentences(memory.globalSummary, q, 2).map(sentence => ({ kind: 'summary', label: 'Общая сводка', text: sentence, score: overlapScore(sentence, q) + 0.9 })),
-    ...relevantNotes(memory.globalNotes || [], q, 4).map(note => ({ kind: 'note', label: 'Глобальная память', text: note.text, score: overlapScore(note.text, q) + scoreNote(note) })),
-  ];
-
-  for (const item of globalCandidates) {
-    pushHit('global', item.kind, item.label, item.text, item.score);
-  }
-
-  const unique = [];
-  for (const hit of hits.sort((a, b) => b.score - a.score)) {
-    const key = `${hit.kind}:${normalizeText(hit.text).toLowerCase()}`;
-    if (unique.some(x => x.key === key)) continue;
-    unique.push({ key, ...hit });
-  }
-
-  return unique.slice(0, limit).map(({ key, ...hit }) => hit);
 }
 
 function compactRecentMessages(recentMessages, queryText, limit = 4) {
@@ -647,8 +798,7 @@ function compactRecentMessages(recentMessages, queryText, limit = 4) {
   }));
 
   const chosen = pool.sort((a, b) => b.score - a.score).slice(0, Math.max(0, limit - tail.length));
-  const merged = [...chosen, ...tail].sort((a, b) => a.index - b.index);
-  return merged;
+  return [...chosen, ...tail].sort((a, b) => a.index - b.index);
 }
 
 function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName = '', channelName = '', queryText = '', recentMessages = [] }) {
@@ -656,66 +806,87 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
   const userScope = memory.users[normalizeScopeKey(guildId, userId)] || null;
   const channelScope = memory.channels[channelId] || null;
 
-  const userNotes = relevantNotes(userScope?.notes || [], queryText, 4);
-  const channelNotes = relevantNotes(channelScope?.notes || [], queryText, 3);
+  const userNotes = relevantNotes(userScope?.notes || [], queryText, 3);
+  const channelNotes = relevantNotes(channelScope?.notes || [], queryText, 2);
   const globalOpinionNotes = relevantNotes(
     (memory.globalNotes || []).filter(note => normalizeText(note?.category || '').toLowerCase() === 'opinion'),
     queryText,
     2
   );
-  const globalNotes = relevantNotes(memory.globalNotes || [], queryText, 3);
-  const searchHits = searchMemory(memory, { guildId, channelId, userId, userName, channelName, queryText, limit: 5 });
+  const globalNotes = relevantNotes(memory.globalNotes || [], queryText, 2);
   const recent = compactRecentMessages(recentMessages, queryText, 4);
-
+  const channelLegacy = trimLegacyHistory(channelScope?.legacyHistory || [], 2);
   const sections = [];
 
   if (memory.assistantProfile?.summary) {
-    sections.push(`Профиль бота: ${truncate(memory.assistantProfile.summary, 360)}`);
+    sections.push(`Профиль бота: ${truncate(memory.assistantProfile.summary, 220)}`);
+  }
+
+  if (memory.assistantProfile?.digest) {
+    sections.push(`Текущая линия бота: ${truncate(memory.assistantProfile.digest, 220)}`);
   }
 
   if (memory.globalSummary) {
-    sections.push(`Общая сводка: ${truncate(memory.globalSummary, 420)}`);
+    sections.push(`Общая сводка: ${truncate(memory.globalSummary, 220)}`);
+  }
+
+  if (memory.globalDigest) {
+    sections.push(`Свежий общий фон: ${truncate(memory.globalDigest, 220)}`);
   }
 
   if (channelScope?.summary) {
     const title = channelScope.displayName ? `Канал ${channelScope.displayName}` : 'Канал';
-    sections.push(`${title}: ${truncate(channelScope.summary, 420)}`);
+    sections.push(`${title}: ${truncate(channelScope.summary, 200)}`);
+  }
+
+  if (channelScope?.digest) {
+    const title = channelScope.displayName ? `Сейчас в ${channelScope.displayName}` : 'Сейчас в канале';
+    sections.push(`${title}: ${truncate(channelScope.digest, 200)}`);
   }
 
   if (userScope?.summary || userNotes.length) {
     const title = userScope?.displayName || userName || 'Пользователь';
     const lines = [];
-    if (userScope?.summary) lines.push(`Сводка: ${truncate(userScope.summary, 320)}`);
+    if (userScope?.summary) lines.push(`Сводка: ${truncate(userScope.summary, 180)}`);
+    if (userScope?.digest) lines.push(`Недавнее: ${truncate(userScope.digest, 180)}`);
     if (userNotes.length) {
       lines.push('Важное:');
       for (const note of userNotes) lines.push(formatNoteLine(note));
     }
-    sections.push(`Память о ${title}:\n${lines.join('\n')}`);
+    sections.push(`Память о ${title}:
+${lines.join('\n')}`);
   }
 
   if (globalOpinionNotes.length) {
-    const lines = globalOpinionNotes.map(formatNoteLine);
-    sections.push(`Позиция/мнения:\n${lines.join('\n')}`);
+    sections.push(`Позиция/мнения:
+${globalOpinionNotes.map(formatNoteLine).join('\n')}`);
   }
 
   if (channelNotes.length) {
-    const lines = channelNotes.map(formatNoteLine);
-    sections.push(`Полезное по каналу:\n${lines.join('\n')}`);
+    sections.push(`Полезное по каналу:
+${channelNotes.map(formatNoteLine).join('\n')}`);
   }
 
   const remainingGlobalNotes = globalNotes.filter(note => !globalOpinionNotes.includes(note));
   if (remainingGlobalNotes.length) {
-    const lines = remainingGlobalNotes.map(formatNoteLine);
-    sections.push(`Глобальные заметки:\n${lines.join('\n')}`);
+    sections.push(`Глобальные заметки:
+${remainingGlobalNotes.map(formatNoteLine).join('\n')}`);
   }
 
-  if (searchHits.length) {
-    sections.push(`Смысловой поиск:\n${searchHits.map(formatSearchHit).join('\n')}`);
+  const pending = prunePendingReviews(userScope?.pendingReviews || [], 2);
+  if (pending.length) {
+    sections.push(`Неподтверждённое (если это важно, уточни):
+${pending.map(item => `? ${truncate(item.text, 180)}`).join('\n')}`);
+  }
+
+  if (channelLegacy.length) {
+    sections.push(`Следы недавнего диалога:
+${channelLegacy.map(item => `${item.name || item.role}: ${item.text}`).join('\n')}`);
   }
 
   if (recent.length) {
-    const recentLines = recent.map(msg => `${msg.name}: ${msg.text}`);
-    sections.push(`Свежий контекст:\n${recentLines.join('\n')}`);
+    sections.push(`Свежий контекст:
+${recent.map(msg => `${msg.name}: ${msg.text}`).join('\n')}`);
   }
 
   return sections.filter(Boolean).join('\n\n').trim();
@@ -727,29 +898,40 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     .join('\n');
 
   return [
-    'Ты — модуль долговременной памяти Discord-бота.',
-    'Твоя задача: решить, что стоит запомнить надолго, что считать мнением/выводом, а что удалить как мусор.',
-    'Запоминай только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы, решения, противоречия и важные изменения.',
-    'Каждый пользователь должен иметь свою отдельную память. Не смешивай данные разных людей.',
-    'Если это одноразовая шутка, случайная эмоция, шум или слишком слабая деталь — не запоминай.',
-    'Если запись устарела, дублирует другую, противоречит более свежей информации или стала неважной — удали её через notes_remove.',
-    'Если новая информация уточняет старую, считай старую запись устаревшей и замени её новой.',
-    'Если в поведении или теме есть устойчивый вывод, добавь его в assistant_profile_update или как global note категории opinion.',
-    'Если память не должна обновляться, верни {"should_store": false}.',
+    'Ты — модуль долговременной памяти Discord-бота. Ты НЕ отвечаешь пользователю, а только решаешь, что хранить, что обновить, что удалить, а что отправить на подтверждение.',
+    'Главная цель: память должна оставаться короткой, актуальной и перезаписываемой. Не дописывай бесконечные сводки — вместо этого выдавай короткие обновления.',
+    'Запоминай только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы, решения и реальные изменения.',
+    'Если это одноразовая шутка, шум, эмоция, случайный флуд или слишком слабая деталь — не запоминай.',
+    'Если пользователь прямо просит забыть себя, удалить данные, очистить память, стереть всё или удалить конкретную тему — используй memory_actions и ничего нового о нём не сохраняй.',
+    'Если запись устарела, дублирует другую, стала неверной или неважной — используй notes_remove / pending_reviews_remove / memory_actions, а не добавляй новую копию.',
+    'Если есть спорное утверждение о другом человеке, унижение, возможная клевета, приватные данные без подтверждения или рискованная информация — не сохраняй это как факт сразу.',
+    'Вместо этого добавь pending_reviews_add с reason="needs_confirmation" или "possible_defamation" и нейтральной формулировкой.',
+    'Для каждого пользователя храни его память отдельно. Не смешивай людей между собой.',
+    'Старайся возвращать 0–2 новых факта за ход, только если они действительно полезны.',
+    'Если ничего не меняется — верни {"should_store": false}.',
     'Верни ТОЛЬКО JSON без markdown, пояснений и лишнего текста.',
     '',
     'Формат JSON:',
     '{',
     '  "should_store": true,',
-    '  "global_summary_update": "краткая общая сводка, если изменилась",',
-    '  "assistant_profile_update": "краткая стабильная сводка о стиле, позиции, предпочтениях и характере бота, если появилась новая устойчивая информация",',
-    '  "channel_summary_update": "краткая сводка темы канала, если изменилась",',
-    '  "user_summary_update": "краткая сводка о пользователе, если изменилась",',
+    '  "global_summary_update": "краткий общий фон, если нужен",',
+    '  "assistant_profile_update": "краткая устойчивая сводка о стиле/характере бота, если она реально изменилась",',
+    '  "channel_summary_update": "краткая сводка текущего канала или темы",',
+    '  "user_summary_update": "краткая сводка о пользователе без длинных перечислений",',
     '  "notes_add": [',
     '    {"scope":"user|channel|global", "text":"до 180 символов", "importance": 1, "category":"preference|fact|project|plan|style|constraint|opinion|other", "confidence": 0.0}',
     '  ],',
     '  "notes_remove": [',
     '    {"scope":"user|channel|global", "match":"что убрать"}',
+    '  ],',
+    '  "pending_reviews_add": [',
+    '    {"scope":"user|channel|global", "text":"спорная информация", "reason":"needs_confirmation|possible_defamation|uncertain|sensitive", "severity": 1, "confidence": 0.3, "suggested_note": {"scope":"user|channel|global", "text":"что сохранить после подтверждения", "importance": 1, "category":"fact", "confidence": 0.5}}',
+    '  ],',
+    '  "pending_reviews_remove": [',
+    '    {"scope":"user|channel|global", "match":"что снять с проверки"}',
+    '  ],',
+    '  "memory_actions": [',
+    '    {"action":"forget_user|forget_channel|forget_global|forget_everything|remove_note|delete_note|clear_pending", "scope":"user|channel|global", "match":"что удалить"}',
     '  ]',
     '}',
     '',
@@ -761,68 +943,6 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     existingContext ? `Текущая память:\n${existingContext}` : 'Текущая память: пусто',
     recent ? `\nПоследние сообщения:\n${recent}` : '',
   ].filter(Boolean).join('\n');
-}
-
-function buildMemoryRebuildPrompt(memoryInput, { reason = 'periodic', maxUsers = REBUILD_USER_LIMIT, maxChannels = REBUILD_CHANNEL_LIMIT } = {}) {
-  const memory = rebalanceMemory(normalizeMemory(memoryInput));
-
-  const sortedUsers = Object.entries(memory.users || {})
-    .sort((a, b) => {
-      const aMeta = a[1] || {};
-      const bMeta = b[1] || {};
-      const aScore = (aMeta.notes?.length || 0) + (aMeta.summary ? 1 : 0) + new Date(aMeta.lastSeenAt || aMeta.lastUpdatedAt || 0).getTime() / 1e13;
-      const bScore = (bMeta.notes?.length || 0) + (bMeta.summary ? 1 : 0) + new Date(bMeta.lastSeenAt || bMeta.lastUpdatedAt || 0).getTime() / 1e13;
-      return bScore - aScore;
-    })
-    .slice(0, maxUsers)
-    .map(([scopeKey, value]) => [scopeKey, {
-      displayName: value.displayName,
-      summary: truncate(value.summary || '', SUMMARY_LIMIT),
-      notes: pruneNotes(value.notes || [], REBUILD_NOTE_LIMIT),
-      lastUpdatedAt: value.lastUpdatedAt || null,
-      lastSeenAt: value.lastSeenAt || null,
-    }]);
-
-  const sortedChannels = Object.entries(memory.channels || {})
-    .sort((a, b) => {
-      const aMeta = a[1] || {};
-      const bMeta = b[1] || {};
-      const aScore = (aMeta.notes?.length || 0) + (aMeta.summary ? 1 : 0) + new Date(aMeta.lastSeenAt || aMeta.lastUpdatedAt || 0).getTime() / 1e13;
-      const bScore = (bMeta.notes?.length || 0) + (bMeta.summary ? 1 : 0) + new Date(bMeta.lastSeenAt || bMeta.lastUpdatedAt || 0).getTime() / 1e13;
-      return bScore - aScore;
-    })
-    .slice(0, maxChannels)
-    .map(([channelId, value]) => [channelId, {
-      summary: truncate(value.summary || '', SUMMARY_LIMIT),
-      notes: pruneNotes(value.notes || [], REBUILD_NOTE_LIMIT),
-      displayName: value.displayName || '',
-      lastUpdatedAt: value.lastUpdatedAt || null,
-      lastSeenAt: value.lastSeenAt || null,
-    }]);
-
-  const snapshot = {
-    schemaVersion: memory.schemaVersion,
-    globalSummary: truncate(memory.globalSummary || '', SUMMARY_LIMIT),
-    globalNotes: pruneNotes(memory.globalNotes || [], GLOBAL_NOTE_LIMIT),
-    assistantProfile: sanitizeProfile(memory.assistantProfile),
-    channels: Object.fromEntries(sortedChannels),
-    users: Object.fromEntries(sortedUsers),
-    memoryMeta: sanitizeMeta(memory.memoryMeta),
-  };
-
-  return [
-    'Ты — модуль пересборки долговременной памяти Discord-бота.',
-    'Твоя задача: сжать и очистить память без потери важных устойчивых фактов.',
-    'Объединяй дубли, убирай мусор, сокращай длинные формулировки, но не смешивай разных пользователей.',
-    'Если старый факт уточнён новым, замени старый новым.',
-    'Если запись одноразовая, шумная или неважная — удали её.',
-    'Сохрани отдельные профили пользователей и каналы. Не переноси факты одного человека в память другого.',
-    'Верни ТОЛЬКО валидный JSON объекта памяти в том же формате, что и входной снимок.',
-    '',
-    `Причина пересборки: ${reason}`,
-    '',
-    JSON.stringify(snapshot, null, 2),
-  ].join('\n');
 }
 
 function extractJsonPayload(text) {
@@ -847,25 +967,20 @@ function extractJsonPayload(text) {
 module.exports = {
   createEmptyMemory,
   createEmptyProfile,
+  createEmptyUser,
+  createEmptyChannel,
   normalizeMemory,
   migrateLegacyMemory,
   buildMemoryContext,
   buildMemoryExtractionPrompt,
-  buildMemoryRebuildPrompt,
   extractJsonPayload,
   applyMemoryUpdate,
   scopeForUser,
   scopeForChannel,
   relevantNotes,
-  searchMemory,
   normalizeScopeKey,
   truncate,
   tokenize,
   overlapScore,
   rebalanceMemory,
-  sanitizeMeta,
-  sanitizeNote,
-  createEmptyMeta,
-  formatNoteLine,
-  compactRecentMessages,
 };
