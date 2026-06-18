@@ -119,10 +119,10 @@ class DiscordBot {
       });
       if (approved) {
         await this.stateStore.save();
-        await message.reply(buildProgressMessage([
-          '📝 Обновляю память...',
-          '✅ Запомнил.'
-        ], `**${item.suggestedNote?.text || item.text}**`));
+        await message.reply({
+          content: `✅ Запомнил: ${item.suggestedNote?.text || item.text}`,
+          allowedMentions: { repliedUser: false },
+        });
         return true;
       }
     }
@@ -135,10 +135,10 @@ class DiscordBot {
       });
       if (rejected) {
         await this.stateStore.save();
-        await message.reply(buildProgressMessage([
-          '🗑️ Удаляю спорные данные...',
-          '✅ Убрал из памяти.'
-        ]));
+        await message.reply({
+          content: '✅ Убрал из памяти.',
+          allowedMentions: { repliedUser: false },
+        });
         return true;
       }
     }
@@ -150,20 +150,20 @@ class DiscordBot {
     if (isForgetUserRequest(text)) {
       this.stateStore.clearUserMemory(message.guild.id, message.author.id);
       await this.stateStore.save();
-      await message.reply(buildProgressMessage([
-        '🗑️ Удаляю данные...',
-        '✅ Хорошо, я удалил всё, что помнил о тебе.'
-      ]));
+      await message.reply({
+        content: '✅ Хорошо, я удалил всё, что помнил о тебе.',
+        allowedMentions: { repliedUser: false },
+      });
       return true;
     }
 
     if (isForgetChannelRequest(text) && this.isAdmin(message.memberPermissions)) {
       this.stateStore.clearChannelMemory(message.channel.id);
       await this.stateStore.save();
-      await message.reply(buildProgressMessage([
-        '🧹 Очищаю память канала...',
-        '✅ Память по этому каналу очищена.'
-      ]));
+      await message.reply({
+        content: '✅ Память по этому каналу очищена.',
+        allowedMentions: { repliedUser: false },
+      });
       return true;
     }
 
@@ -564,12 +564,11 @@ class DiscordBot {
         statusMessage: thinkingMsg,
       });
 
-      await thinkingMsg.edit(buildProgressMessage([
-        '🧠 Анализирую запрос...',
-        '💬 Формирую ответ...',
-        '📝 Обновляю память...',
-        '✅ Готово'
-      ], answer));
+      await thinkingMsg.delete().catch(() => {});
+      await message.reply({
+        content: answer,
+        allowedMentions: { repliedUser: false },
+      });
     } catch (e) {
       console.error('Gemini error:', e);
       await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
@@ -607,12 +606,11 @@ class DiscordBot {
         statusMessage: thinkingMsg,
       });
 
-      await thinkingMsg.edit(buildProgressMessage([
-        '🧠 Анализирую запрос...',
-        '💬 Формирую ответ...',
-        '📝 Обновляю память...',
-        '✅ Готово'
-      ], answer));
+      await thinkingMsg.delete().catch(() => {});
+      await message.reply({
+        content: answer,
+        allowedMentions: { repliedUser: false },
+      });
     } catch (e) {
       console.error('Gemini error:', e);
       await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
