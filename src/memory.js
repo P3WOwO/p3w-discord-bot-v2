@@ -1,11 +1,14 @@
 
-const DEFAULT_MEMORY_VERSION = 3;
+const DEFAULT_MEMORY_VERSION = 4;
 const GLOBAL_NOTE_LIMIT = 12;
 const CHANNEL_NOTE_LIMIT = 10;
 const USER_NOTE_LIMIT = 14;
 const SUMMARY_LIMIT = 900;
 const NOTE_LIMIT = 220;
 const PROMPT_NOTE_LIMIT = 6;
+const REBUILD_USER_LIMIT = 18;
+const REBUILD_CHANNEL_LIMIT = 12;
+const REBUILD_NOTE_LIMIT = 8;
 
 const STOPWORDS = new Set([
   'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а', 'то', 'все', 'она', 'так', 'его', 'но',
@@ -22,13 +25,13 @@ const STOPWORDS = new Set([
 ]);
 
 const CATEGORY_BONUS = {
-  opinion: 2.4,
-  preference: 1.9,
-  fact: 1.6,
+  opinion: 2.6,
+  preference: 2.0,
+  fact: 1.8,
   constraint: 1.7,
-  style: 1.4,
-  project: 1.1,
-  plan: 1.0,
+  style: 1.5,
+  project: 1.2,
+  plan: 1.1,
   other: 1.0,
 };
 
@@ -36,6 +39,16 @@ function createEmptyProfile() {
   return {
     summary: '',
     lastUpdatedAt: null,
+  };
+}
+
+function createEmptyMeta() {
+  return {
+    lastUpdateAt: null,
+    lastRebuildAt: null,
+    lastRebuildReason: '',
+    rebuildCount: 0,
+    turnCount: 0,
   };
 }
 
@@ -47,6 +60,7 @@ function createEmptyMemory() {
     assistantProfile: createEmptyProfile(),
     channels: {},
     users: {},
+    memoryMeta: createEmptyMeta(),
   };
 }
 
@@ -107,6 +121,17 @@ function sanitizeProfile(profile) {
   };
 }
 
+function sanitizeMeta(meta) {
+  if (!meta || typeof meta !== 'object') return createEmptyMeta();
+  return {
+    lastUpdateAt: meta.lastUpdateAt || meta.updatedAt || null,
+    lastRebuildAt: meta.lastRebuildAt || null,
+    lastRebuildReason: normalizeText(meta.lastRebuildReason || ''),
+    rebuildCount: Math.max(0, Number(meta.rebuildCount || 0) || 0),
+    turnCount: Math.max(0, Number(meta.turnCount || 0) || 0),
+  };
+}
+
 function sanitizeNote(note) {
   if (!note || typeof note !== 'object') return null;
   const text = truncate(note.text || note.note || '', NOTE_LIMIT);
@@ -147,11 +172,22 @@ function notesAreSimilar(a, b) {
   return overlapScore(textA, textB) >= 0.72;
 }
 
+function noteLooksStale(note, { maxAgeDays = 180 } = {}) {
+  const importance = Math.max(1, Math.min(5, Number(note?.importance || 1) || 1));
+  const confidence = Math.max(0, Math.min(1, Number(note?.confidence ?? 0.75) || 0.75));
+  const created = new Date(note?.updatedAt || note?.createdAt || 0).getTime();
+  if (!Number.isFinite(created) || created <= 0) return false;
+  const ageDays = (Date.now() - created) / (1000 * 60 * 60 * 24);
+  if (ageDays < maxAgeDays) return false;
+  return importance <= 2 && confidence < 0.8;
+}
+
 function dedupeNotes(notes) {
   const deduped = [];
   for (const rawNote of notes) {
     const note = sanitizeNote(rawNote);
     if (!note) continue;
+    if (noteLooksStale(note)) continue;
 
     const idx = deduped.findIndex(existing => notesAreSimilar(existing, note));
     if (idx === -1) {
@@ -162,7 +198,19 @@ function dedupeNotes(notes) {
     const existing = deduped[idx];
     const existingScore = scoreNote(existing);
     const nextScore = scoreNote(note);
-    if (nextScore >= existingScore) deduped[idx] = { ...existing, ...note, updatedAt: new Date().toISOString() };
+    if (nextScore >= existingScore) {
+      deduped[idx] = {
+        ...existing,
+        ...note,
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      deduped[idx] = {
+        ...note,
+        ...existing,
+        updatedAt: new Date().toISOString(),
+      };
+    }
   }
   return deduped;
 }
@@ -231,7 +279,6 @@ function normalizeUser(value) {
 
 function migrateLegacyMemory(raw) {
   const memory = createEmptyMemory();
-
   if (!raw || typeof raw !== 'object') return memory;
 
   if (typeof raw.globalSummary === 'string') memory.globalSummary = truncate(raw.globalSummary, SUMMARY_LIMIT);
@@ -254,7 +301,7 @@ function migrateLegacyMemory(raw) {
 
   // Legacy format: ai_memory[channelId] = [{role,name,text}, ...]
   for (const [key, value] of Object.entries(raw)) {
-    if (['schemaVersion', 'globalSummary', 'globalNotes', 'assistantProfile', 'channels', 'users'].includes(key)) continue;
+    if (['schemaVersion', 'globalSummary', 'globalNotes', 'assistantProfile', 'channels', 'users', 'memoryMeta'].includes(key)) continue;
     if (!Array.isArray(value)) continue;
     memory.channels[key] = {
       summary: '',
@@ -266,6 +313,7 @@ function migrateLegacyMemory(raw) {
     };
   }
 
+  memory.memoryMeta = sanitizeMeta(raw.memoryMeta);
   return memory;
 }
 
@@ -284,6 +332,7 @@ function normalizeMemory(raw) {
       users: Object.fromEntries(
         Object.entries(raw.users || {}).map(([scopeKey, value]) => [scopeKey, normalizeUser(value)])
       ),
+      memoryMeta: sanitizeMeta(raw.memoryMeta),
     };
     return rebalanceMemory(memory);
   }
@@ -299,6 +348,7 @@ function rebalanceMemory(memoryInput) {
   memory.globalSummary = truncate(memory.globalSummary || '', SUMMARY_LIMIT);
   memory.globalNotes = pruneNotes(memory.globalNotes || [], GLOBAL_NOTE_LIMIT);
   memory.assistantProfile = sanitizeProfile(memory.assistantProfile);
+  memory.memoryMeta = sanitizeMeta(memory.memoryMeta);
 
   memory.channels = Object.fromEntries(
     Object.entries(memory.channels || {}).map(([channelId, value]) => {
@@ -388,6 +438,21 @@ function addOrMergeNote(notes, incoming) {
   return notes;
 }
 
+function dropLowValueNotes(notes, limit) {
+  const prepared = dedupeNotes(notes);
+  if (prepared.length <= limit) return prepared;
+  const scored = prepared.map(note => {
+    const age = new Date(note.updatedAt || note.createdAt || Date.now()).getTime();
+    const ageBoost = Number.isFinite(age) ? age / 1e13 : 0;
+    const score = scoreNote(note) + ageBoost;
+    return { note, score };
+  });
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(item => item.note);
+}
+
 function applyMemoryUpdate(memoryInput, { guildId, channelId, userId, userName, update = {} }) {
   const next = rebalanceMemory(memoryInput);
   const nowIso = new Date().toISOString();
@@ -397,6 +462,9 @@ function applyMemoryUpdate(memoryInput, { guildId, channelId, userId, userName, 
 
   const { user } = scopeForUser(next, guildId, userId, userName);
   const channel = scopeForChannel(next, channelId);
+
+  next.memoryMeta.lastUpdateAt = nowIso;
+  next.memoryMeta.turnCount = Math.max(0, Number(next.memoryMeta.turnCount || 0) || 0) + 1;
 
   if (typeof update.global_summary_update === 'string' && update.global_summary_update.trim()) {
     next.globalSummary = mergeSummary(next.globalSummary, update.global_summary_update);
@@ -447,9 +515,9 @@ function applyMemoryUpdate(memoryInput, { guildId, channelId, userId, userName, 
     else user.notes = (user.notes || []).filter(filterFn);
   }
 
-  next.globalNotes = pruneNotes(next.globalNotes || [], GLOBAL_NOTE_LIMIT);
-  channel.notes = pruneNotes(channel.notes || [], CHANNEL_NOTE_LIMIT);
-  user.notes = pruneNotes(user.notes || [], USER_NOTE_LIMIT);
+  next.globalNotes = dropLowValueNotes(next.globalNotes || [], GLOBAL_NOTE_LIMIT);
+  channel.notes = dropLowValueNotes(channel.notes || [], CHANNEL_NOTE_LIMIT);
+  user.notes = dropLowValueNotes(user.notes || [], USER_NOTE_LIMIT);
 
   if (Array.isArray(channel.legacyHistory)) {
     channel.legacyHistory = trimLegacyHistory(channel.legacyHistory, 8);
@@ -485,9 +553,78 @@ function relevantNotes(notes, queryText, limit = PROMPT_NOTE_LIMIT) {
     .map(item => item.note);
 }
 
+function extractRelevantSentences(summary, queryText, limit = 2) {
+  const sentences = splitSentences(summary);
+  if (!sentences.length) return [];
+  return sentences
+    .map(sentence => ({
+      sentence,
+      score: overlapScore(sentence, queryText) + Math.min(0.4, sentence.length / 800),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(item => item.sentence);
+}
+
 function formatNoteLine(note) {
   const prefix = note.importance >= 4 ? '★' : note.importance === 3 ? '•' : '·';
   return `${prefix} ${truncate(note.text, 180)}`;
+}
+
+function formatSearchHit(hit) {
+  const prefix = hit.kind === 'summary' ? '↳' : '•';
+  return `${prefix} ${hit.label}: ${truncate(hit.text, 180)}`;
+}
+
+function searchMemory(memoryInput, { guildId, channelId, userId, userName = '', channelName = '', queryText = '', limit = 6 } = {}) {
+  const memory = rebalanceMemory(normalizeMemory(memoryInput));
+  const userScope = memory.users[normalizeScopeKey(guildId, userId)] || null;
+  const channelScope = memory.channels[channelId] || null;
+  const q = normalizeText(queryText);
+
+  const hits = [];
+  const pushHit = (scope, kind, label, text, score) => {
+    const clean = truncate(text, kind === 'summary' ? SUMMARY_LIMIT : NOTE_LIMIT);
+    if (!clean) return;
+    hits.push({ scope, kind, label, text: clean, score });
+  };
+
+  if (userScope) {
+    for (const sentence of extractRelevantSentences(userScope.summary, q, 2)) {
+      pushHit('user', 'summary', userScope.displayName || userName || 'Пользователь', sentence, overlapScore(sentence, q) + 1.2);
+    }
+    for (const note of relevantNotes(userScope.notes, q, 4)) {
+      pushHit('user', 'note', userScope.displayName || userName || 'Пользователь', note.text, overlapScore(note.text, q) + scoreNote(note));
+    }
+  }
+
+  if (channelScope) {
+    const channelLabel = channelScope.displayName || channelName || 'Канал';
+    for (const sentence of extractRelevantSentences(channelScope.summary, q, 2)) {
+      pushHit('channel', 'summary', channelLabel, sentence, overlapScore(sentence, q) + 1.0);
+    }
+    for (const note of relevantNotes(channelScope.notes, q, 3)) {
+      pushHit('channel', 'note', channelLabel, note.text, overlapScore(note.text, q) + scoreNote(note));
+    }
+  }
+
+  const globalCandidates = [
+    ...extractRelevantSentences(memory.globalSummary, q, 2).map(sentence => ({ kind: 'summary', label: 'Общая сводка', text: sentence, score: overlapScore(sentence, q) + 0.9 })),
+    ...relevantNotes(memory.globalNotes || [], q, 4).map(note => ({ kind: 'note', label: 'Глобальная память', text: note.text, score: overlapScore(note.text, q) + scoreNote(note) })),
+  ];
+
+  for (const item of globalCandidates) {
+    pushHit('global', item.kind, item.label, item.text, item.score);
+  }
+
+  const unique = [];
+  for (const hit of hits.sort((a, b) => b.score - a.score)) {
+    const key = `${hit.kind}:${normalizeText(hit.text).toLowerCase()}`;
+    if (unique.some(x => x.key === key)) continue;
+    unique.push({ key, ...hit });
+  }
+
+  return unique.slice(0, limit).map(({ key, ...hit }) => hit);
 }
 
 function compactRecentMessages(recentMessages, queryText, limit = 4) {
@@ -527,6 +664,7 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
     2
   );
   const globalNotes = relevantNotes(memory.globalNotes || [], queryText, 3);
+  const searchHits = searchMemory(memory, { guildId, channelId, userId, userName, channelName, queryText, limit: 5 });
   const recent = compactRecentMessages(recentMessages, queryText, 4);
 
   const sections = [];
@@ -571,6 +709,10 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
     sections.push(`Глобальные заметки:\n${lines.join('\n')}`);
   }
 
+  if (searchHits.length) {
+    sections.push(`Смысловой поиск:\n${searchHits.map(formatSearchHit).join('\n')}`);
+  }
+
   if (recent.length) {
     const recentLines = recent.map(msg => `${msg.name}: ${msg.text}`);
     sections.push(`Свежий контекст:\n${recentLines.join('\n')}`);
@@ -588,8 +730,10 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     'Ты — модуль долговременной памяти Discord-бота.',
     'Твоя задача: решить, что стоит запомнить надолго, что считать мнением/выводом, а что удалить как мусор.',
     'Запоминай только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы, решения, противоречия и важные изменения.',
+    'Каждый пользователь должен иметь свою отдельную память. Не смешивай данные разных людей.',
     'Если это одноразовая шутка, случайная эмоция, шум или слишком слабая деталь — не запоминай.',
     'Если запись устарела, дублирует другую, противоречит более свежей информации или стала неважной — удали её через notes_remove.',
+    'Если новая информация уточняет старую, считай старую запись устаревшей и замени её новой.',
     'Если в поведении или теме есть устойчивый вывод, добавь его в assistant_profile_update или как global note категории opinion.',
     'Если память не должна обновляться, верни {"should_store": false}.',
     'Верни ТОЛЬКО JSON без markdown, пояснений и лишнего текста.',
@@ -619,6 +763,68 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
   ].filter(Boolean).join('\n');
 }
 
+function buildMemoryRebuildPrompt(memoryInput, { reason = 'periodic', maxUsers = REBUILD_USER_LIMIT, maxChannels = REBUILD_CHANNEL_LIMIT } = {}) {
+  const memory = rebalanceMemory(normalizeMemory(memoryInput));
+
+  const sortedUsers = Object.entries(memory.users || {})
+    .sort((a, b) => {
+      const aMeta = a[1] || {};
+      const bMeta = b[1] || {};
+      const aScore = (aMeta.notes?.length || 0) + (aMeta.summary ? 1 : 0) + new Date(aMeta.lastSeenAt || aMeta.lastUpdatedAt || 0).getTime() / 1e13;
+      const bScore = (bMeta.notes?.length || 0) + (bMeta.summary ? 1 : 0) + new Date(bMeta.lastSeenAt || bMeta.lastUpdatedAt || 0).getTime() / 1e13;
+      return bScore - aScore;
+    })
+    .slice(0, maxUsers)
+    .map(([scopeKey, value]) => [scopeKey, {
+      displayName: value.displayName,
+      summary: truncate(value.summary || '', SUMMARY_LIMIT),
+      notes: pruneNotes(value.notes || [], REBUILD_NOTE_LIMIT),
+      lastUpdatedAt: value.lastUpdatedAt || null,
+      lastSeenAt: value.lastSeenAt || null,
+    }]);
+
+  const sortedChannels = Object.entries(memory.channels || {})
+    .sort((a, b) => {
+      const aMeta = a[1] || {};
+      const bMeta = b[1] || {};
+      const aScore = (aMeta.notes?.length || 0) + (aMeta.summary ? 1 : 0) + new Date(aMeta.lastSeenAt || aMeta.lastUpdatedAt || 0).getTime() / 1e13;
+      const bScore = (bMeta.notes?.length || 0) + (bMeta.summary ? 1 : 0) + new Date(bMeta.lastSeenAt || bMeta.lastUpdatedAt || 0).getTime() / 1e13;
+      return bScore - aScore;
+    })
+    .slice(0, maxChannels)
+    .map(([channelId, value]) => [channelId, {
+      summary: truncate(value.summary || '', SUMMARY_LIMIT),
+      notes: pruneNotes(value.notes || [], REBUILD_NOTE_LIMIT),
+      displayName: value.displayName || '',
+      lastUpdatedAt: value.lastUpdatedAt || null,
+      lastSeenAt: value.lastSeenAt || null,
+    }]);
+
+  const snapshot = {
+    schemaVersion: memory.schemaVersion,
+    globalSummary: truncate(memory.globalSummary || '', SUMMARY_LIMIT),
+    globalNotes: pruneNotes(memory.globalNotes || [], GLOBAL_NOTE_LIMIT),
+    assistantProfile: sanitizeProfile(memory.assistantProfile),
+    channels: Object.fromEntries(sortedChannels),
+    users: Object.fromEntries(sortedUsers),
+    memoryMeta: sanitizeMeta(memory.memoryMeta),
+  };
+
+  return [
+    'Ты — модуль пересборки долговременной памяти Discord-бота.',
+    'Твоя задача: сжать и очистить память без потери важных устойчивых фактов.',
+    'Объединяй дубли, убирай мусор, сокращай длинные формулировки, но не смешивай разных пользователей.',
+    'Если старый факт уточнён новым, замени старый новым.',
+    'Если запись одноразовая, шумная или неважная — удали её.',
+    'Сохрани отдельные профили пользователей и каналы. Не переноси факты одного человека в память другого.',
+    'Верни ТОЛЬКО валидный JSON объекта памяти в том же формате, что и входной снимок.',
+    '',
+    `Причина пересборки: ${reason}`,
+    '',
+    JSON.stringify(snapshot, null, 2),
+  ].join('\n');
+}
+
 function extractJsonPayload(text) {
   const raw = normalizeText(text);
   if (!raw) return null;
@@ -645,14 +851,21 @@ module.exports = {
   migrateLegacyMemory,
   buildMemoryContext,
   buildMemoryExtractionPrompt,
+  buildMemoryRebuildPrompt,
   extractJsonPayload,
   applyMemoryUpdate,
   scopeForUser,
   scopeForChannel,
   relevantNotes,
+  searchMemory,
   normalizeScopeKey,
   truncate,
   tokenize,
   overlapScore,
   rebalanceMemory,
+  sanitizeMeta,
+  sanitizeNote,
+  createEmptyMeta,
+  formatNoteLine,
+  compactRecentMessages,
 };

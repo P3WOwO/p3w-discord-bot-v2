@@ -21,10 +21,13 @@ const {
   HOME_GUILD_ONLY_REPLY,
   PRESENCE_VERBS,
   PRESENCE_NOUNS,
+  MEMORY_REBUILD_INTERVAL_MS,
+  MEMORY_REBUILD_MIN_TURNS,
 } = require('./constants');
 
 const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText } = require('./utils');
 const { askGemini, buildPrompt, buildMemoryPrompt, parseMemoryUpdate, MEMORY_EXTRACTION_MODEL_TEMPERATURE, MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS } = require('./ai');
+const { buildMemoryRebuildPrompt } = require('./memory');
 
 class DiscordBot {
   constructor(config, stateStore) {
@@ -381,7 +384,67 @@ class DiscordBot {
       }
     }
 
+    this.stateStore.touchMemoryActivity();
     await this.stateStore.save();
+    await this.maybeRebuildMemory('conversation', {
+      guildId,
+      channelId: channel.id,
+      channelName,
+    });
+  }
+
+  shouldRebuildMemory() {
+    const memory = this.stateStore.getAiMemory();
+    const meta = memory.memoryMeta || {};
+    const turnCount = Math.max(0, Number(meta.turnCount || 0) || 0);
+    const lastRebuildAt = new Date(meta.lastRebuildAt || 0).getTime();
+    const elapsed = Number.isFinite(lastRebuildAt) ? Date.now() - lastRebuildAt : Number.POSITIVE_INFINITY;
+    if (turnCount < MEMORY_REBUILD_MIN_TURNS) return false;
+    if (Number.isFinite(elapsed) && elapsed < MEMORY_REBUILD_INTERVAL_MS) return false;
+    return true;
+  }
+
+  async maybeRebuildMemory(reason = 'scheduled', extra = {}) {
+    if (!this.config.GEMINI_API_KEY) return false;
+    if (this.memoryRebuildInFlight) return false;
+
+    const memory = this.stateStore.getAiMemory();
+    const meta = memory.memoryMeta || {};
+    const turnCount = Math.max(0, Number(meta.turnCount || 0) || 0);
+    if (turnCount < MEMORY_REBUILD_MIN_TURNS) return false;
+    if (reason === 'scheduled' && !this.shouldRebuildMemory()) return false;
+
+    this.memoryRebuildInFlight = true;
+    try {
+      const snapshot = this.stateStore.getAiMemory();
+      const prompt = buildMemoryRebuildPrompt(snapshot, {
+        reason,
+        ...extra,
+      });
+
+      const raw = await askGemini({
+        apiKey: this.config.GEMINI_API_KEY,
+        model: this.config.GEMINI_MODEL,
+        prompt,
+        temperature: 0.15,
+        maxOutputTokens: 2200,
+        retries: 1,
+      });
+
+      const rebuilt = parseMemoryUpdate(raw);
+      if (!rebuilt || typeof rebuilt !== 'object') return false;
+
+      this.stateStore.replaceAiMemory(rebuilt);
+      this.stateStore.markMemoryRebuilt(reason);
+      await this.stateStore.save();
+      console.log(`🧠 Memory rebuilt (${reason})`);
+      return true;
+    } catch (e) {
+      console.error('Memory rebuild error:', e?.message || e);
+      return false;
+    } finally {
+      this.memoryRebuildInFlight = false;
+    }
   }
 
   async handleAiMessage({ message, text }) {
@@ -463,10 +526,12 @@ class DiscordBot {
       await this.registerCommands().catch(console.error);
       await this.restoreCurrentVoiceSessions();
       await this.refreshPresence();
+      await this.maybeRebuildMemory('startup').catch(() => {});
 
       this.checkpointTimer = setInterval(() => this.checkpointSessions(false), CHECKPOINT_MS);
       this.presenceRefreshTimer = setInterval(() => this.refreshPresence().catch(console.error), PRESENCE_REFRESH_MS);
       this.presenceRotateTimer = setInterval(() => this.rotatePresencePhrase().catch(console.error), PRESENCE_ROTATE_MS);
+      this.memoryRebuildTimer = setInterval(() => this.maybeRebuildMemory('scheduled').catch(console.error), MEMORY_REBUILD_INTERVAL_MS);
 
       console.log(`🌿 Статус: "Слушает ${this.ensureLifeState().phrase}"`);
     });
@@ -671,6 +736,7 @@ class DiscordBot {
       await this.checkpointSessions(true);
       await this.stateStore.save();
       if (this.httpServer) this.httpServer.close(() => {});
+      if (this.memoryRebuildTimer) clearInterval(this.memoryRebuildTimer);
       if (this.client?.destroy) this.client.destroy();
     } catch (e) {
       console.error('Shutdown error:', e);

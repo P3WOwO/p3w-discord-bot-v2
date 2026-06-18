@@ -7,6 +7,8 @@ const {
   createEmptyMemory,
   buildMemoryContext,
   applyMemoryUpdate,
+  buildMemoryRebuildPrompt,
+  extractJsonPayload,
   truncate,
   normalizeScopeKey,
   rebalanceMemory,
@@ -184,6 +186,27 @@ class StateStore {
       userName,
       update,
     }));
+  }
+
+  replaceAiMemory(nextMemory) {
+    this.state.aiMemory = rebalanceMemory(normalizeMemory(nextMemory));
+  }
+
+  touchMemoryActivity() {
+    const memory = this.getAiMemory();
+    memory.memoryMeta = memory.memoryMeta || {};
+    memory.memoryMeta.lastUpdateAt = new Date().toISOString();
+    return memory.memoryMeta;
+  }
+
+  markMemoryRebuilt(reason = 'manual') {
+    const memory = this.getAiMemory();
+    memory.memoryMeta = memory.memoryMeta || {};
+    memory.memoryMeta.lastRebuildAt = new Date().toISOString();
+    memory.memoryMeta.lastRebuildReason = String(reason || '').slice(0, 80);
+    memory.memoryMeta.rebuildCount = Math.max(0, Number(memory.memoryMeta.rebuildCount || 0) || 0) + 1;
+    memory.memoryMeta.turnCount = 0;
+    return memory.memoryMeta;
   }
 
   pushChannelMessage(channelId, role, name, text) {
