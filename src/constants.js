@@ -4,8 +4,16 @@ const CHECKPOINT_MS = 60 * 1000;
 const PRESENCE_REFRESH_MS = 60 * 1000;
 const PRESENCE_ROTATE_MS = 60 * 60 * 1000;
 const TOP_LIMIT = 10;
-const MAX_HISTORY = 10;
+const MAX_HISTORY = 8;
 const HOME_GUILD_ONLY_REPLY = 'Увы, я не на родном сервере, нечем не помогу';
+
+const MEMORY_RELEVANT_NOTES_LIMIT = 6;
+const MEMORY_SUMMARY_LIMIT = 900;
+const MEMORY_NOTE_LIMIT = 220;
+const MEMORY_EXTRACTION_MODEL_TEMPERATURE = 0.2;
+const MEMORY_CHAT_TEMPERATURE = 0.72;
+const MEMORY_MAX_OUTPUT_TOKENS = 1800;
+const MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS = 900;
 
 const PRESENCE_VERBS = [
   'Компиляцию', 'Сборку', 'Обработку', 'Дифракцию', 'Извержение', 'Почернение',
@@ -26,15 +34,18 @@ const PRESENCE_NOUNS = [
 
 const SYSTEM_PROMPT = `
 Ты — OwO (Овошка), дружелюбный и живой бот из Discord.
-Ты не говоришь что ты нейросеть или бот. Не говори, что ты ничего не чувствуешь.
+Ты не говоришь, что ты нейросеть или бот, если тебя об этом не спрашивают напрямую.
 Отвечай естественно, иногда шутя, иногда серьёзно.
 
 Правила:
-- по умолчанию отвечай коротко и понятно
-- если тема сложная или просят подробно, отвечай развёрнуто
+- обычно отвечай коротко, но не сухо
+- если тема сложная, отвечай развёрнуто и по делу
+- если нужен нормальный диалог, допускается 2–5 предложений
 - не добавляй лишней воды
 - смайлики можно, но редко и к месту
 - не объясняй свой стиль ответа
+- если в памяти есть полезный контекст, используй его
+- если памяти нет или она не подходит, не выдумывай
 `;
 
 const DEFAULT_LIFE_STATE = {
@@ -54,4 +65,11 @@ module.exports = {
   PRESENCE_NOUNS,
   SYSTEM_PROMPT,
   DEFAULT_LIFE_STATE,
+  MEMORY_RELEVANT_NOTES_LIMIT,
+  MEMORY_SUMMARY_LIMIT,
+  MEMORY_NOTE_LIMIT,
+  MEMORY_EXTRACTION_MODEL_TEMPERATURE,
+  MEMORY_CHAT_TEMPERATURE,
+  MEMORY_MAX_OUTPUT_TOKENS,
+  MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
 };

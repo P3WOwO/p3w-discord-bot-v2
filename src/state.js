@@ -2,6 +2,14 @@ const fs = require('fs');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 const { DEFAULT_LIFE_STATE, MAX_HISTORY } = require('./constants');
+const {
+  normalizeMemory,
+  createEmptyMemory,
+  buildMemoryContext,
+  applyMemoryUpdate,
+  truncate,
+  normalizeScopeKey,
+} = require('./memory');
 
 const DATA_DIR = '/data';
 const LOCAL_FALLBACK_FILE = path.join(DATA_DIR, 'bot_state.json');
@@ -24,7 +32,7 @@ class StateStore {
     this.state = {
       voiceTimes: {},
       lifeState: clone(DEFAULT_LIFE_STATE),
-      aiMemory: {},
+      aiMemory: createEmptyMemory(),
     };
   }
 
@@ -63,7 +71,7 @@ class StateStore {
       this.state.lifeState = data.life_state && typeof data.life_state === 'object'
         ? { ...clone(DEFAULT_LIFE_STATE), ...data.life_state }
         : clone(DEFAULT_LIFE_STATE);
-      this.state.aiMemory = data.ai_memory && typeof data.ai_memory === 'object' ? data.ai_memory : {};
+      this.state.aiMemory = normalizeMemory(data.ai_memory);
       return;
     }
 
@@ -111,7 +119,7 @@ class StateStore {
       if (raw?.lifeState && typeof raw.lifeState === 'object') {
         this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...raw.lifeState };
       }
-      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = raw.aiMemory;
+      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = normalizeMemory(raw.aiMemory);
     } catch (err) {
       console.error('⚠️ Local fallback load failed:', err.message || err);
     }
@@ -140,17 +148,64 @@ class StateStore {
     this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...next };
   }
 
-  getChannelHistory(channelId) {
-    const history = this.state.aiMemory[channelId];
-    return Array.isArray(history) ? history.slice(-MAX_HISTORY) : [];
+  getAiMemory() {
+    this.state.aiMemory = normalizeMemory(this.state.aiMemory);
+    return this.state.aiMemory;
+  }
+
+  getUserMemory(guildId, userId) {
+    const memory = this.getAiMemory();
+    return memory.users[normalizeScopeKey(guildId, userId)] || null;
+  }
+
+  getChannelMemory(channelId) {
+    const memory = this.getAiMemory();
+    return memory.channels[channelId] || null;
+  }
+
+  getMemoryContext({ guildId, channelId, userId, userName, channelName = '', queryText = '', recentMessages = [] }) {
+    return buildMemoryContext(this.getAiMemory(), {
+      guildId,
+      channelId,
+      userId,
+      userName,
+      channelName,
+      queryText,
+      recentMessages,
+    });
+  }
+
+  applyMemoryExtraction({ guildId, channelId, userId, userName, update }) {
+    this.state.aiMemory = applyMemoryUpdate(this.getAiMemory(), {
+      guildId,
+      channelId,
+      userId,
+      userName,
+      update,
+    });
   }
 
   pushChannelMessage(channelId, role, name, text) {
     const clean = String(text || '').trim();
     if (!clean) return;
-    const history = this.getChannelHistory(channelId);
-    history.push({ role, name, text: clean });
-    this.state.aiMemory[channelId] = history.slice(-MAX_HISTORY);
+    const memory = this.getAiMemory();
+    const channel = memory.channels[channelId] || {
+      summary: '',
+      notes: [],
+      displayName: '',
+      lastUpdatedAt: null,
+      lastSeenAt: null,
+      legacyHistory: [],
+    };
+    channel.legacyHistory = Array.isArray(channel.legacyHistory) ? channel.legacyHistory : [];
+    channel.legacyHistory.push({
+      role: String(role || 'user').slice(0, 20),
+      name: String(name || '').slice(0, 80),
+      text: truncate(clean, 300),
+    });
+    channel.legacyHistory = channel.legacyHistory.slice(-MAX_HISTORY);
+    memory.channels[channelId] = channel;
+    this.state.aiMemory = memory;
   }
 
   setVoiceSeconds(key, seconds) {

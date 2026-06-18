@@ -1,7 +1,18 @@
+const {
+  SYSTEM_PROMPT,
+  MEMORY_CHAT_TEMPERATURE,
+  MEMORY_MAX_OUTPUT_TOKENS,
+  MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
+  MEMORY_EXTRACTION_MODEL_TEMPERATURE,
+} = require('./constants');
+const {
+  buildMemoryContext,
+  buildMemoryExtractionPrompt,
+  extractJsonPayload,
+  truncate,
+} = require('./memory');
 
-const { SYSTEM_PROMPT } = require('./constants');
-
-async function askGemini({ apiKey, model, prompt, retries = 3 }) {
+async function askGemini({ apiKey, model, prompt, retries = 3, temperature = MEMORY_CHAT_TEMPERATURE, maxOutputTokens = MEMORY_MAX_OUTPUT_TOKENS }) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -17,8 +28,8 @@ async function askGemini({ apiKey, model, prompt, retries = 3 }) {
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            maxOutputTokens: 1500,
-            temperature: 0.70,
+            maxOutputTokens,
+            temperature,
             topP: 0.9,
           },
         }),
@@ -48,23 +59,48 @@ async function askGemini({ apiKey, model, prompt, retries = 3 }) {
   }
 }
 
-function buildPrompt({ channelHistory = [], recentMessages = [], userName, text }) {
+function buildPrompt({ memoryContext = '', recentMessages = [], userName, text, channelName = '' }) {
   const recentBlock = recentMessages.length
-    ? ['', 'Последние сообщения:', ...recentMessages.map(m => `${m.name}: ${m.text}`)]
+    ? ['Последние сообщения:', ...recentMessages.map(m => `${m.name}: ${truncate(m.text, 220)}`)]
     : [];
+
+  const memoryBlock = memoryContext
+    ? ['Память:', memoryContext]
+    : ['Память: пусто'];
 
   return [
     SYSTEM_PROMPT,
     '',
-    'История:',
-    ...channelHistory.map(m => `${m.name}: ${m.text}`),
+    ...memoryBlock,
+    '',
     ...recentBlock,
     '',
-    `${userName}: ${text}`,
+    `Сейчас отвечает ${userName}${channelName ? ` в канале ${channelName}` : ''}: ${text}`,
   ].join('\n');
+}
+
+function buildMemoryPrompt({ userName, channelName, userText, botReply, recentMessages = [], existingContext = '' }) {
+  return buildMemoryExtractionPrompt({
+    userName,
+    channelName,
+    userText,
+    botReply,
+    recentMessages,
+    existingContext,
+  });
+}
+
+function parseMemoryUpdate(text) {
+  const parsed = extractJsonPayload(text);
+  if (!parsed || typeof parsed !== 'object') return null;
+  return parsed;
 }
 
 module.exports = {
   askGemini,
   buildPrompt,
+  buildMemoryPrompt,
+  parseMemoryUpdate,
+  MEMORY_EXTRACTION_MODEL_TEMPERATURE,
+  MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
 };

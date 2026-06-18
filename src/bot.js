@@ -23,8 +23,8 @@ const {
   PRESENCE_NOUNS,
 } = require('./constants');
 
-const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText, getNextTargetDayUnix } = require('./utils');
-const { askGemini, buildPrompt } = require('./ai');
+const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText } = require('./utils');
+const { askGemini, buildPrompt, buildMemoryPrompt, parseMemoryUpdate, MEMORY_EXTRACTION_MODEL_TEMPERATURE, MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS } = require('./ai');
 
 class DiscordBot {
   constructor(config, stateStore) {
@@ -221,13 +221,13 @@ class DiscordBot {
 
     const topRows = await Promise.all(top.map(async (item, i) => {
       const name = await this.getMemberName(guild, item.userId);
-      const shortName = name.length > 26 ? name.slice(0, 25) + '…' : name;
+      const shortName = name.length > 26 ? `${name.slice(0, 25)}…` : name;
       return `${String(i + 1).padEnd(2)} ${shortName.padEnd(28)} ${formatTopTime(item.seconds)}`;
     }));
 
     const description = leaderboard.length === 0
       ? 'Пока никто не провёл время в войсе.'
-      : ['```', '# Пользователь          Дни/часы', '-----------------------------------------', ...topRows, '```'].join('\\n');
+      : ['```', '# Пользователь          Дни/часы', '-----------------------------------------', ...topRows, '```'].join('\n');
 
     const embed = new EmbedBuilder()
       .setColor(0x57f287)
@@ -240,8 +240,7 @@ class DiscordBot {
       const targetName = await this.getMemberName(guild, targetUser.id);
       embed.addFields({
         name: 'Твоё место',
-        value: `**#${targetRank}** — **${targetName}**
-**Время:** ${formatTopTime(targetTotal)}`,
+        value: `**#${targetRank}** — **${targetName}**\n**Время:** ${formatTopTime(targetTotal)}`,
         inline: false,
       });
     } else {
@@ -254,13 +253,10 @@ class DiscordBot {
   buildLifeEmbed() {
     const lifeState = this.ensureLifeState();
     const lifeSeconds = this.buildLifeSeconds();
-    const targetUnix = getNextTargetDayUnix(23);
     return new EmbedBuilder()
       .setColor(0x57f287)
       .setTitle('💚 /life')
-      .setDescription(`**${formatTime(lifeSeconds)}**
-
-Я умру: <t:${targetUnix}:R>`)
+      .setDescription(`**Бот работает уже:** ${formatTime(lifeSeconds)}\n**Текущая фраза:** ${lifeState.phrase}`)
       .setTimestamp();
   }
 
@@ -316,58 +312,145 @@ class DiscordBot {
     await rest.put(Routes.applicationCommands(this.config.CLIENT_ID), { body: [] });
   }
 
-  async handleMentionOrReply(message) {
-    const authorName = message.member?.displayName || message.author.username;
-    const cleanText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
-    if (!cleanText) return;
+  async generateAiReply({ channel, guildId, userId, userName, text }) {
+    const recent = await this.getRecentMessages(channel, 6);
+    const channelName = channel?.name || channel?.threadMetadata?.name || '';
+    const memoryContext = this.stateStore.getMemoryContext({
+      guildId,
+      channelId: channel.id,
+      userId,
+      userName,
+      channelName,
+      queryText: text,
+      recentMessages: recent,
+    });
 
-    const recent = await this.getRecentMessages(message.channel, 6);
-    if (!this.config.GEMINI_API_KEY) return message.reply('⚠️ Gemini пока не подключён.');
+    const prompt = buildPrompt({
+      memoryContext,
+      recentMessages: recent,
+      userName,
+      text,
+      channelName,
+    });
 
+    const answer = await askGemini({
+      apiKey: this.config.GEMINI_API_KEY,
+      model: this.config.GEMINI_MODEL,
+      prompt,
+    });
+
+    return { answer, recent, memoryContext, channelName };
+  }
+
+  async storeConversationTurn({ guildId, channel, userId, userName, userText, botReply, recentMessages, memoryContext, channelName }) {
+    this.stateStore.pushChannelMessage(channel.id, 'user', userName, userText);
+    this.stateStore.pushChannelMessage(channel.id, 'model', 'Bot', botReply);
+
+    if (this.config.GEMINI_API_KEY) {
+      try {
+        const memoryPrompt = buildMemoryPrompt({
+          userName,
+          channelName,
+          userText,
+          botReply,
+          recentMessages,
+          existingContext: memoryContext,
+        });
+
+        const rawUpdate = await askGemini({
+          apiKey: this.config.GEMINI_API_KEY,
+          model: this.config.GEMINI_MODEL,
+          prompt: memoryPrompt,
+          temperature: MEMORY_EXTRACTION_MODEL_TEMPERATURE,
+          maxOutputTokens: MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
+          retries: 1,
+        });
+
+        const update = parseMemoryUpdate(rawUpdate);
+        if (update) {
+          this.stateStore.applyMemoryExtraction({
+            guildId,
+            channelId: channel.id,
+            userId,
+            userName,
+            update,
+          });
+        }
+      } catch (e) {
+        console.error('Memory extraction error:', e?.message || e);
+      }
+    }
+
+    await this.stateStore.save();
+  }
+
+  async handleAiMessage({ message, text }) {
+    if (!this.config.GEMINI_API_KEY) {
+      return message.reply('⚠️ Gemini пока не подключён.');
+    }
+
+    const userName = message.member?.displayName || message.author.username;
     const thinkingMsg = await message.reply('Думаю...');
+
     try {
-      const answer = await askGemini({
-        apiKey: this.config.GEMINI_API_KEY,
-        model: this.config.GEMINI_MODEL,
-        prompt: buildPrompt({
-          channelHistory: this.stateStore.getChannelHistory(message.channel.id),
-          recentMessages: recent,
-          userName: authorName,
-          text: cleanText,
-        }),
+      const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
+        channel: message.channel,
+        guildId: message.guild.id,
+        userId: message.author.id,
+        userName,
+        text,
       });
-      this.stateStore.pushChannelMessage(message.channel.id, 'user', authorName, cleanText);
-      this.stateStore.pushChannelMessage(message.channel.id, 'model', 'Bot', answer);
-      await this.stateStore.save();
+
       await thinkingMsg.edit(clampText(answer, 2000));
+
+      await this.storeConversationTurn({
+        guildId: message.guild.id,
+        channel: message.channel,
+        userId: message.author.id,
+        userName,
+        userText: text,
+        botReply: answer,
+        recentMessages: recent,
+        memoryContext,
+        channelName,
+      });
     } catch (e) {
       console.error('Gemini error:', e);
       await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.');
     }
   }
 
-  async handleSayCommand(message, text) {
+  async handleMentionOrReply(message) {
     const authorName = message.member?.displayName || message.author.username;
-    const recent = await this.getRecentMessages(message.channel, 6);
-    this.stateStore.pushChannelMessage(message.channel.id, 'user', authorName, text);
+    const cleanText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
+    if (!cleanText) return;
+    if (!this.config.GEMINI_API_KEY) return message.reply('⚠️ Gemini пока не подключён.');
 
+    const thinkingMsg = await message.reply('Думаю...');
     try {
-      const answer = await askGemini({
-        apiKey: this.config.GEMINI_API_KEY,
-        model: this.config.GEMINI_MODEL,
-        prompt: buildPrompt({
-          channelHistory: this.stateStore.getChannelHistory(message.channel.id),
-          recentMessages: recent,
-          userName: authorName,
-          text,
-        }),
+      const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
+        channel: message.channel,
+        guildId: message.guild.id,
+        userId: message.author.id,
+        userName: authorName,
+        text: cleanText,
       });
-      this.stateStore.pushChannelMessage(message.channel.id, 'model', 'Bot', answer);
-      await this.stateStore.save();
-      return message.reply(clampText(answer, 2000));
+
+      await thinkingMsg.edit(clampText(answer, 2000));
+      await this.storeConversationTurn({
+        guildId: message.guild.id,
+        channel: message.channel,
+        userId: message.author.id,
+        userName: authorName,
+        userText: cleanText,
+        botReply: answer,
+        recentMessages: recent,
+        memoryContext,
+        channelName,
+      });
     } catch (e) {
       console.error('Gemini error:', e);
-      return message.reply('❌ Gemini сейчас перегружен, попробуй позже.');
+      await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.');
     }
   }
 
@@ -420,7 +503,7 @@ class DiscordBot {
         if (cmd === 'say') {
           const promptText = args.slice(1).join(' ').trim();
           if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}say\`.`);
-          return this.handleSayCommand(message, promptText);
+          return this.handleAiMessage({ message, text: promptText });
         }
       }
 
@@ -434,29 +517,7 @@ class DiscordBot {
 
       const cleanText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
       if (!cleanText) return;
-
-      const recent = await this.getRecentMessages(message.channel, 6);
-      this.stateStore.pushChannelMessage(message.channel.id, 'user', authorName, cleanText);
-
-      const thinkingMsg = await message.reply('Думаю...');
-      try {
-        const answer = await askGemini({
-          apiKey: this.config.GEMINI_API_KEY,
-          model: this.config.GEMINI_MODEL,
-          prompt: buildPrompt({
-            channelHistory: this.stateStore.getChannelHistory(message.channel.id),
-            recentMessages: recent,
-            userName: authorName,
-            text: cleanText,
-          }),
-        });
-        this.stateStore.pushChannelMessage(message.channel.id, 'model', 'Bot', answer);
-        await this.stateStore.save();
-        await thinkingMsg.edit(clampText(answer, 2000));
-      } catch (e) {
-        console.error('Gemini error:', e);
-        await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.');
-      }
+      return this.handleMentionOrReply(message);
     });
 
     this.client.on('interactionCreate', async (interaction) => {
@@ -478,29 +539,34 @@ class DiscordBot {
         const text = interaction.options.getString('text', true);
         await interaction.deferReply();
         try {
-          const recent = await this.getRecentMessages(interaction.channel, 6);
-          const userName = interaction.member?.displayName || interaction.user.username;
           if (!this.config.GEMINI_API_KEY) {
             return interaction.editReply({ content: '⚠️ Gemini пока не подключён.' });
           }
-          const answer = await askGemini({
-            apiKey: this.config.GEMINI_API_KEY,
-            model: this.config.GEMINI_MODEL,
-            prompt: buildPrompt({
-              channelHistory: this.stateStore.getChannelHistory(interaction.channel.id),
-              recentMessages: recent,
-              userName,
-              text,
-            }),
+          const userName = interaction.member?.displayName || interaction.user.username;
+          const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
+            channel: interaction.channel,
+            guildId: interaction.guild.id,
+            userId: interaction.user.id,
+            userName,
+            text,
           });
-          this.stateStore.pushChannelMessage(interaction.channel.id, 'user', userName, text);
-          this.stateStore.pushChannelMessage(interaction.channel.id, 'model', 'Bot', answer);
-          await this.stateStore.save();
-          return interaction.editReply({ content: clampText(answer, 2000) });
+          await interaction.editReply({ content: clampText(answer, 2000) });
+          await this.storeConversationTurn({
+            guildId: interaction.guild.id,
+            channel: interaction.channel,
+            userId: interaction.user.id,
+            userName,
+            userText: text,
+            botReply: answer,
+            recentMessages: recent,
+            memoryContext,
+            channelName,
+          });
         } catch (e) {
           console.error('Gemini error:', e);
           return interaction.editReply({ content: '❌ Gemini сейчас перегружен.' });
         }
+        return;
       }
 
       if (interaction.commandName === 'msg') {
