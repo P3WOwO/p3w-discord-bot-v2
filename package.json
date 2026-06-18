@@ -1,0 +1,19 @@
+{
+  "name": "p3w-discord-bot",
+  "version": "2.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.17.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.5"
+  }
+}

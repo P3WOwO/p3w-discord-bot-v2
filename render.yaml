@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: p3w-discord-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
