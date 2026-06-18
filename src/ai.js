@@ -17,9 +17,9 @@ async function askGemini({ apiKey, model, prompt, retries = 3 }) {
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            maxOutputTokens: 770,
-            temperature: 0.87,
-            topP: 0.92,
+            maxOutputTokens: 1500,
+            temperature: 0.70,
+            topP: 0.9,
           },
         }),
       });
