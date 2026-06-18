@@ -9,6 +9,7 @@ const {
   applyMemoryUpdate,
   truncate,
   normalizeScopeKey,
+  rebalanceMemory,
 } = require('./memory');
 
 const DATA_DIR = '/data';
@@ -71,7 +72,7 @@ class StateStore {
       this.state.lifeState = data.life_state && typeof data.life_state === 'object'
         ? { ...clone(DEFAULT_LIFE_STATE), ...data.life_state }
         : clone(DEFAULT_LIFE_STATE);
-      this.state.aiMemory = normalizeMemory(data.ai_memory);
+      this.state.aiMemory = rebalanceMemory(normalizeMemory(data.ai_memory));
       return;
     }
 
@@ -119,7 +120,7 @@ class StateStore {
       if (raw?.lifeState && typeof raw.lifeState === 'object') {
         this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...raw.lifeState };
       }
-      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = normalizeMemory(raw.aiMemory);
+      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = rebalanceMemory(normalizeMemory(raw.aiMemory));
     } catch (err) {
       console.error('⚠️ Local fallback load failed:', err.message || err);
     }
@@ -149,7 +150,7 @@ class StateStore {
   }
 
   getAiMemory() {
-    this.state.aiMemory = normalizeMemory(this.state.aiMemory);
+    this.state.aiMemory = rebalanceMemory(normalizeMemory(this.state.aiMemory));
     return this.state.aiMemory;
   }
 
@@ -176,13 +177,13 @@ class StateStore {
   }
 
   applyMemoryExtraction({ guildId, channelId, userId, userName, update }) {
-    this.state.aiMemory = applyMemoryUpdate(this.getAiMemory(), {
+    this.state.aiMemory = rebalanceMemory(applyMemoryUpdate(this.getAiMemory(), {
       guildId,
       channelId,
       userId,
       userName,
       update,
-    });
+    }));
   }
 
   pushChannelMessage(channelId, role, name, text) {
@@ -205,7 +206,7 @@ class StateStore {
     });
     channel.legacyHistory = channel.legacyHistory.slice(-MAX_HISTORY);
     memory.channels[channelId] = channel;
-    this.state.aiMemory = memory;
+    this.state.aiMemory = rebalanceMemory(memory);
   }
 
   setVoiceSeconds(key, seconds) {

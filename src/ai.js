@@ -6,10 +6,8 @@ const {
   MEMORY_EXTRACTION_MODEL_TEMPERATURE,
 } = require('./constants');
 const {
-  buildMemoryContext,
   buildMemoryExtractionPrompt,
   extractJsonPayload,
-  truncate,
 } = require('./memory');
 
 async function askGemini({ apiKey, model, prompt, retries = 3, temperature = MEMORY_CHAT_TEMPERATURE, maxOutputTokens = MEMORY_MAX_OUTPUT_TOKENS }) {
@@ -60,20 +58,20 @@ async function askGemini({ apiKey, model, prompt, retries = 3, temperature = MEM
 }
 
 function buildPrompt({ memoryContext = '', recentMessages = [], userName, text, channelName = '' }) {
-  const recentBlock = recentMessages.length
-    ? ['Последние сообщения:', ...recentMessages.map(m => `${m.name}: ${truncate(m.text, 220)}`)]
-    : [];
-
   const memoryBlock = memoryContext
     ? ['Память:', memoryContext]
     : ['Память: пусто'];
+
+  const recentHint = recentMessages.length
+    ? `Последний контекст уже учтён в памяти (${recentMessages.length} сообщений).`
+    : 'Свежего контекста нет.';
 
   return [
     SYSTEM_PROMPT,
     '',
     ...memoryBlock,
     '',
-    ...recentBlock,
+    recentHint,
     '',
     `Сейчас отвечает ${userName}${channelName ? ` в канале ${channelName}` : ''}: ${text}`,
   ].join('\n');

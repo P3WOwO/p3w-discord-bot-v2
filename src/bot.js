@@ -169,7 +169,7 @@ class DiscordBot {
     await this.refreshPresence();
   }
 
-  async getRecentMessages(channel, limit = 6) {
+  async getRecentMessages(channel, limit = 5) {
     const fetched = await channel.messages.fetch({ limit }).catch(() => null);
     if (!fetched) return [];
     return [...fetched.values()]
@@ -313,7 +313,7 @@ class DiscordBot {
   }
 
   async generateAiReply({ channel, guildId, userId, userName, text }) {
-    const recent = await this.getRecentMessages(channel, 6);
+    const recent = await this.getRecentMessages(channel, 5);
     const channelName = channel?.name || channel?.threadMetadata?.name || '';
     const memoryContext = this.stateStore.getMemoryContext({
       guildId,

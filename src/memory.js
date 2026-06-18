@@ -1,7 +1,8 @@
-const DEFAULT_MEMORY_VERSION = 2;
-const GLOBAL_NOTE_LIMIT = 10;
-const CHANNEL_NOTE_LIMIT = 8;
-const USER_NOTE_LIMIT = 12;
+
+const DEFAULT_MEMORY_VERSION = 3;
+const GLOBAL_NOTE_LIMIT = 12;
+const CHANNEL_NOTE_LIMIT = 10;
+const USER_NOTE_LIMIT = 14;
 const SUMMARY_LIMIT = 900;
 const NOTE_LIMIT = 220;
 const PROMPT_NOTE_LIMIT = 6;
@@ -20,11 +21,30 @@ const STOPWORDS = new Set([
   'более', 'всегда', 'конечно', 'всю', 'между'
 ]);
 
+const CATEGORY_BONUS = {
+  opinion: 2.4,
+  preference: 1.9,
+  fact: 1.6,
+  constraint: 1.7,
+  style: 1.4,
+  project: 1.1,
+  plan: 1.0,
+  other: 1.0,
+};
+
+function createEmptyProfile() {
+  return {
+    summary: '',
+    lastUpdatedAt: null,
+  };
+}
+
 function createEmptyMemory() {
   return {
     schemaVersion: DEFAULT_MEMORY_VERSION,
     globalSummary: '',
     globalNotes: [],
+    assistantProfile: createEmptyProfile(),
     channels: {},
     users: {},
   };
@@ -45,6 +65,13 @@ function truncate(value, max = SUMMARY_LIMIT) {
   if (!text) return '';
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
+}
+
+function splitSentences(value) {
+  return normalizeText(value)
+    .split(/(?<=[.!?。！？])\s+|\n+/u)
+    .map(part => normalizeText(part))
+    .filter(Boolean);
 }
 
 function tokenize(value) {
@@ -72,14 +99,11 @@ function normalizeScopeKey(guildId, userId) {
   return `${guildId}:${userId}`;
 }
 
-function ensureScope(target, defaults = {}) {
+function sanitizeProfile(profile) {
+  if (!profile || typeof profile !== 'object') return createEmptyProfile();
   return {
-    summary: truncate(target?.summary || '', SUMMARY_LIMIT),
-    notes: Array.isArray(target?.notes) ? target.notes.map(note => sanitizeNote(note)).filter(Boolean) : [],
-    displayName: normalizeText(target?.displayName || defaults.displayName || ''),
-    lastUpdatedAt: target?.lastUpdatedAt || null,
-    lastSeenAt: target?.lastSeenAt || null,
-    ...target,
+    summary: truncate(profile.summary || profile.text || '', SUMMARY_LIMIT),
+    lastUpdatedAt: profile.lastUpdatedAt || profile.updatedAt || null,
   };
 }
 
@@ -100,40 +124,109 @@ function sanitizeNote(note) {
   };
 }
 
+function scoreNote(note) {
+  const importance = Math.max(1, Math.min(5, Number(note?.importance || 1) || 1));
+  const confidence = Math.max(0, Math.min(1, Number(note?.confidence ?? 0.75) || 0.75));
+  const updated = new Date(note?.updatedAt || note?.createdAt || 0).getTime();
+  const recency = Number.isFinite(updated) ? updated / 1e13 : 0;
+  const category = normalizeText(note?.category || 'other').toLowerCase();
+  const bonus = CATEGORY_BONUS[category] ?? CATEGORY_BONUS.other;
+  return importance * 10 + confidence * 4 + bonus + recency;
+}
+
 function sortNotes(notes) {
-  return [...notes].sort((a, b) => {
-    const scoreA = (a.importance || 1) * 1000 + new Date(a.updatedAt || a.createdAt || 0).getTime() / 1000;
-    const scoreB = (b.importance || 1) * 1000 + new Date(b.updatedAt || b.createdAt || 0).getTime() / 1000;
-    return scoreB - scoreA;
-  });
+  return [...notes].sort((a, b) => scoreNote(b) - scoreNote(a));
+}
+
+function notesAreSimilar(a, b) {
+  const textA = normalizeText(a?.text).toLowerCase();
+  const textB = normalizeText(b?.text).toLowerCase();
+  if (!textA || !textB) return false;
+  if (textA === textB) return true;
+  if (textA.includes(textB) || textB.includes(textA)) return true;
+  return overlapScore(textA, textB) >= 0.72;
 }
 
 function dedupeNotes(notes) {
-  const seen = new Map();
-  for (const note of notes) {
-    const key = normalizeText(note.text).toLowerCase();
-    if (!key) continue;
-    const existing = seen.get(key);
-    if (!existing) {
-      seen.set(key, note);
+  const deduped = [];
+  for (const rawNote of notes) {
+    const note = sanitizeNote(rawNote);
+    if (!note) continue;
+
+    const idx = deduped.findIndex(existing => notesAreSimilar(existing, note));
+    if (idx === -1) {
+      deduped.push(note);
       continue;
     }
-    const existingScore = (existing.importance || 1) * 10 + new Date(existing.updatedAt || existing.createdAt || 0).getTime() / 100000;
-    const nextScore = (note.importance || 1) * 10 + new Date(note.updatedAt || note.createdAt || 0).getTime() / 100000;
-    if (nextScore >= existingScore) seen.set(key, note);
+
+    const existing = deduped[idx];
+    const existingScore = scoreNote(existing);
+    const nextScore = scoreNote(note);
+    if (nextScore >= existingScore) deduped[idx] = { ...existing, ...note, updatedAt: new Date().toISOString() };
   }
-  return [...seen.values()];
+  return deduped;
 }
 
 function pruneNotes(notes, limit) {
   return sortNotes(dedupeNotes(notes)).slice(0, limit);
 }
 
-function mergeSummary(existing, update) {
-  const next = truncate(update, SUMMARY_LIMIT);
-  if (!next) return truncate(existing, SUMMARY_LIMIT);
+function compactSummary(existing, update, max = SUMMARY_LIMIT) {
+  const pieces = [];
+  const seen = [];
+
+  for (const source of [existing, update]) {
+    for (const sentence of splitSentences(source)) {
+      const normalized = sentence.toLowerCase();
+      if (!normalized) continue;
+      const duplicate = seen.some(prev => prev === normalized || overlapScore(prev, normalized) >= 0.78);
+      if (duplicate) continue;
+      seen.push(normalized);
+      pieces.push(sentence);
+    }
+  }
+
+  return truncate(pieces.join(' '), max);
+}
+
+function mergeSummary(existing, update, max = SUMMARY_LIMIT) {
+  const next = truncate(update, max);
+  if (!next) return truncate(existing, max);
   if (!existing) return next;
-  return next;
+  return compactSummary(existing, next, max);
+}
+
+function trimLegacyHistory(entries, limit = 8) {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({
+      role: normalizeText(item.role || 'user').slice(0, 20),
+      name: normalizeText(item.name || '').slice(0, 80),
+      text: truncate(item.text || '', 300),
+    }))
+    .slice(-limit);
+}
+
+function normalizeChannel(value) {
+  return {
+    summary: truncate(value?.summary || '', SUMMARY_LIMIT),
+    notes: pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], CHANNEL_NOTE_LIMIT),
+    displayName: normalizeText(value?.displayName || ''),
+    lastUpdatedAt: value?.lastUpdatedAt || null,
+    lastSeenAt: value?.lastSeenAt || null,
+    legacyHistory: trimLegacyHistory(value?.legacyHistory, 8),
+  };
+}
+
+function normalizeUser(value) {
+  return {
+    displayName: normalizeText(value?.displayName || ''),
+    summary: truncate(value?.summary || '', SUMMARY_LIMIT),
+    notes: pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], USER_NOTE_LIMIT),
+    lastUpdatedAt: value?.lastUpdatedAt || null,
+    lastSeenAt: value?.lastSeenAt || null,
+  };
 }
 
 function migrateLegacyMemory(raw) {
@@ -143,37 +236,25 @@ function migrateLegacyMemory(raw) {
 
   if (typeof raw.globalSummary === 'string') memory.globalSummary = truncate(raw.globalSummary, SUMMARY_LIMIT);
   if (Array.isArray(raw.globalNotes)) memory.globalNotes = pruneNotes(raw.globalNotes.map(sanitizeNote).filter(Boolean), GLOBAL_NOTE_LIMIT);
+  if (raw.assistantProfile && typeof raw.assistantProfile === 'object') {
+    memory.assistantProfile = sanitizeProfile(raw.assistantProfile);
+  }
 
   if (raw.channels && typeof raw.channels === 'object' && !Array.isArray(raw.channels)) {
     for (const [channelId, value] of Object.entries(raw.channels)) {
-      const normalized = ensureScope(value, {});
-      memory.channels[channelId] = {
-        summary: truncate(normalized.summary, SUMMARY_LIMIT),
-        notes: pruneNotes(normalized.notes, CHANNEL_NOTE_LIMIT),
-        displayName: normalized.displayName || '',
-        lastUpdatedAt: normalized.lastUpdatedAt || null,
-        lastSeenAt: normalized.lastSeenAt || null,
-        legacyHistory: Array.isArray(normalized.legacyHistory) ? normalized.legacyHistory.slice(-20) : [],
-      };
+      memory.channels[channelId] = normalizeChannel(value);
     }
   }
 
   if (raw.users && typeof raw.users === 'object' && !Array.isArray(raw.users)) {
     for (const [scopeKey, value] of Object.entries(raw.users)) {
-      const normalized = ensureScope(value, {});
-      memory.users[scopeKey] = {
-        displayName: normalized.displayName || '',
-        summary: truncate(normalized.summary, SUMMARY_LIMIT),
-        notes: pruneNotes(normalized.notes, USER_NOTE_LIMIT),
-        lastUpdatedAt: normalized.lastUpdatedAt || null,
-        lastSeenAt: normalized.lastSeenAt || null,
-      };
+      memory.users[scopeKey] = normalizeUser(value);
     }
   }
 
   // Legacy format: ai_memory[channelId] = [{role,name,text}, ...]
   for (const [key, value] of Object.entries(raw)) {
-    if (['schemaVersion', 'globalSummary', 'globalNotes', 'channels', 'users'].includes(key)) continue;
+    if (['schemaVersion', 'globalSummary', 'globalNotes', 'assistantProfile', 'channels', 'users'].includes(key)) continue;
     if (!Array.isArray(value)) continue;
     memory.channels[key] = {
       summary: '',
@@ -181,14 +262,7 @@ function migrateLegacyMemory(raw) {
       displayName: '',
       lastUpdatedAt: null,
       lastSeenAt: null,
-      legacyHistory: value
-        .filter(item => item && typeof item === 'object')
-        .map(item => ({
-          role: normalizeText(item.role || 'user').slice(0, 20),
-          name: normalizeText(item.name || '').slice(0, 80),
-          text: truncate(item.text || '', 300),
-        }))
-        .slice(-20),
+      legacyHistory: trimLegacyHistory(value, 8),
     };
   }
 
@@ -197,33 +271,56 @@ function migrateLegacyMemory(raw) {
 
 function normalizeMemory(raw) {
   if (!raw || typeof raw !== 'object') return createEmptyMemory();
+
   if (raw.schemaVersion === DEFAULT_MEMORY_VERSION) {
-    return {
+    const memory = {
       schemaVersion: DEFAULT_MEMORY_VERSION,
       globalSummary: truncate(raw.globalSummary || '', SUMMARY_LIMIT),
       globalNotes: pruneNotes(Array.isArray(raw.globalNotes) ? raw.globalNotes.map(sanitizeNote).filter(Boolean) : [], GLOBAL_NOTE_LIMIT),
+      assistantProfile: sanitizeProfile(raw.assistantProfile),
       channels: Object.fromEntries(
-        Object.entries(raw.channels || {}).map(([channelId, value]) => [channelId, {
-          summary: truncate(value?.summary || '', SUMMARY_LIMIT),
-          notes: pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], CHANNEL_NOTE_LIMIT),
-          displayName: normalizeText(value?.displayName || ''),
-          lastUpdatedAt: value?.lastUpdatedAt || null,
-          lastSeenAt: value?.lastSeenAt || null,
-          legacyHistory: Array.isArray(value?.legacyHistory) ? value.legacyHistory.slice(-20) : [],
-        }])
+        Object.entries(raw.channels || {}).map(([channelId, value]) => [channelId, normalizeChannel(value)])
       ),
       users: Object.fromEntries(
-        Object.entries(raw.users || {}).map(([scopeKey, value]) => [scopeKey, {
-          displayName: normalizeText(value?.displayName || ''),
-          summary: truncate(value?.summary || '', SUMMARY_LIMIT),
-          notes: pruneNotes(Array.isArray(value?.notes) ? value.notes.map(sanitizeNote).filter(Boolean) : [], USER_NOTE_LIMIT),
-          lastUpdatedAt: value?.lastUpdatedAt || null,
-          lastSeenAt: value?.lastSeenAt || null,
-        }])
+        Object.entries(raw.users || {}).map(([scopeKey, value]) => [scopeKey, normalizeUser(value)])
       ),
     };
+    return rebalanceMemory(memory);
   }
-  return migrateLegacyMemory(raw);
+
+  const migrated = migrateLegacyMemory(raw);
+  return rebalanceMemory(migrated);
+}
+
+function rebalanceMemory(memoryInput) {
+  const memory = clone(memoryInput || createEmptyMemory());
+
+  memory.schemaVersion = DEFAULT_MEMORY_VERSION;
+  memory.globalSummary = truncate(memory.globalSummary || '', SUMMARY_LIMIT);
+  memory.globalNotes = pruneNotes(memory.globalNotes || [], GLOBAL_NOTE_LIMIT);
+  memory.assistantProfile = sanitizeProfile(memory.assistantProfile);
+
+  memory.channels = Object.fromEntries(
+    Object.entries(memory.channels || {}).map(([channelId, value]) => {
+      const channel = normalizeChannel(value);
+      if (channel.summary) {
+        channel.notes = channel.notes.filter(note => overlapScore(note.text, channel.summary) < 0.9);
+      }
+      return [channelId, channel];
+    })
+  );
+
+  memory.users = Object.fromEntries(
+    Object.entries(memory.users || {}).map(([scopeKey, value]) => {
+      const user = normalizeUser(value);
+      if (user.summary) {
+        user.notes = user.notes.filter(note => overlapScore(note.text, user.summary) < 0.9);
+      }
+      return [scopeKey, user];
+    })
+  );
+
+  return memory;
 }
 
 function scopeForUser(memory, guildId, userId, displayName = '') {
@@ -269,11 +366,16 @@ function addOrMergeNote(notes, incoming) {
   if (!note) return notes;
 
   const key = normalizeText(note.text).toLowerCase();
-  const existingIndex = notes.findIndex(item => normalizeText(item.text).toLowerCase() === key);
+  const existingIndex = notes.findIndex(item => {
+    const existingKey = normalizeText(item.text).toLowerCase();
+    return existingKey === key || notesAreSimilar(item, note);
+  });
+
   if (existingIndex >= 0) {
     const existing = notes[existingIndex];
     notes[existingIndex] = {
       ...existing,
+      ...note,
       importance: Math.max(existing.importance || 1, note.importance || 1),
       confidence: Math.max(existing.confidence || 0, note.confidence || 0),
       category: note.category || existing.category || 'other',
@@ -286,17 +388,23 @@ function addOrMergeNote(notes, incoming) {
   return notes;
 }
 
-function applyMemoryUpdate(memory, { guildId, channelId, userId, userName, update = {} }) {
-  const next = normalizeMemory(memory);
+function applyMemoryUpdate(memoryInput, { guildId, channelId, userId, userName, update = {} }) {
+  const next = rebalanceMemory(memoryInput);
   const nowIso = new Date().toISOString();
+
+  const shouldStore = update.should_store !== false;
+  if (!shouldStore) return rebalanceMemory(next);
+
   const { user } = scopeForUser(next, guildId, userId, userName);
   const channel = scopeForChannel(next, channelId);
 
-  const shouldStore = update.should_store !== false;
-  if (!shouldStore) return next;
-
   if (typeof update.global_summary_update === 'string' && update.global_summary_update.trim()) {
     next.globalSummary = mergeSummary(next.globalSummary, update.global_summary_update);
+  }
+
+  if (typeof update.assistant_profile_update === 'string' && update.assistant_profile_update.trim()) {
+    next.assistantProfile.summary = mergeSummary(next.assistantProfile.summary, update.assistant_profile_update);
+    next.assistantProfile.lastUpdatedAt = nowIso;
   }
 
   if (typeof update.channel_summary_update === 'string' && update.channel_summary_update.trim()) {
@@ -329,7 +437,11 @@ function applyMemoryUpdate(memory, { guildId, channelId, userId, userName, updat
     const match = normalizeText(item?.match || '').toLowerCase();
     if (!match) continue;
 
-    const filterFn = note => !normalizeText(note.text).toLowerCase().includes(match);
+    const filterFn = note => {
+      const text = normalizeText(note.text).toLowerCase();
+      return !(text.includes(match) || overlapScore(text, match) >= 0.55);
+    };
+
     if (scope === 'global') next.globalNotes = (next.globalNotes || []).filter(filterFn);
     else if (scope === 'channel') channel.notes = (channel.notes || []).filter(filterFn);
     else user.notes = (user.notes || []).filter(filterFn);
@@ -339,20 +451,31 @@ function applyMemoryUpdate(memory, { guildId, channelId, userId, userName, updat
   channel.notes = pruneNotes(channel.notes || [], CHANNEL_NOTE_LIMIT);
   user.notes = pruneNotes(user.notes || [], USER_NOTE_LIMIT);
 
-  if (Array.isArray(channel.legacyHistory) && channel.legacyHistory.length > 20) {
-    channel.legacyHistory = channel.legacyHistory.slice(-20);
+  if (Array.isArray(channel.legacyHistory)) {
+    channel.legacyHistory = trimLegacyHistory(channel.legacyHistory, 8);
   }
 
-  return next;
+  return rebalanceMemory(next);
+}
+
+function queryWantsOpinion(queryText) {
+  const q = normalizeText(queryText).toLowerCase();
+  return [
+    'думаешь', 'считаешь', 'мнение', 'как тебе', 'что лучше', 'стоит ли', 'оцен', 'посовет', 'предпоч',
+  ].some(token => q.includes(token));
 }
 
 function relevantNotes(notes, queryText, limit = PROMPT_NOTE_LIMIT) {
+  const opinionMode = queryWantsOpinion(queryText);
   const scored = (Array.isArray(notes) ? notes : []).map(note => {
     const text = note?.text || '';
     const overlap = overlapScore(text, queryText);
     const recency = new Date(note?.updatedAt || note?.createdAt || 0).getTime() / 1e13;
     const importance = (Number(note?.importance || 1) || 1) / 5;
-    const score = overlap * 8 + importance * 3 + recency;
+    const category = normalizeText(note?.category || 'other').toLowerCase();
+    const categoryBonus = CATEGORY_BONUS[category] ?? CATEGORY_BONUS.other;
+    const opinionBonus = opinionMode && category === 'opinion' ? 2.5 : 0;
+    const score = overlap * 8 + importance * 3 + categoryBonus + opinionBonus + recency;
     return { note, score };
   });
 
@@ -367,16 +490,50 @@ function formatNoteLine(note) {
   return `${prefix} ${truncate(note.text, 180)}`;
 }
 
+function compactRecentMessages(recentMessages, queryText, limit = 4) {
+  if (!Array.isArray(recentMessages) || recentMessages.length === 0) return [];
+  const normalized = recentMessages
+    .map((msg, index) => ({
+      index,
+      name: normalizeText(msg?.name || 'unknown').slice(0, 80),
+      text: truncate(msg?.text || '', 160),
+    }))
+    .filter(msg => msg.text);
+
+  if (normalized.length <= limit) return normalized;
+
+  const tailCount = Math.min(2, limit);
+  const tail = normalized.slice(-tailCount);
+  const pool = normalized.slice(0, -tailCount).map(msg => ({
+    ...msg,
+    score: overlapScore(msg.text, queryText) + msg.text.length / 1000,
+  }));
+
+  const chosen = pool.sort((a, b) => b.score - a.score).slice(0, Math.max(0, limit - tail.length));
+  const merged = [...chosen, ...tail].sort((a, b) => a.index - b.index);
+  return merged;
+}
+
 function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName = '', channelName = '', queryText = '', recentMessages = [] }) {
-  const memory = normalizeMemory(memoryInput);
+  const memory = rebalanceMemory(normalizeMemory(memoryInput));
   const userScope = memory.users[normalizeScopeKey(guildId, userId)] || null;
   const channelScope = memory.channels[channelId] || null;
 
   const userNotes = relevantNotes(userScope?.notes || [], queryText, 4);
   const channelNotes = relevantNotes(channelScope?.notes || [], queryText, 3);
+  const globalOpinionNotes = relevantNotes(
+    (memory.globalNotes || []).filter(note => normalizeText(note?.category || '').toLowerCase() === 'opinion'),
+    queryText,
+    2
+  );
   const globalNotes = relevantNotes(memory.globalNotes || [], queryText, 3);
+  const recent = compactRecentMessages(recentMessages, queryText, 4);
 
   const sections = [];
+
+  if (memory.assistantProfile?.summary) {
+    sections.push(`Профиль бота: ${truncate(memory.assistantProfile.summary, 360)}`);
+  }
 
   if (memory.globalSummary) {
     sections.push(`Общая сводка: ${truncate(memory.globalSummary, 420)}`);
@@ -391,9 +548,16 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
     const title = userScope?.displayName || userName || 'Пользователь';
     const lines = [];
     if (userScope?.summary) lines.push(`Сводка: ${truncate(userScope.summary, 320)}`);
-    if (userNotes.length) lines.push(`Важное:`);
-    for (const note of userNotes) lines.push(formatNoteLine(note));
+    if (userNotes.length) {
+      lines.push('Важное:');
+      for (const note of userNotes) lines.push(formatNoteLine(note));
+    }
     sections.push(`Память о ${title}:\n${lines.join('\n')}`);
+  }
+
+  if (globalOpinionNotes.length) {
+    const lines = globalOpinionNotes.map(formatNoteLine);
+    sections.push(`Позиция/мнения:\n${lines.join('\n')}`);
   }
 
   if (channelNotes.length) {
@@ -401,13 +565,14 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
     sections.push(`Полезное по каналу:\n${lines.join('\n')}`);
   }
 
-  if (globalNotes.length) {
-    const lines = globalNotes.map(formatNoteLine);
+  const remainingGlobalNotes = globalNotes.filter(note => !globalOpinionNotes.includes(note));
+  if (remainingGlobalNotes.length) {
+    const lines = remainingGlobalNotes.map(formatNoteLine);
     sections.push(`Глобальные заметки:\n${lines.join('\n')}`);
   }
 
-  if (Array.isArray(recentMessages) && recentMessages.length) {
-    const recentLines = recentMessages.slice(-6).map(msg => `${msg.name}: ${truncate(msg.text, 160)}`);
+  if (recent.length) {
+    const recentLines = recent.map(msg => `${msg.name}: ${msg.text}`);
     sections.push(`Свежий контекст:\n${recentLines.join('\n')}`);
   }
 
@@ -415,23 +580,29 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
 }
 
 function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply, recentMessages = [], existingContext = '' }) {
-  const recent = recentMessages.slice(-6).map(msg => `${msg.name}: ${truncate(msg.text, 160)}`).join('\n');
+  const recent = compactRecentMessages(recentMessages, `${userText} ${botReply}`, 6)
+    .map(msg => `${msg.name}: ${truncate(msg.text, 160)}`)
+    .join('\n');
+
   return [
     'Ты — модуль долговременной памяти Discord-бота.',
-    'Твоя задача: решить, что стоит запомнить надолго, а что нет.',
-    'Сохраняй только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы, решения и важные изменения.',
-    'Игнорируй шутки, одноразовые детали и мусор.',
-    'Если память уже есть, обновляй её кратко, а не раздувай.',
+    'Твоя задача: решить, что стоит запомнить надолго, что считать мнением/выводом, а что удалить как мусор.',
+    'Запоминай только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы, решения, противоречия и важные изменения.',
+    'Если это одноразовая шутка, случайная эмоция, шум или слишком слабая деталь — не запоминай.',
+    'Если запись устарела, дублирует другую, противоречит более свежей информации или стала неважной — удали её через notes_remove.',
+    'Если в поведении или теме есть устойчивый вывод, добавь его в assistant_profile_update или как global note категории opinion.',
+    'Если память не должна обновляться, верни {"should_store": false}.',
     'Верни ТОЛЬКО JSON без markdown, пояснений и лишнего текста.',
     '',
     'Формат JSON:',
     '{',
     '  "should_store": true,',
     '  "global_summary_update": "краткая общая сводка, если изменилась",',
+    '  "assistant_profile_update": "краткая стабильная сводка о стиле, позиции, предпочтениях и характере бота, если появилась новая устойчивая информация",',
     '  "channel_summary_update": "краткая сводка темы канала, если изменилась",',
     '  "user_summary_update": "краткая сводка о пользователе, если изменилась",',
     '  "notes_add": [',
-    '    {"scope":"user|channel|global", "text":"до 180 символов", "importance": 1, "category":"preference|fact|project|plan|style|constraint|other", "confidence": 0.0}',
+    '    {"scope":"user|channel|global", "text":"до 180 символов", "importance": 1, "category":"preference|fact|project|plan|style|constraint|opinion|other", "confidence": 0.0}',
     '  ],',
     '  "notes_remove": [',
     '    {"scope":"user|channel|global", "match":"что убрать"}',
@@ -469,6 +640,7 @@ function extractJsonPayload(text) {
 
 module.exports = {
   createEmptyMemory,
+  createEmptyProfile,
   normalizeMemory,
   migrateLegacyMemory,
   buildMemoryContext,
@@ -482,4 +654,5 @@ module.exports = {
   truncate,
   tokenize,
   overlapScore,
+  rebalanceMemory,
 };
