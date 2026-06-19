@@ -5,6 +5,7 @@ const { DEFAULT_LIFE_STATE, MAX_HISTORY } = require('./constants');
 const {
   normalizeMemory,
   createEmptyMemory,
+  createEmptyProfile,
   createEmptyUser,
   createEmptyChannel,
   buildMemoryContext,
@@ -14,7 +15,6 @@ const {
   normalizeScopeKey,
   rebalanceMemory,
 } = require('./memory');
-const { queryWantsKnowledge, buildKnowledgeSearchTerms, pickRelevantKnowledgeEntries } = require('./knowledge');
 
 const DATA_DIR = '/data';
 const LOCAL_FALLBACK_FILE = path.join(DATA_DIR, 'bot_state.json');
@@ -146,6 +146,7 @@ class StateStore {
   getLifeState() {
     if (!this.state.lifeState.startedAt) this.state.lifeState.startedAt = Date.now();
     if (!this.state.lifeState.phrase) this.state.lifeState.phrase = null;
+    if (!Object.prototype.hasOwnProperty.call(this.state.lifeState, 'action')) this.state.lifeState.action = null;
     return this.state.lifeState;
   }
 
@@ -153,44 +154,45 @@ class StateStore {
     this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...next };
   }
 
+  getActionState() {
+    return this.getLifeState().action || null;
+  }
+
+  setActionState(action) {
+    const lifeState = this.getLifeState();
+    lifeState.action = action ? {
+      key: String(action.key || action.status || 'custom').slice(0, 40),
+      label: String(action.label || action.text || action.key || 'Работает').slice(0, 120),
+      startedAt: action.startedAt || new Date().toISOString(),
+      detail: String(action.detail || '').slice(0, 200),
+    } : null;
+    this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...lifeState };
+  }
+
+  clearActionState() {
+    const lifeState = this.getLifeState();
+    lifeState.action = null;
+    this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...lifeState };
+  }
+
   getAiMemory() {
     this.state.aiMemory = rebalanceMemory(normalizeMemory(this.state.aiMemory));
     return this.state.aiMemory;
   }
 
-  async fetchKnowledgeEntries(queryText, limit = 6) {
-    if (!this.supabase) return [];
-    const table = this.config.SUPABASE_KNOWLEDGE_TABLE || 'bot_knowledge';
-    const wants = queryWantsKnowledge(queryText);
-    if (!wants) return [];
-
-    try {
-      const { data, error } = await this.supabase
-        .from(table)
-        .select('*')
-        .limit(100);
-      if (error) throw error;
-      const normalized = Array.isArray(data) ? data.map(item => ({
-        id: item.id || item.row_id || item.key || '',
-        title: item.title || item.name || item.key || '',
-        content: item.content || item.body || item.text || item.summary || '',
-        scope: item.scope || 'global',
-        source: item.source || table,
-        tags: Array.isArray(item.tags) ? item.tags : typeof item.tags === 'string' ? item.tags.split(',').map(s => s.trim()) : [],
-        aliases: Array.isArray(item.aliases) ? item.aliases : [],
-        updatedAt: item.updated_at || item.updatedAt || item.created_at || item.createdAt || null,
-        confidence: item.confidence ?? 0.7,
-      })) : [];
-      const localCached = this.state.aiMemory?.knowledgeVault?.entries || [];
-      const combined = [...normalized, ...localCached];
-      return pickRelevantKnowledgeEntries(combined, queryText, limit);
-    } catch (err) {
-      console.error('⚠️ Knowledge lookup failed:', err.message || err);
-      const localCached = this.state.aiMemory?.knowledgeVault?.entries || [];
-      return pickRelevantKnowledgeEntries(localCached, queryText, limit);
-    }
+  getAssistantProfile() {
+    const memory = this.getAiMemory();
+    if (!memory.assistantProfile) memory.assistantProfile = createEmptyProfile();
+    memory.assistantProfile = { ...createEmptyProfile(), ...memory.assistantProfile };
+    return memory.assistantProfile;
   }
 
+  updateAssistantProfile(patch = {}) {
+    const memory = this.getAiMemory();
+    memory.assistantProfile = { ...createEmptyProfile(), ...memory.assistantProfile, ...patch };
+    this.state.aiMemory = rebalanceMemory(memory);
+    return memory.assistantProfile;
+  }
 
   getUserMemory(guildId, userId) {
     const memory = this.getAiMemory();
@@ -269,8 +271,7 @@ class StateStore {
     return user.pendingReviews.length !== before;
   }
 
-  async getMemoryContext({ guildId, channelId, userId, userName, channelName = '', queryText = '', recentMessages = [] }) {
-    const knowledgeEntries = await this.fetchKnowledgeEntries(queryText, 6);
+  getMemoryContext({ guildId, channelId, userId, userName, channelName = '', queryText = '', recentMessages = [] }) {
     return buildMemoryContext(this.getAiMemory(), {
       guildId,
       channelId,
@@ -279,7 +280,6 @@ class StateStore {
       channelName,
       queryText,
       recentMessages,
-      knowledgeEntries,
     });
   }
 
