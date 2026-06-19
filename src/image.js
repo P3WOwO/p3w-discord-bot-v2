@@ -13,7 +13,12 @@ function normalizeImageSize(value, fallback = '2K') {
 
 function supportsImageSize(model) {
   const name = String(model || '').toLowerCase();
-  return name.includes('3.1-flash-image') || name.includes('3-pro-image') || name.includes('preview');
+  return name.includes('3.1-flash-image') || name.includes('3-pro-image');
+}
+
+function supportsResponseModalities(model) {
+  const name = String(model || '').toLowerCase();
+  return name.includes('3.1-flash-image') || name.includes('3-pro-image');
 }
 
 function buildImagePrompt(userText, styleHint = '') {
@@ -47,6 +52,24 @@ function extractImagePart(data) {
   return null;
 }
 
+function buildGenerationConfigs(model, aspectRatio, imageSize) {
+  const configs = [];
+  const image = { aspectRatio };
+
+  if (supportsImageSize(model)) {
+    image.imageSize = imageSize;
+  }
+
+  if (supportsResponseModalities(model)) {
+    configs.push({ responseModalities: ['TEXT', 'IMAGE'], responseFormat: { image } });
+    configs.push({ responseModalities: ['IMAGE'], responseFormat: { image } });
+  }
+
+  configs.push({ responseFormat: { image } });
+
+  return configs;
+}
+
 async function generateGeminiImage({
   apiKey,
   prompt,
@@ -66,19 +89,7 @@ async function generateGeminiImage({
 
   for (const model of models) {
     const endpoint = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent`;
-    const canUseSize = supportsImageSize(model);
-
-    const requestVariants = [
-      {
-        responseModalities: ['Image'],
-        responseFormat: canUseSize
-          ? { image: { aspectRatio: normalizedAspect, imageSize: normalizedSize } }
-          : { image: { aspectRatio: normalizedAspect } },
-      },
-      {
-        responseModalities: ['Image'],
-      },
-    ];
+    const requestVariants = buildGenerationConfigs(model, normalizedAspect, normalizedSize);
 
     for (const generationConfig of requestVariants) {
       for (let attempt = 1; attempt <= retries; attempt++) {
