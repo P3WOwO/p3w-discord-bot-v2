@@ -45,6 +45,10 @@ function normalizeAspectRatio(value) {
   return allowed.has(q) ? q : '16:9';
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
 class DiscordBot {
   constructor(config, stateStore) {
     this.config = config;
@@ -68,6 +72,7 @@ class DiscordBot {
   }
 
   isHomeGuild(guildId) {
+    if (!this.config.GUILD_ID) return true;
     return guildId === this.config.GUILD_ID;
   }
 
@@ -243,8 +248,12 @@ class DiscordBot {
     ];
 
     const rest = new REST({ version: '10' }).setToken(this.config.TOKEN);
-    await rest.put(Routes.applicationGuildCommands(this.config.CLIENT_ID, this.config.GUILD_ID), { body: commands });
-    await rest.put(Routes.applicationCommands(this.config.CLIENT_ID), { body: [] });
+
+    if (this.config.GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(this.config.CLIENT_ID, this.config.GUILD_ID), { body: commands });
+    } else {
+      await rest.put(Routes.applicationCommands(this.config.CLIENT_ID), { body: commands });
+    }
   }
 
   async buildTopEmbed(guild) {
@@ -489,7 +498,11 @@ class DiscordBot {
   async handleInteraction(interaction) {
     if (!interaction.isChatInputCommand()) return;
 
-    if (!interaction.guildId || !this.isHomeGuild(interaction.guildId)) {
+    if (!interaction.guildId) {
+      return interaction.reply({ content: '❌ Эта команда работает только на сервере.', ephemeral: true }).catch(() => {});
+    }
+
+    if (!this.isHomeGuild(interaction.guildId) && ['msg', 'purge', 'jtm'].includes(interaction.commandName)) {
       return interaction.reply({ content: HOME_GUILD_ONLY_REPLY, ephemeral: true }).catch(() => {});
     }
 
@@ -598,44 +611,62 @@ class DiscordBot {
   }
 
   async handleMessage(message) {
-    if (message.author.bot || !message.guild || !message.content) return;
+    if (message.author.bot || !message.guild) return;
 
-    if (!this.isHomeGuild(message.guild.id)) {
-      const isCommandLike = message.content.startsWith(this.config.PREFIX) || message.mentions.has(this.client.user);
-      if (isCommandLike) return message.reply(HOME_GUILD_ONLY_REPLY).catch(() => {});
-      return;
-    }
+    const botId = this.client.user?.id;
+    const rawContent = String(message.content || '').trim();
+    const prefix = String(this.config.PREFIX || '!').trim() || '!';
+    const prefixUsed = rawContent.startsWith(prefix)
+      ? prefix
+      : (prefix !== '!' && rawContent.startsWith('!') ? '!' : null);
 
-    const cleanMentionText = this.client.user ? stripMention(message.content, this.client.user.id) : message.content;
-    const authorName = message.member?.displayName || message.author.username;
+    const directMention = botId
+      ? new RegExp(`<@!?${escapeRegExp(botId)}>`).test(rawContent)
+      : false;
 
-    if (message.content.startsWith(this.config.PREFIX)) {
-      const args = message.content.slice(this.config.PREFIX.length).trim().split(/\s+/);
+    const repliedMessage = message.reference?.messageId
+      ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
+      : null;
+    const isReplyToBot = Boolean(botId && repliedMessage?.author?.id === botId);
+
+    const cleanMentionText = botId ? rawContent.replace(new RegExp(`<@!?${escapeRegExp(botId)}>`,'g'), '').trim() : rawContent;
+    const isCommandLike = Boolean(prefixUsed || directMention || isReplyToBot);
+
+    if (!isCommandLike && !rawContent) return;
+
+    if (prefixUsed) {
+      const args = rawContent.slice(prefixUsed.length).trim().split(/\s+/);
       const cmd = (args.shift() || '').toLowerCase();
+
+      if (cmd === 'ping') {
+        return message.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, allowedMentions: { repliedUser: false } });
+      }
 
       if (cmd === 'say') {
         const promptText = args.join(' ').trim();
-        if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}say\`.`);
+        if (!promptText) return message.reply(`Напиши текст после \`${prefix}say\`.`);
         return this.handleAiMessage({ message, text: promptText });
       }
 
       if (cmd === 'image' || cmd === 'img') {
         const promptText = args.join(' ').trim();
-        if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}image\`.`);
+        if (!promptText) return message.reply(`Напиши текст после \`${prefix}image\`.`);
         return this.handleImageRequest({ message, text: promptText, ratio: '16:9' });
+      }
+
+      if (cmd === 'help' || cmd === 'h') {
+        return message.reply({
+          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash-команды \`/ping\`, \`/say\`, \`/image\`.`,
+          allowedMentions: { repliedUser: false },
+        });
       }
     }
 
-    const isMentioned = message.mentions.has(this.client.user);
-    let isReplyToBot = false;
-    if (message.reference?.messageId) {
-      const replied = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
-      if (replied?.author?.id === this.client.user?.id) isReplyToBot = true;
-    }
-
-    if (isMentioned || isReplyToBot) {
-      const text = cleanMentionText.trim();
-      if (!text) return;
+    if (directMention || isReplyToBot) {
+      const text = cleanMentionText.replace(/^[\s,:\-]+/, '').trim();
+      if (!text) {
+        return message.reply({ content: 'Да, я тут. Напиши, что нужно.', allowedMentions: { repliedUser: false } }).catch(() => {});
+      }
       if (isImageRequest(text)) return this.handleImageRequest({ message, text, ratio: '16:9' });
       return this.handleAiMessage({ message, text });
     }
@@ -645,6 +676,7 @@ class DiscordBot {
     this.client.on('ready', async () => {
       console.log(`✅ Logged in as ${this.client.user.tag}`);
       await this.registerCommands().catch(err => console.error('Command registration error:', err));
+      if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; slash commands will be registered globally.');
       await this.refreshPresence();
       await this.restoreCurrentVoiceSessions();
 
@@ -683,7 +715,7 @@ class DiscordBot {
     });
 
     this.client.on('voiceStateUpdate', (oldState, newState) => {
-      if (!oldState.guild || oldState.guild.id !== this.config.GUILD_ID) return;
+      if (!oldState.guild || (this.config.GUILD_ID && oldState.guild.id !== this.config.GUILD_ID)) return;
       if (oldState.member?.user?.bot) return;
 
       const userId = oldState.id;
