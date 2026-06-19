@@ -1,4 +1,4 @@
-const DEFAULT_MEMORY_VERSION = 6;
+const DEFAULT_MEMORY_VERSION = 7;
 
 const GLOBAL_NOTE_LIMIT = 8;
 const CHANNEL_NOTE_LIMIT = 6;
@@ -75,6 +75,10 @@ function createEmptyProfile() {
   return {
     summary: '',
     digest: '',
+    tone: 'friendly',
+    humor: 70,
+    adaptivity: 100,
+    opinionatedness: 35,
     lastUpdatedAt: null,
     lastRebuiltAt: null,
   };
@@ -185,6 +189,10 @@ function sanitizeProfile(profile) {
   return {
     summary: truncate(profile.summary || profile.text || '', SUMMARY_LIMIT),
     digest: truncate(profile.digest || '', DIGEST_LIMIT),
+    tone: normalizeText(profile.tone || 'friendly').toLowerCase().slice(0, 40) || 'friendly',
+    humor: Math.max(0, Math.min(100, Number(profile.humor ?? 70) || 70)),
+    adaptivity: Math.max(0, Math.min(100, Number(profile.adaptivity ?? 100) || 100)),
+    opinionatedness: Math.max(0, Math.min(100, Number(profile.opinionatedness ?? 35) || 35)),
     lastUpdatedAt: profile.lastUpdatedAt || profile.updatedAt || null,
     lastRebuiltAt: profile.lastRebuiltAt || null,
   };
@@ -961,6 +969,7 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     'Ты НЕ отвечаешь пользователю: твоя задача только решать, что запомнить, что обновить, что удалить, а что отправить на подтверждение.',
     'Сохраняй только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы и реальные изменения.',
     'Не записывай одноразовый шум, флуд, эмоциональные всплески и повторные переформулировки.',
+    'Не делай вывод, что бот любит или ненавидит людей; не сохраняй как факт случайные симпатии, антипатии или личные оценки без явной устойчивости.',
     'Если пользователь просит забыть, очистить или удалить память, используй memory_actions и не добавляй новые факты по этому сообщению.',
     'Если запись спорная, токсичная, обвинительная, похожа на клевету, содержит приватные данные или выглядит сомнительной — не сохраняй её как факт сразу; отправь в pending_reviews_add.',
     'Возвращай только валидный JSON без markdown, пояснений и лишнего текста.',

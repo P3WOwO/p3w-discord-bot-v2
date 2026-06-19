@@ -142,6 +142,11 @@ class StateStore {
     return this.state.voiceTimes;
   }
 
+  getVoiceTimeSeconds(guildId, userId) {
+    const key = `${guildId}:${userId}`;
+    return Number(this.state.voiceTimes[key] || 0);
+  }
+
   getLifeState() {
     if (!this.state.lifeState.startedAt) this.state.lifeState.startedAt = Date.now();
     if (!this.state.lifeState.phrase) this.state.lifeState.phrase = null;

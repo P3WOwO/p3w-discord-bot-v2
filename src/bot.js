@@ -24,8 +24,7 @@ const {
 } = require('./constants');
 
 const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText } = require('./utils');
-const { askGemini, buildPrompt, buildMemoryPrompt, parseMemoryUpdate, MEMORY_EXTRACTION_MODEL_TEMPERATURE, MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS } = require('./ai');
-const { buildImagePrompt, generateGeminiImage } = require('./image');
+const { askGemini, askGeminiWithFallback, buildPrompt, buildMemoryPrompt, parseMemoryUpdate, generateImageWithFallback, MEMORY_EXTRACTION_MODEL_TEMPERATURE, MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS } = require('./ai');
 
 const FORGET_PATTERNS = [
   /(?:забудь|удали|очисти|стёр|стерли|стирай|erase|forget|delete|remove)/i,
@@ -35,30 +34,45 @@ function normalizeLooseText(value) {
   return String(value ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-function normalizeTextLight(value) {
-  return String(value ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function isVoiceTimeQuery(text) {
-  const q = normalizeLooseText(text);
-  return /(сколько|какое|покажи|показать|узнать|время|статистика|voice_times|войс|войсе|войсов|голосов|голосовые)/i.test(q)
-    && /(я|мне|моё|мое|у меня|мой|моя|свой|свои|всего|total)/i.test(q);
-}
-
-function isImageRequest(text) {
-  const q = normalizeLooseText(text);
-  const hasImageNoun = /(картинк|изображен|арт|иллюстрац|рисунк|обои|wallpaper|постер|фото|picture|image)/i.test(q);
-  const hasMakeVerb = /(?:сгенерируй|нарисуй|создай|сделай|generate|make|create)/i.test(q);
-  return hasImageNoun && hasMakeVerb;
-}
-
-function buildImageFilename(model = 'image') {
-  const safe = String(model).toLowerCase().replace(/[^a-z0-9._-]+/g, '_').slice(0, 40) || 'image';
-  return `${safe}-${Date.now()}.png`;
-}
-
 function clampStatusText(text, max = 2000) {
   return clampText(String(text ?? ''), max);
+}
+
+const IMAGE_REQUEST_PATTERNS = [
+  /^(?:сгенерируй|нарисуй|создай|сделай)\s+(?:мне\s+)?(?:картинку|изображение|арт|иллюстрацию|обои|постер)/i,
+  /^(?:сделай\s+)?(?:арт|изображение|картинку)\s+/i,
+  /^(?:generate|create)\s+(?:an?\s+)?(?:image|picture|art)/i,
+];
+
+const VOICE_TIME_PATTERNS = [
+  /сколько.*(?:в\s+войс|в\s+голос|voice)/i,
+  /(?:время|сколько).*войс/i,
+  /(?:voice\s*time|voice\s+time|time\s+in\s+voice)/i,
+];
+
+function isImageRequestText(text) {
+  const q = normalizeLooseText(text);
+  return IMAGE_REQUEST_PATTERNS.some(re => re.test(q));
+}
+
+function stripImageTrigger(text) {
+  return String(text ?? '')
+    .replace(/^(?:сгенерируй|нарисуй|создай|сделай)\s+(?:мне\s+)?(?:картинку|изображение|арт|иллюстрацию|обои|постер)\s*/i, '')
+    .replace(/^(?:сделай\s+)?(?:арт|изображение|картинку)\s*/i, '')
+    .replace(/^(?:generate|create)\s+(?:an?\s+)?(?:image|picture|art)\s*/i, '')
+    .trim();
+}
+
+function isVoiceTimeRequestText(text) {
+  const q = normalizeLooseText(text);
+  return VOICE_TIME_PATTERNS.some(re => re.test(q));
+}
+
+function normalizeAspectRatio(value) {
+  const q = normalizeLooseText(value);
+  const allowed = new Set(['1:1', '16:9', '9:16', '3:2', '2:3', '4:5', '5:4']);
+  if (allowed.has(q)) return q;
+  return '16:9';
 }
 
 function buildProgressMessage(stages = [], body = '') {
@@ -114,7 +128,6 @@ class DiscordBot {
     this.presenceRefreshTimer = null;
     this.presenceRotateTimer = null;
     this.httpServer = null;
-    this.currentAction = null;
   }
 
   isHomeGuild(guildId) {
@@ -272,13 +285,6 @@ class DiscordBot {
 
   buildPresenceActivity() {
     const lifeState = this.ensureLifeState();
-    if (this.currentAction?.label) {
-      return {
-        name: `${this.currentAction.label} • ${formatShortTime(this.buildLifeSeconds())}`,
-        type: ActivityType.Watching,
-        timestamps: { start: lifeState.startedAt },
-      };
-    }
     return {
       name: `Слушает ${lifeState.phrase} • ${formatShortTime(this.buildLifeSeconds())}`,
       type: ActivityType.Listening,
@@ -310,18 +316,6 @@ class DiscordBot {
     await this.refreshPresence();
   }
 
-  setCurrentAction(kind, label) {
-    this.currentAction = kind && label ? { kind, label, updatedAt: Date.now() } : null;
-    this.refreshPresence().catch(() => {});
-  }
-
-  clearCurrentAction(kind = null) {
-    if (!kind || this.currentAction?.kind === kind) {
-      this.currentAction = null;
-      this.refreshPresence().catch(() => {});
-    }
-  }
-
   async getRecentMessages(channel, limit = 5) {
     const fetched = await channel.messages.fetch({ limit }).catch(() => null);
     if (!fetched) return [];
@@ -332,81 +326,6 @@ class DiscordBot {
         name: m.member?.displayName || m.author.username,
         text: m.content?.trim() || '[без текста]',
       }));
-  }
-
-  async sendGeneratedImage(channel, result, caption = '') {
-    const fileName = buildImageFilename(result.model || 'gemini-image');
-    const payload = {
-      files: [{ attachment: result.buffer, name: fileName }],
-    };
-    if (caption) payload.content = caption;
-    return channel.send(payload);
-  }
-
-  buildImageRequestText(rawText) {
-    const text = normalizeTextLight(rawText);
-    if (!text) return '';
-    return text.replace(/^(?:сгенерируй|нарисуй|создай|сделай|generate|make|create)\s*(?:мне|для меня|пожалуйста|pls|please)?\s*/i, '').trim() || text;
-  }
-
-  async answerVoiceTime(message, text) {
-    if (!isVoiceTimeQuery(text)) return false;
-    const target = message.mentions.users.first() || message.author;
-    const total = this.getTotalSeconds(message.guild.id, target.id);
-    const member = await message.guild.members.fetch(target.id).catch(() => null);
-    const name = member?.displayName || target.username;
-    await message.reply({
-      content: `⏱ **${name}** провёл в войсе **${formatTime(total)}**.`,
-      allowedMentions: { repliedUser: false },
-    }).catch(() => {});
-    return true;
-  }
-
-  async answerImageRequest({ message, text, statusMessage = null }) {
-    if (!this.config.GEMINI_API_KEY) {
-      await message.reply('⚠️ Генератор изображений пока не подключён.');
-      return true;
-    }
-
-    const requestText = this.buildImageRequestText(text);
-    if (!requestText) return false;
-
-    const prompt = buildImagePrompt(requestText, this.config.AI_BASE_PROMPT);
-    this.setCurrentAction('image', '🖼️ Генерирует изображение');
-
-    try {
-      if (statusMessage) {
-        await statusMessage.edit(buildProgressMessage([
-          '🖼️ Генерирую изображение...',
-          '🧩 Подбираю промпт и модель...'
-        ])).catch(() => {});
-      }
-
-      const result = await generateGeminiImage({
-        apiKey: this.config.GEMINI_API_KEY,
-        prompt,
-        modelCandidates: this.config.GEMINI_IMAGE_MODELS,
-        aspectRatio: this.config.GEMINI_IMAGE_ASPECT_RATIO,
-        imageSize: this.config.GEMINI_IMAGE_SIZE,
-        retries: 2,
-      });
-
-      if (statusMessage) {
-        await statusMessage.edit(buildProgressMessage([
-          '🖼️ Генерирую изображение...',
-          `✅ Готово через ${result.model}`
-        ])).catch(() => {});
-      }
-
-      await this.sendGeneratedImage(message.channel, result, `🖼️ Готово: ${requestText}`);
-      return true;
-    } catch (e) {
-      console.error('Image generation error:', e?.message || e);
-      await message.reply('⚠️ Не получилось сгенерировать картинку, попробую позже.').catch(() => {});
-      return false;
-    } finally {
-      this.clearCurrentAction('image');
-    }
   }
 
   async getMemberName(guild, userId) {
@@ -488,6 +407,94 @@ class DiscordBot {
       .setTimestamp();
   }
 
+
+  getVoiceTimeTotal(guildId, userId) {
+    return this.stateStore.getVoiceTimeSeconds(guildId, userId) + this.getCurrentSessionSeconds(this.getKey(guildId, userId));
+  }
+
+  async handleVoiceTimeQuery({ message, targetUser = message.author, replyTarget = message }) {
+    const guildId = message.guild.id;
+    const total = this.getVoiceTimeTotal(guildId, targetUser.id);
+    const member = await message.guild.members.fetch(targetUser.id).catch(() => null);
+    const name = member?.displayName || targetUser.username;
+    const content = `⏱ **${name}** провёл в голосовых каналах: **${formatTime(total)}**`;
+    if (replyTarget.reply) {
+      return replyTarget.reply({ content, allowedMentions: { repliedUser: false } });
+    }
+    return message.channel.send({ content });
+  }
+
+  async buildImagePrompt({ userText, userName, channelName = '', aspectRatio = '16:9' }) {
+    const roughPrompt = stripImageTrigger(userText) || userText;
+    const instruction = [
+      'Ты переписываешь запрос пользователя в короткий, но качественный промпт для генерации изображения.',
+      'Верни только готовый промпт, без списков, без кавычек, без пояснений.',
+      'Сделай сцену визуально понятной, с указанием объекта, окружения, света, композиции и стиля.',
+      `Аспект кадра: ${aspectRatio}.`,
+      userName ? `Пользователь: ${userName}.` : '',
+      channelName ? `Контекст канала: ${channelName}.` : '',
+      `Исходный запрос: ${roughPrompt}`,
+    ].filter(Boolean).join('\n\n');
+
+    try {
+      const prompt = await askGemini({
+        apiKey: this.config.GEMINI_API_KEY,
+        model: this.config.GEMINI_MODEL,
+        prompt: instruction,
+        temperature: 0.35,
+        maxOutputTokens: 300,
+        retries: 2,
+      });
+      return prompt.replace(/^["'`\s]+|["'`\s]+$/g, '').trim() || roughPrompt;
+    } catch (e) {
+      console.error('Image prompt rewrite error:', e?.message || e);
+      return roughPrompt;
+    }
+  }
+
+  async handleImageRequest({ message, text, replyTarget = message, aspectRatio = '16:9' }) {
+    if (!this.config.GEMINI_API_KEY) {
+      return replyTarget.reply ? replyTarget.reply('⚠️ Gemini пока не подключён.') : message.channel.send('⚠️ Gemini пока не подключён.');
+    }
+
+    const userName = message.member?.displayName || message.author.username;
+    const thinkingMsg = await replyTarget.reply('🧩 Собираю промпт для изображения...');
+    const channelName = message.channel?.name || message.channel?.threadMetadata?.name || '';
+
+    try {
+      const prompt = await this.buildImagePrompt({
+        userText: text,
+        userName,
+        channelName,
+        aspectRatio,
+      });
+      await thinkingMsg.edit('🖼️ Генерирую изображение...');
+
+      const image = await generateImageWithFallback({
+        apiKey: this.config.GEMINI_API_KEY,
+        models: this.config.GEMINI_IMAGE_MODELS,
+        prompt,
+        aspectRatio,
+      });
+
+      const attachment = {
+        attachment: image.buffer,
+        name: `generated-${Date.now()}.png`,
+      };
+
+      await thinkingMsg.edit(`📤 Отправляю результат • модель: ${image.model}`).catch(() => {});
+      await message.reply({
+        content: `✅ Готово. Промпт: ${prompt}`,
+        files: [attachment],
+        allowedMentions: { repliedUser: false },
+      });
+      await thinkingMsg.delete().catch(() => {});
+    } catch (e) {
+      console.error('Image generation error:', e);
+      await thinkingMsg.edit('⚠️ Не удалось сгенерировать изображение.').catch(() => {});
+    }
+  }
+
   async registerCommands() {
     const adminOnly = PermissionFlagsBits.Administrator;
 
@@ -514,11 +521,6 @@ class DiscordBot {
         .setName('say')
         .setDescription('Попросить бота ответить на сообщение через Gemini')
         .addStringOption(option => option.setName('text').setDescription('Текст сообщения').setRequired(true))
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('image')
-        .setDescription('Сгенерировать изображение по описанию')
-        .addStringOption(option => option.setName('text').setDescription('Описание изображения').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('msg')
@@ -564,13 +566,12 @@ class DiscordBot {
       userName,
       text,
       channelName,
-      basePrompt: this.config.AI_BASE_PROMPT,
+      baseStylePrompt: this.config.BASE_STYLE_PROMPT,
     });
 
     const answer = await askGemini({
       apiKey: this.config.GEMINI_API_KEY,
       model: this.config.GEMINI_MODEL,
-      modelCandidates: this.config.GEMINI_CHAT_MODELS,
       prompt,
     });
 
@@ -663,20 +664,8 @@ class DiscordBot {
 
     const userName = message.member?.displayName || message.author.username;
     const thinkingMsg = await message.reply('🧠 Анализирую запрос...');
-    this.setCurrentAction('chat', '💬 Отвечает в чате');
 
     try {
-      if (await this.answerVoiceTime(message, text)) {
-        await thinkingMsg.delete().catch(() => {});
-        return;
-      }
-
-      if (isImageRequest(text)) {
-        await this.answerImageRequest({ message, text, statusMessage: thinkingMsg });
-        await thinkingMsg.delete().catch(() => {});
-        return;
-      }
-
       const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
         channel: message.channel,
         guildId: message.guild.id,
@@ -709,8 +698,6 @@ class DiscordBot {
     } catch (e) {
       console.error('Gemini error:', e);
       await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
-    } finally {
-      this.clearCurrentAction('chat');
     }
   }
 
@@ -721,19 +708,7 @@ class DiscordBot {
     if (!this.config.GEMINI_API_KEY) return message.reply('⚠️ Gemini пока не подключён.');
 
     const thinkingMsg = await message.reply('🧠 Анализирую запрос...');
-    this.setCurrentAction('chat', '💬 Отвечает в чате');
     try {
-      if (await this.answerVoiceTime(message, cleanText)) {
-        await thinkingMsg.delete().catch(() => {});
-        return;
-      }
-
-      if (isImageRequest(cleanText)) {
-        await this.answerImageRequest({ message, text: cleanText, statusMessage: thinkingMsg });
-        await thinkingMsg.delete().catch(() => {});
-        return;
-      }
-
       const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
         channel: message.channel,
         guildId: message.guild.id,
@@ -765,8 +740,6 @@ class DiscordBot {
     } catch (e) {
       console.error('Gemini error:', e);
       await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
-    } finally {
-      this.clearCurrentAction('chat');
     }
   }
 
@@ -813,30 +786,23 @@ class DiscordBot {
       const authorName = message.member?.displayName || message.author.username;
       const cleanMessageText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
 
+      if (message.content.startsWith(this.config.PREFIX)) {
+        const args = message.content.slice(1).trim().split(/\s+/);
+        const cmd = args[0]?.toLowerCase();
+
+        if (cmd === 'say') {
+          const promptText = args.slice(1).join(' ').trim();
+          if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}say\`.`);
+          return this.handleAiMessage({ message, text: promptText });
+        }
+      }
+
       if (cleanMessageText) {
         const handledForget = await this.handleForgetRequest(message, cleanMessageText);
         if (handledForget) return;
 
         const handledPending = await this.handlePendingReviewReply(message, cleanMessageText);
         if (handledPending) return;
-
-        if (message.content.startsWith(this.config.PREFIX)) {
-          const args = message.content.slice(1).trim().split(/\s+/);
-          const cmd = args[0]?.toLowerCase();
-          if (cmd === 'image') {
-            const text = args.slice(1).join(' ').trim();
-            if (!text) return message.reply(`Напиши описание после \`${this.config.PREFIX}image\`.`);
-            const status = await message.reply('🖼️ Генерирую изображение...');
-            await this.answerImageRequest({ message, text, statusMessage: status });
-            await status.delete().catch(() => {});
-            return;
-          }
-          if (cmd === 'say') {
-            const promptText = args.slice(1).join(' ').trim();
-            if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}say\`.`);
-            return this.handleAiMessage({ message, text: promptText });
-          }
-        }
       }
 
       const isMentioned = message.mentions.has(this.client.user);
@@ -899,29 +865,6 @@ class DiscordBot {
           return interaction.editReply({ content: '❌ Gemini сейчас перегружен.' });
         }
         return;
-      }
-
-      if (interaction.commandName === 'image') {
-        await interaction.deferReply();
-        try {
-          if (!this.config.GEMINI_API_KEY) {
-            return interaction.editReply({ content: '⚠️ Генератор изображений пока не подключён.' });
-          }
-          const text = interaction.options.getString('text', true);
-          const fakeMessage = {
-            guild: interaction.guild,
-            channel: interaction.channel,
-            author: interaction.user,
-            member: interaction.member,
-            reply: async (payload) => interaction.followUp(payload),
-          };
-          const handled = await this.answerImageRequest({ message: fakeMessage, text });
-          if (!handled) return interaction.editReply({ content: '⚠️ Не получилось сгенерировать изображение.' });
-          return interaction.editReply({ content: '✅ Изображение отправлено в чат.' });
-        } catch (e) {
-          console.error('Image command error:', e);
-          return interaction.editReply({ content: '❌ Не удалось сгенерировать изображение.' });
-        }
       }
 
       if (interaction.commandName === 'msg') {
@@ -1025,7 +968,6 @@ class DiscordBot {
       console.log(`Получен ${signal}, сохраняю данные...`);
       await this.checkpointSessions(true);
       await this.stateStore.save();
-      this.currentAction = null;
       if (this.httpServer) this.httpServer.close(() => {});
       if (this.client?.destroy) this.client.destroy();
     } catch (e) {
