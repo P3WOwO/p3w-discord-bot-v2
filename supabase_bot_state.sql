@@ -2,7 +2,7 @@
 create table if not exists public.bot_state (
   row_id text primary key,
   voice_times jsonb not null default '{}'::jsonb,
-  life_state jsonb not null default '{"startedAt": null, "phrase": null, "action": null}'::jsonb,
+  life_state jsonb not null default '{"startedAt": null, "phrase": null}'::jsonb,
   ai_memory jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now()
 );

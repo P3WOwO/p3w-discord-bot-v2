@@ -1,6 +1,5 @@
 const {
   SYSTEM_PROMPT,
-  DEFAULT_ASSISTANT_BASE_PROMPT,
   MEMORY_CHAT_TEMPERATURE,
   MEMORY_MAX_OUTPUT_TOKENS,
   MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
@@ -9,111 +8,103 @@ const {
 const {
   buildMemoryExtractionPrompt,
   extractJsonPayload,
-  truncate,
 } = require('./memory');
 
-function normalizeModelList(modelOrModels, fallbackModels = []) {
-  const models = Array.isArray(modelOrModels)
-    ? modelOrModels
-    : String(modelOrModels || '').split(',').map(v => v.trim()).filter(Boolean);
-  return [...new Set([...models, ...fallbackModels].filter(Boolean))];
+function normalizeModelList(model, fallbackList = []) {
+  const values = [model, ...fallbackList].flat().filter(Boolean).map(v => String(v).trim());
+  return [...new Set(values)];
 }
 
-function isRetryableModelError(status, message) {
-  const lower = String(message || '').toLowerCase();
-  return status === 429 || status === 503 || lower.includes('quota') || lower.includes('rate limit') || lower.includes('resource exhausted') || lower.includes('temporarily unavailable') || lower.includes('overloaded');
-}
-
-async function generateContentOnce({ apiKey, model, prompt, temperature = MEMORY_CHAT_TEMPERATURE, maxOutputTokens = MEMORY_MAX_OUTPUT_TOKENS, responseModalities = undefined, responseFormat = undefined }) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens,
-        temperature,
-        topP: 0.9,
-        ...(responseModalities ? { responseModalities } : {}),
-        ...(responseFormat ? { responseFormat } : {}),
-      },
-    }),
-  });
-
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Gemini ${res.status}: ${text}`);
-  }
-
-  return JSON.parse(text);
-}
-
-async function askGemini({ apiKey, model, models, prompt, retries = 3, temperature = MEMORY_CHAT_TEMPERATURE, maxOutputTokens = MEMORY_MAX_OUTPUT_TOKENS }) {
+async function askGemini({
+  apiKey,
+  model,
+  modelCandidates = [],
+  prompt,
+  retries = 3,
+  temperature = MEMORY_CHAT_TEMPERATURE,
+  maxOutputTokens = MEMORY_MAX_OUTPUT_TOKENS,
+  generationConfig = {},
+}) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
 
-  const modelList = normalizeModelList(models || model, [model]);
-  let lastErr = null;
+  const candidates = normalizeModelList(model, modelCandidates);
+  if (!candidates.length) throw new Error('Не задана модель Gemini');
 
-  for (const currentModel of modelList) {
+  let lastError = null;
+  for (const candidate of candidates) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate}:generateContent`;
+
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        const data = await generateContentOnce({ apiKey, model: currentModel, prompt, temperature, maxOutputTokens });
-        const answer = data?.candidates?.[0]?.content?.parts?.map(p => p?.text || '').join('').trim();
-        return answer || 'Пустой ответ.';
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              maxOutputTokens,
+              temperature,
+              topP: 0.9,
+              ...generationConfig,
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          const message = `Gemini ${res.status}: ${errText}`;
+          lastError = new Error(message);
+          if ((res.status === 429 || res.status === 503) && attempt < retries) {
+            const delay = Math.pow(2, attempt) * 1500;
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          break;
+        }
+
+        const data = await res.json();
+        return data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() || 'Пустой ответ.';
       } catch (err) {
-        lastErr = err;
+        lastError = err;
         const message = String(err?.message || err);
-        const status = Number(message.match(/Gemini\s+(\d+)/)?.[1] || 0);
-        if (attempt < retries && isRetryableModelError(status, message)) {
-          const delay = Math.min(8000, Math.pow(2, attempt) * 1200);
+        if (attempt < retries && (message.includes('503') || message.includes('429') || message.includes('fetch'))) {
+          const delay = Math.pow(2, attempt) * 1500;
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
-        if (isRetryableModelError(status, message)) break;
-        throw err;
+        break;
       }
     }
   }
 
-  throw lastErr || new Error('Gemini request failed');
+  throw lastError || new Error('Gemini недоступен');
 }
 
-async function askGeminiWithFallback(args) {
-  return askGemini(args);
-}
+function buildPrompt({ memoryContext = '', recentMessages = [], userName, text, channelName = '', basePrompt = '' }) {
+  const memoryBlock = memoryContext
+    ? ['Память:', memoryContext]
+    : ['Память: пусто'];
 
-function buildPrompt({
-  assistantPrompt = DEFAULT_ASSISTANT_BASE_PROMPT,
-  memoryContext = '',
-  recentMessages = [],
-  userName,
-  text,
-  channelName = '',
-}) {
-  const memoryBlock = memoryContext ? ['Память:', memoryContext] : ['Память: пусто'];
   const recentHint = recentMessages.length
     ? `Последний контекст уже учтён в памяти (${recentMessages.length} сообщений).`
     : 'Свежего контекста нет.';
 
   return [
-    assistantPrompt || SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    basePrompt ? `Дополнительная настройка личности:\n${basePrompt}` : '',
     '',
-    'Руководство:',
-    '- Подстраивайся под человека, но не теряй свой аккуратный и дружелюбный тон.',
-    '- Не придумывай устойчивую ненависть, любовь или предвзятость к людям.',
-    '- Если памяти мало, отвечай честно и без выдумок.',
-    '- Если нужен промпт для генерации картинки, сначала сделай его ясным и визуальным.',
+    'Используй память только если она релевантна текущему вопросу. Если памяти недостаточно или она спорная, уточняй вместо выдумывания.',
+    'Не пересказывай память дословно. Применяй её как фон для ответа.',
     '',
     ...memoryBlock,
     '',
     recentHint,
     '',
     `Сейчас отвечает ${userName}${channelName ? ` в канале ${channelName}` : ''}: ${text}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function buildMemoryPrompt({ userName, channelName, userText, botReply, recentMessages = [], existingContext = '' }) {
@@ -133,98 +124,11 @@ function parseMemoryUpdate(text) {
   return parsed;
 }
 
-async function generateGeminiImage({ apiKey, models, prompt, aspectRatio = '16:9', imageSize = '2K', retries = 2 }) {
-  if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
-
-  const modelList = normalizeModelList(models);
-  let lastErr = null;
-
-  for (const model of modelList) {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const payload = {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseModalities: ['IMAGE'],
-            responseFormat: {
-              image: {
-                aspectRatio,
-                imageSize,
-              },
-            },
-          },
-        };
-
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify(payload),
-        });
-
-        const text = await res.text();
-        if (!res.ok) throw new Error(`Gemini ${res.status}: ${text}`);
-
-        const data = JSON.parse(text);
-        const parts = data?.candidates?.[0]?.content?.parts || [];
-        const inline = parts.find(part => part?.inlineData?.data);
-        const textParts = parts.map(part => part?.text).filter(Boolean);
-        if (!inline?.inlineData?.data) {
-          return {
-            model,
-            buffer: null,
-            mimeType: null,
-            text: textParts.join('\n').trim(),
-          };
-        }
-
-        const mimeType = inline.inlineData.mimeType || 'image/png';
-        const buffer = Buffer.from(inline.inlineData.data, 'base64');
-        return {
-          model,
-          buffer,
-          mimeType,
-          text: textParts.join('\n').trim(),
-        };
-      } catch (err) {
-        lastErr = err;
-        const message = String(err?.message || err);
-        const status = Number(message.match(/Gemini\s+(\d+)/)?.[1] || 0);
-        if (attempt < retries && isRetryableModelError(status, message)) {
-          const delay = Math.min(8000, Math.pow(2, attempt) * 1500);
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-        if (isRetryableModelError(status, message)) break;
-        throw err;
-      }
-    }
-  }
-
-  throw lastErr || new Error('Image generation failed');
-}
-
-function buildImagePrompt(userText) {
-  const clean = String(userText || '').trim();
-  return [
-    'Create a high-quality image based on this request.',
-    'Make it visually clear, detailed, and well composed.',
-    'Do not add random text unless the user asked for text in the image.',
-    `Request: ${truncate(clean, 1200)}`,
-  ].join(' ');
-}
-
 module.exports = {
   askGemini,
-  askGeminiWithFallback,
   buildPrompt,
   buildMemoryPrompt,
   parseMemoryUpdate,
-  generateGeminiImage,
-  buildImagePrompt,
   MEMORY_EXTRACTION_MODEL_TEMPERATURE,
   MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
 };

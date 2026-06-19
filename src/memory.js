@@ -75,10 +75,6 @@ function createEmptyProfile() {
   return {
     summary: '',
     digest: '',
-    basePrompt: '',
-    tone: 'friendly',
-    mood: 'calm',
-    style: 'adaptive',
     lastUpdatedAt: null,
     lastRebuiltAt: null,
   };
@@ -187,13 +183,8 @@ function stableKeyFromText(text, category = 'other') {
 function sanitizeProfile(profile) {
   if (!profile || typeof profile !== 'object') return createEmptyProfile();
   return {
-    ...createEmptyProfile(),
     summary: truncate(profile.summary || profile.text || '', SUMMARY_LIMIT),
     digest: truncate(profile.digest || '', DIGEST_LIMIT),
-    basePrompt: truncate(profile.basePrompt || profile.base_prompt || '', 1200),
-    tone: normalizeText(profile.tone || 'friendly').toLowerCase().slice(0, 32) || 'friendly',
-    mood: normalizeText(profile.mood || 'calm').toLowerCase().slice(0, 32) || 'calm',
-    style: normalizeText(profile.style || 'adaptive').toLowerCase().slice(0, 32) || 'adaptive',
     lastUpdatedAt: profile.lastUpdatedAt || profile.updatedAt || null,
     lastRebuiltAt: profile.lastRebuiltAt || null,
   };
@@ -890,10 +881,6 @@ function buildMemoryContext(memoryInput, { guildId, channelId, userId, userName 
     sections.push(`Профиль бота: ${truncate(memory.assistantProfile.summary, 220)}`);
   }
 
-  if (memory.assistantProfile?.basePrompt) {
-    sections.push(`Базовый промпт: ${truncate(memory.assistantProfile.basePrompt, 260)}`);
-  }
-
   if (memory.assistantProfile?.digest) {
     sections.push(`Текущая линия бота: ${truncate(memory.assistantProfile.digest, 220)}`);
   }
@@ -973,7 +960,6 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     'Ты — модуль долговременной памяти Discord-бота.',
     'Ты НЕ отвечаешь пользователю: твоя задача только решать, что запомнить, что обновить, что удалить, а что отправить на подтверждение.',
     'Сохраняй только устойчивое и полезное: предпочтения, факты, проекты, планы, ограничения, стиль общения, повторяющиеся темы и реальные изменения.',
-    'Не сохраняй как устойчивый факт случайную симпатию/антипатию к людям, если это не реальная долгосрочная установка пользователя.',
     'Не записывай одноразовый шум, флуд, эмоциональные всплески и повторные переформулировки.',
     'Если пользователь просит забыть, очистить или удалить память, используй memory_actions и не добавляй новые факты по этому сообщению.',
     'Если запись спорная, токсичная, обвинительная, похожа на клевету, содержит приватные данные или выглядит сомнительной — не сохраняй её как факт сразу; отправь в pending_reviews_add.',
@@ -984,7 +970,6 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     '  "should_store": true,',
     '  "global_summary_update": "краткий общий фон, если нужен",',
     '  "assistant_profile_update": "краткая устойчивая сводка о стиле/характере бота, если она реально изменилась",',
-    '  "assistant_base_prompt_update": "короткая правка базового промпта как общаться",',
     '  "channel_summary_update": "краткая сводка текущего канала или темы",',
     '  "user_summary_update": "краткая сводка о пользователе без длинных перечислений",',
     '  "notes_add": [',
@@ -1010,7 +995,6 @@ function buildMemoryExtractionPrompt({ userName, channelName, userText, botReply
     '- Для каждой записи выбирай короткий key, чтобы факты можно было обновлять, а не дублировать.',
     '- Если факт уже есть почти дословно, не дублируй его.',
     '- Если новая запись противоречит старой, лучше предложить удалить старую или обновить её, чем хранить обе.',
-    '- Не записывай эмоциональные ярлыки о людях как твой собственный устойчивый вкус; храни только факты, предпочтения и ограничения, если они действительно полезны.',
     '',
     `Пользователь: ${userName || 'unknown'}`,
     `Канал: ${channelName || 'unknown'}`,

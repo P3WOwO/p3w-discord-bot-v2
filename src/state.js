@@ -5,7 +5,6 @@ const { DEFAULT_LIFE_STATE, MAX_HISTORY } = require('./constants');
 const {
   normalizeMemory,
   createEmptyMemory,
-  createEmptyProfile,
   createEmptyUser,
   createEmptyChannel,
   buildMemoryContext,
@@ -146,7 +145,6 @@ class StateStore {
   getLifeState() {
     if (!this.state.lifeState.startedAt) this.state.lifeState.startedAt = Date.now();
     if (!this.state.lifeState.phrase) this.state.lifeState.phrase = null;
-    if (!Object.prototype.hasOwnProperty.call(this.state.lifeState, 'action')) this.state.lifeState.action = null;
     return this.state.lifeState;
   }
 
@@ -154,44 +152,9 @@ class StateStore {
     this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...next };
   }
 
-  getActionState() {
-    return this.getLifeState().action || null;
-  }
-
-  setActionState(action) {
-    const lifeState = this.getLifeState();
-    lifeState.action = action ? {
-      key: String(action.key || action.status || 'custom').slice(0, 40),
-      label: String(action.label || action.text || action.key || 'Работает').slice(0, 120),
-      startedAt: action.startedAt || new Date().toISOString(),
-      detail: String(action.detail || '').slice(0, 200),
-    } : null;
-    this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...lifeState };
-  }
-
-  clearActionState() {
-    const lifeState = this.getLifeState();
-    lifeState.action = null;
-    this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...lifeState };
-  }
-
   getAiMemory() {
     this.state.aiMemory = rebalanceMemory(normalizeMemory(this.state.aiMemory));
     return this.state.aiMemory;
-  }
-
-  getAssistantProfile() {
-    const memory = this.getAiMemory();
-    if (!memory.assistantProfile) memory.assistantProfile = createEmptyProfile();
-    memory.assistantProfile = { ...createEmptyProfile(), ...memory.assistantProfile };
-    return memory.assistantProfile;
-  }
-
-  updateAssistantProfile(patch = {}) {
-    const memory = this.getAiMemory();
-    memory.assistantProfile = { ...createEmptyProfile(), ...memory.assistantProfile, ...patch };
-    this.state.aiMemory = rebalanceMemory(memory);
-    return memory.assistantProfile;
   }
 
   getUserMemory(guildId, userId) {
