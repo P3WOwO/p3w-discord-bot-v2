@@ -1,18 +1,16 @@
 const fs = require('fs');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
-const { DEFAULT_LIFE_STATE, MAX_HISTORY } = require('./constants');
+const { DEFAULT_LIFE_STATE } = require('./constants');
 const {
-  normalizeMemory,
   createEmptyMemory,
-  createEmptyUser,
-  createEmptyChannel,
+  normalizeMemory,
+  appendChannelTurn,
+  getChannelMemory,
+  setChannelMemory,
   buildMemoryContext,
-  applyMemoryUpdate,
-  deriveHeuristicMemoryUpdate,
-  truncate,
-  normalizeScopeKey,
-  rebalanceMemory,
+  extractJsonPayload,
+  compactMemoryFallback,
 } = require('./memory');
 
 const DATA_DIR = '/data';
@@ -42,10 +40,12 @@ class StateStore {
 
   async init() {
     this.loadLocalFallback();
+
     if (this.config.SUPABASE_URL && this.config.SUPABASE_SERVICE_ROLE_KEY) {
       this.supabase = createClient(this.config.SUPABASE_URL, this.config.SUPABASE_SERVICE_ROLE_KEY, {
         auth: { persistSession: false, autoRefreshToken: false },
       });
+
       try {
         await this.loadFromSupabase();
         this.enabled = true;
@@ -57,6 +57,7 @@ class StateStore {
     } else {
       console.log('⚠️ Supabase env vars not found, using local fallback only');
     }
+
     this.enabled = false;
   }
 
@@ -75,7 +76,7 @@ class StateStore {
       this.state.lifeState = data.life_state && typeof data.life_state === 'object'
         ? { ...clone(DEFAULT_LIFE_STATE), ...data.life_state }
         : clone(DEFAULT_LIFE_STATE);
-      this.state.aiMemory = rebalanceMemory(normalizeMemory(data.ai_memory));
+      this.state.aiMemory = normalizeMemory(data.ai_memory);
       return;
     }
 
@@ -123,7 +124,7 @@ class StateStore {
       if (raw?.lifeState && typeof raw.lifeState === 'object') {
         this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...raw.lifeState };
       }
-      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = rebalanceMemory(normalizeMemory(raw.aiMemory));
+      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = normalizeMemory(raw.aiMemory);
     } catch (err) {
       console.error('⚠️ Local fallback load failed:', err.message || err);
     }
@@ -147,6 +148,12 @@ class StateStore {
     return Number(this.state.voiceTimes[key] || 0);
   }
 
+  addVoiceSeconds(guildId, userId, seconds) {
+    const key = `${guildId}:${userId}`;
+    if (seconds <= 0) return;
+    this.state.voiceTimes[key] = (Number(this.state.voiceTimes[key] || 0) || 0) + seconds;
+  }
+
   getLifeState() {
     if (!this.state.lifeState.startedAt) this.state.lifeState.startedAt = Date.now();
     if (!this.state.lifeState.phrase) this.state.lifeState.phrase = null;
@@ -158,156 +165,54 @@ class StateStore {
   }
 
   getAiMemory() {
-    this.state.aiMemory = rebalanceMemory(normalizeMemory(this.state.aiMemory));
+    this.state.aiMemory = normalizeMemory(this.state.aiMemory);
     return this.state.aiMemory;
   }
 
-  getUserMemory(guildId, userId) {
-    const memory = this.getAiMemory();
-    return memory.users[normalizeScopeKey(guildId, userId)] || null;
-  }
-
   getChannelMemory(channelId) {
-    const memory = this.getAiMemory();
-    return memory.channels[channelId] || null;
+    return getChannelMemory(this.getAiMemory(), channelId);
   }
 
-  getPendingReviewsForUser(guildId, userId) {
-    const memory = this.getAiMemory();
-    const scopeKey = normalizeScopeKey(guildId, userId);
-    return Array.isArray(memory.users[scopeKey]?.pendingReviews) ? memory.users[scopeKey].pendingReviews : [];
+  setChannelMemory(channelId, nextMemory) {
+    this.state.aiMemory = setChannelMemory(this.getAiMemory(), channelId, nextMemory);
   }
 
-  getPendingReviewCountForUser(guildId, userId) {
-    return this.getPendingReviewsForUser(guildId, userId).length;
+  appendChannelTurn(channelId, turn) {
+    this.state.aiMemory = appendChannelTurn(this.getAiMemory(), channelId, turn);
   }
 
-  clearUserMemory(guildId, userId) {
+  updateChannelCompaction(channelId, { summary, digest }) {
     const memory = this.getAiMemory();
-    const scopeKey = normalizeScopeKey(guildId, userId);
-    memory.users[scopeKey] = createEmptyUser('');
-    this.state.aiMemory = rebalanceMemory(memory);
-  }
-
-  clearChannelMemory(channelId) {
-    const memory = this.getAiMemory();
-    memory.channels[channelId] = createEmptyChannel('');
-    this.state.aiMemory = rebalanceMemory(memory);
-  }
-
-  clearGlobalMemory() {
-    const memory = this.getAiMemory();
-    memory.globalSummary = '';
-    memory.globalDigest = '';
-    memory.globalNotes = [];
-    memory.globalPendingReviews = [];
-    this.state.aiMemory = rebalanceMemory(memory);
-  }
-
-  approvePendingReview({ guildId, userId, channelId, reviewId }) {
-    const memory = this.getAiMemory();
-    const scopeKey = normalizeScopeKey(guildId, userId);
-    const user = memory.users[scopeKey];
-    if (!user || !Array.isArray(user.pendingReviews) || !user.pendingReviews.length) return false;
-
-    const idx = user.pendingReviews.findIndex(item => item.id === reviewId || item.text === reviewId);
-    if (idx === -1) return false;
-    const [pending] = user.pendingReviews.splice(idx, 1);
-    const note = pending.suggestedNote || {
-      text: pending.text,
-      importance: Math.max(1, Math.min(5, pending.severity || 2)),
-      category: pending.reason === 'possible_defamation' ? 'opinion' : 'fact',
-      confidence: Math.max(0.5, pending.confidence || 0.5),
-      source: 'pending-review-approved',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+    const channel = memory.channels[channelId] || {};
+    memory.channels[channelId] = {
+      ...channel,
+      summary: String(summary || '').trim(),
+      digest: String(digest || '').trim(),
+      turns: Array.isArray(channel.turns) ? channel.turns.slice(-20) : [],
+      turnsSinceCompact: 0,
+      lastCompactedAt: new Date().toISOString(),
+      lastUpdatedAt: new Date().toISOString(),
     };
-    user.notes = Array.isArray(user.notes) ? [...user.notes, note] : [note];
-    user.lastUpdatedAt = new Date().toISOString();
-    this.state.aiMemory = rebalanceMemory(memory);
-    return true;
+    this.state.aiMemory = normalizeMemory(memory);
   }
 
-  rejectPendingReview({ guildId, userId, reviewId }) {
-    const memory = this.getAiMemory();
-    const scopeKey = normalizeScopeKey(guildId, userId);
-    const user = memory.users[scopeKey];
-    if (!user || !Array.isArray(user.pendingReviews) || !user.pendingReviews.length) return false;
-    const before = user.pendingReviews.length;
-    user.pendingReviews = user.pendingReviews.filter(item => item.id !== reviewId && item.text !== reviewId);
-    this.state.aiMemory = rebalanceMemory(memory);
-    return user.pendingReviews.length !== before;
+  shouldCompactChannelMemory(channelId, threshold = 8) {
+    const channel = this.getChannelMemory(channelId);
+    return (Number(channel.turnsSinceCompact || 0) || 0) >= threshold;
   }
 
-  getMemoryContext({ guildId, channelId, userId, userName, channelName = '', queryText = '', recentMessages = [] }) {
+  buildMemoryContext({ channelId, channelName = '', queryText = '', recentMessages = [] }) {
     return buildMemoryContext(this.getAiMemory(), {
-      guildId,
       channelId,
-      userId,
-      userName,
       channelName,
       queryText,
       recentMessages,
     });
   }
 
-  applyMemoryExtraction({ guildId, channelId, userId, userName, update }) {
-    this.state.aiMemory = rebalanceMemory(applyMemoryUpdate(this.getAiMemory(), {
-      guildId,
-      channelId,
-      userId,
-      userName,
-      update,
-    }));
-  }
-
-  applyHeuristicMemoryExtraction({ guildId, channelId, userId, userName, channelName = '', userText = '', botReply = '', sourceMessageId = '' }) {
-    const heuristicUpdate = deriveHeuristicMemoryUpdate({
-      guildId,
-      channelId,
-      userId,
-      userName,
-      channelName,
-      userText,
-      botReply,
-      sourceMessageId,
-    });
-    if (!heuristicUpdate || (!heuristicUpdate.should_store && !Array.isArray(heuristicUpdate.memory_actions))) return;
-    this.state.aiMemory = rebalanceMemory(applyMemoryUpdate(this.getAiMemory(), {
-      guildId,
-      channelId,
-      userId,
-      userName,
-      update: heuristicUpdate,
-    }));
-  }
-
-  pushChannelMessage(channelId, role, name, text) {
-    const clean = String(text || '').trim();
-    if (!clean) return;
-    const memory = this.getAiMemory();
-    const channel = memory.channels[channelId] || {
-      summary: '',
-      notes: [],
-      displayName: '',
-      lastUpdatedAt: null,
-      lastSeenAt: null,
-      legacyHistory: [],
-    };
-    channel.legacyHistory = Array.isArray(channel.legacyHistory) ? channel.legacyHistory : [];
-    channel.legacyHistory.push({
-      role: String(role || 'user').slice(0, 20),
-      name: String(name || '').slice(0, 80),
-      text: truncate(clean, 300),
-    });
-    channel.legacyHistory = channel.legacyHistory.slice(-MAX_HISTORY);
-    memory.channels[channelId] = channel;
-    this.state.aiMemory = rebalanceMemory(memory);
-  }
-
-  setVoiceSeconds(key, seconds) {
-    if (seconds <= 0) return;
-    this.state.voiceTimes[key] = (this.state.voiceTimes[key] || 0) + seconds;
+  compactFallback(channelId) {
+    const channel = this.getChannelMemory(channelId);
+    return compactMemoryFallback(channel);
   }
 
   getSnapshot() {

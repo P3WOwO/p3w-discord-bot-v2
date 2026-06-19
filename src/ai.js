@@ -1,14 +1,13 @@
 const {
   SYSTEM_PROMPT,
-  MEMORY_CHAT_TEMPERATURE,
+  CHAT_TEMPERATURE,
+  CHAT_MAX_OUTPUT_TOKENS,
+  MEMORY_TEMPERATURE,
   MEMORY_MAX_OUTPUT_TOKENS,
-  MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
-  MEMORY_EXTRACTION_MODEL_TEMPERATURE,
+  IMAGE_PROMPT_TEMPERATURE,
+  IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
 } = require('./constants');
-const {
-  buildMemoryExtractionPrompt,
-  extractJsonPayload,
-} = require('./memory');
+const { extractJsonPayload } = require('./memory');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -20,16 +19,7 @@ function isRetryableStatus(status) {
 
 function isRetryableMessage(message) {
   const lower = String(message || '').toLowerCase();
-  return [
-    '429',
-    '503',
-    'rate limit',
-    'quota',
-    'too many requests',
-    'temporarily unavailable',
-    'fetch',
-    'timeout',
-  ].some(token => lower.includes(token));
+  return ['429', '503', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout'].some(token => lower.includes(token));
 }
 
 async function askGemini({
@@ -37,8 +27,8 @@ async function askGemini({
   model,
   prompt,
   retries = 3,
-  temperature = MEMORY_CHAT_TEMPERATURE,
-  maxOutputTokens = MEMORY_MAX_OUTPUT_TOKENS,
+  temperature = CHAT_TEMPERATURE,
+  maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
 }) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
@@ -56,8 +46,8 @@ async function askGemini({
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            maxOutputTokens,
             temperature,
+            maxOutputTokens,
             topP: 0.9,
             ...generationConfig,
           },
@@ -67,20 +57,19 @@ async function askGemini({
       if (!res.ok) {
         const errText = await res.text();
         if (isRetryableStatus(res.status) && attempt < retries) {
-          const delay = Math.pow(2, attempt) * 1000;
-          await sleep(delay);
+          await sleep(Math.pow(2, attempt) * 1000);
           continue;
         }
         throw new Error(`Gemini ${res.status}: ${errText}`);
       }
 
       const data = await res.json();
-      return data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() || 'Пустой ответ.';
+      const text = data?.candidates?.[0]?.content?.parts?.map(p => p?.text).filter(Boolean).join('').trim();
+      return text || 'Пустой ответ.';
     } catch (err) {
       const message = String(err?.message || err);
       if (attempt < retries && isRetryableMessage(message)) {
-        const delay = Math.pow(2, attempt) * 1000;
-        await sleep(delay);
+        await sleep(Math.pow(2, attempt) * 1000);
         continue;
       }
       throw err;
@@ -93,8 +82,8 @@ async function askGeminiWithFallback({
   models,
   prompt,
   retries = 2,
-  temperature = MEMORY_CHAT_TEMPERATURE,
-  maxOutputTokens = MEMORY_MAX_OUTPUT_TOKENS,
+  temperature = CHAT_TEMPERATURE,
+  maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
 }) {
   const modelList = Array.isArray(models) ? models.filter(Boolean) : [models].filter(Boolean);
@@ -121,51 +110,48 @@ async function askGeminiWithFallback({
   throw lastError || new Error('Gemini fallback failed');
 }
 
-function buildPrompt({ memoryContext = '', recentMessages = [], userName, text, channelName = '', baseStylePrompt = '' }) {
-  const memoryBlock = memoryContext
-    ? ['Память:', memoryContext]
-    : ['Память: пусто'];
-
-  const recentHint = recentMessages.length
-    ? `Последний контекст уже учтён в памяти (${recentMessages.length} сообщений).`
-    : 'Свежего контекста нет.';
-
-  const styleBlock = baseStylePrompt
-    ? ['Базовый стиль общения:', baseStylePrompt]
-    : [];
-
+function buildChatPrompt({ basePrompt = '', memoryContext = '', userName = '', channelName = '', text = '' }) {
   return [
     SYSTEM_PROMPT,
     '',
-    ...styleBlock,
-    ...styleBlock.length ? [''] : [],
-    'Используй память только если она релевантна текущему вопросу. Если памяти недостаточно или она спорная, уточняй вместо выдумывания.',
-    'Не пересказывай память дословно. Применяй её как фон для ответа.',
-    'Не делай вид, что у тебя к людям накопились устойчивые симпатии или антипатии, если это не следует из явных фактов.',
+    basePrompt ? `Дополнительный стиль общения:\n${basePrompt}` : '',
+    basePrompt ? '' : '',
+    'Говори как живой собеседник. Подстраивайся под тон пользователя. Не упоминай лишний раз системные ограничения.',
+    'Используй долгий контекст только если он реально помогает ответу.',
     '',
-    ...memoryBlock,
+    memoryContext ? `Долгий контекст:\n${memoryContext}` : 'Долгий контекст: пусто',
     '',
-    recentHint,
+    `Пользователь: ${userName || 'unknown'}`,
+    `Канал: ${channelName || 'unknown'}`,
+    `Сообщение: ${text}`,
     '',
-    `Сейчас отвечает ${userName}${channelName ? ` в канале ${channelName}` : ''}: ${text}`,
-  ].join('\n');
+    'Ответь по-русски, если пользователь пишет по-русски. Можно шутить, если это уместно.',
+  ].filter(Boolean).join('\n');
 }
 
-function buildMemoryPrompt({ userName, channelName, userText, botReply, recentMessages = [], existingContext = '' }) {
-  return buildMemoryExtractionPrompt({
-    userName,
-    channelName,
-    userText,
-    botReply,
-    recentMessages,
-    existingContext,
-  });
+function buildMemoryCompactionPrompt({ existingSummary = '', channelName = '', recentTurnsText = '' }) {
+  return [
+    'Сожми контекст чата в JSON. Нужен только стабильный и полезный контекст, без мусора.',
+    'Не пиши про конкретных людей как про личности, если это не важно для понимания самого чата.',
+    'Сохрани: текущие темы, незакрытые вопросы, договорённости, шутки/мемы, важные технические детали, стиль общения чата.',
+    'Верни ТОЛЬКО JSON без пояснений и без markdown.',
+    'Формат: {"summary":"короткая сжатая сводка до 1000 символов","digest":"ещё короче, 1-2 строки"}',
+    '',
+    channelName ? `Канал: ${channelName}` : '',
+    existingSummary ? `Текущий контекст:\n${existingSummary}` : 'Текущий контекст: пусто',
+    '',
+    recentTurnsText ? `Свежие сообщения:\n${recentTurnsText}` : 'Свежие сообщения: пусто',
+  ].filter(Boolean).join('\n');
 }
 
-function parseMemoryUpdate(text) {
-  const parsed = extractJsonPayload(text);
-  if (!parsed || typeof parsed !== 'object') return null;
-  return parsed;
+function buildImagePrompt(text, aspectRatio = '16:9') {
+  const userPrompt = String(text || '').trim();
+  return [
+    userPrompt,
+    '',
+    `Формат кадра: ${aspectRatio}.`,
+    'Высокая детализация, чистая композиция, выразительное освещение.',
+  ].filter(Boolean).join('\n');
 }
 
 function extractImageFromResponse(data) {
@@ -198,13 +184,7 @@ async function generateImageWithFallback({
 
   const modelList = Array.isArray(models) ? models.filter(Boolean) : [models].filter(Boolean);
   let lastError = null;
-
-  const promptWithFormatHint = [
-    prompt,
-    '',
-    `Формат изображения: ${aspectRatio}.`,
-    imageSize ? `Желаемая детализация: ${imageSize}.` : '',
-  ].filter(Boolean).join('\n');
+  const promptWithFormatHint = buildImagePrompt(prompt, aspectRatio);
 
   for (const model of modelList) {
     const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent`;
@@ -219,6 +199,12 @@ async function generateImageWithFallback({
           },
           body: JSON.stringify({
             contents: [{ parts: [{ text: promptWithFormatHint }] }],
+            generationConfig: {
+              temperature: IMAGE_PROMPT_TEMPERATURE,
+              maxOutputTokens: IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
+              topP: 0.9,
+              // only text prompt here; no unsupported image config fields
+            },
           }),
         });
 
@@ -234,7 +220,7 @@ async function generateImageWithFallback({
         const data = await res.json();
         const image = extractImageFromResponse(data);
         if (!image) throw new Error('Gemini image response did not include image data');
-        return { ...image, model };
+        return { ...image, model, imageSize };
       } catch (err) {
         lastError = err;
         const message = String(err?.message || err);
@@ -253,10 +239,9 @@ async function generateImageWithFallback({
 module.exports = {
   askGemini,
   askGeminiWithFallback,
-  buildPrompt,
-  buildMemoryPrompt,
-  parseMemoryUpdate,
+  buildChatPrompt,
+  buildMemoryCompactionPrompt,
+  buildImagePrompt,
   generateImageWithFallback,
-  MEMORY_EXTRACTION_MODEL_TEMPERATURE,
-  MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
+  extractJsonPayload,
 };

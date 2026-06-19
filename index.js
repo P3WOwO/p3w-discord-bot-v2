@@ -4,6 +4,8 @@ const { DiscordBot } = require('./src/bot');
 
 async function main() {
   const stateStore = new StateStore(config);
+  await stateStore.init();
+
   const bot = new DiscordBot(config, stateStore);
   await bot.start();
 }

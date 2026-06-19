@@ -3,10 +3,11 @@ function pickRandom(arr) {
 }
 
 function formatTime(seconds) {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
   const parts = [];
   if (d) parts.push(`${d}д`);
   if (h || d) parts.push(`${h}ч`);
@@ -16,9 +17,10 @@ function formatTime(seconds) {
 }
 
 function formatShortTime(seconds) {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
   const parts = [];
   if (d) parts.push(`${d}д`);
   if (h || d) parts.push(`${h}ч`);
@@ -27,27 +29,23 @@ function formatShortTime(seconds) {
 }
 
 function formatTopTime(seconds) {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  return d > 0 ? `${d}д ${h}ч` : `${h}ч`;
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (d > 0) return `${d}д ${h}ч`;
+  if (h > 0) return `${h}ч ${m}м`;
+  return `${m}м`;
 }
 
 function clampText(text, max = 2000) {
   const value = String(text ?? '');
   if (value.length <= max) return value;
-  return `${value.slice(0, max - 1)}…`;
+  return `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
-function getNextTargetDayUnix(dayOfMonth = 23) {
-  const now = new Date();
-  const target = new Date(now);
-  target.setHours(0, 0, 0, 0);
-  target.setDate(dayOfMonth);
-  if (target <= now) {
-    target.setMonth(target.getMonth() + 1);
-    target.setDate(dayOfMonth);
-  }
-  return Math.floor(target.getTime() / 1000);
+function normalizeText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
 module.exports = {
@@ -56,5 +54,5 @@ module.exports = {
   formatShortTime,
   formatTopTime,
   clampText,
-  getNextTargetDayUnix,
+  normalizeText,
 };

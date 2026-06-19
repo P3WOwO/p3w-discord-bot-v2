@@ -8,104 +8,41 @@ const {
   ActivityType,
   ChannelType,
   PermissionFlagsBits,
+  AttachmentBuilder,
 } = require('discord.js');
 const { joinVoiceChannel, getVoiceConnection } = require('@discordjs/voice');
 const http = require('http');
 
 const {
-  ActivityType: ACTIVITY_TYPE_FROM_CONST,
   CHECKPOINT_MS,
   PRESENCE_REFRESH_MS,
   PRESENCE_ROTATE_MS,
   TOP_LIMIT,
   HOME_GUILD_ONLY_REPLY,
-  PRESENCE_VERBS,
-  PRESENCE_NOUNS,
+  PRESENCE_PHRASES,
 } = require('./constants');
 
-const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText } = require('./utils');
-const { askGemini, askGeminiWithFallback, buildPrompt, buildMemoryPrompt, parseMemoryUpdate, generateImageWithFallback, MEMORY_EXTRACTION_MODEL_TEMPERATURE, MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS } = require('./ai');
+const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText, normalizeText } = require('./utils');
+const { askGemini, askGeminiWithFallback, buildChatPrompt, buildMemoryCompactionPrompt, generateImageWithFallback, extractJsonPayload } = require('./ai');
 
-const FORGET_PATTERNS = [
-  /(?:забудь|удали|очисти|стёр|стерли|стирай|erase|forget|delete|remove)/i,
-];
-
-function normalizeLooseText(value) {
-  return String(value ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+function isCommandLike(text, prefix) {
+  const q = normalizeText(text);
+  return q.startsWith(prefix);
 }
 
-function clampStatusText(text, max = 2000) {
-  return clampText(String(text ?? ''), max);
+function stripMention(text, botId) {
+  return String(text || '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
 }
 
-const IMAGE_REQUEST_PATTERNS = [
-  /^(?:сгенерируй|нарисуй|создай|сделай)\s+(?:мне\s+)?(?:картинку|изображение|арт|иллюстрацию|обои|постер)/i,
-  /^(?:сделай\s+)?(?:арт|изображение|картинку)\s+/i,
-  /^(?:generate|create)\s+(?:an?\s+)?(?:image|picture|art)/i,
-];
-
-const VOICE_TIME_PATTERNS = [
-  /сколько.*(?:в\s+войс|в\s+голос|voice)/i,
-  /(?:время|сколько).*войс/i,
-  /(?:voice\s*time|voice\s+time|time\s+in\s+voice)/i,
-];
-
-function isImageRequestText(text) {
-  const q = normalizeLooseText(text);
-  return IMAGE_REQUEST_PATTERNS.some(re => re.test(q));
-}
-
-function stripImageTrigger(text) {
-  return String(text ?? '')
-    .replace(/^(?:сгенерируй|нарисуй|создай|сделай)\s+(?:мне\s+)?(?:картинку|изображение|арт|иллюстрацию|обои|постер)\s*/i, '')
-    .replace(/^(?:сделай\s+)?(?:арт|изображение|картинку)\s*/i, '')
-    .replace(/^(?:generate|create)\s+(?:an?\s+)?(?:image|picture|art)\s*/i, '')
-    .trim();
-}
-
-function isVoiceTimeRequestText(text) {
-  const q = normalizeLooseText(text);
-  return VOICE_TIME_PATTERNS.some(re => re.test(q));
+function isImageRequest(text) {
+  const q = normalizeText(text).toLowerCase();
+  return /^(?:сгенерируй|нарисуй|создай|сделай)\b/.test(q) || /^(?:generate|create)\b/.test(q) || /(?:\bарт\b|\bimage\b|\bpicture\b)/.test(q);
 }
 
 function normalizeAspectRatio(value) {
-  const q = normalizeLooseText(value);
   const allowed = new Set(['1:1', '16:9', '9:16', '3:2', '2:3', '4:5', '5:4']);
-  if (allowed.has(q)) return q;
-  return '16:9';
-}
-
-function buildProgressMessage(stages = [], body = '') {
-  const lines = Array.isArray(stages) ? stages.filter(Boolean) : [];
-  const header = lines.join('\n');
-  const cleanBody = String(body ?? '').trim();
-  if (!header) return clampStatusText(cleanBody);
-  if (!cleanBody) return clampStatusText(header);
-
-  const separator = '\n\n';
-  const budget = Math.max(80, 2000 - header.length - separator.length);
-  const safeBody = clampStatusText(cleanBody, budget);
-  return `${header}${separator}${safeBody}`;
-}
-
-function isAffirmativeReply(text) {
-  const q = normalizeLooseText(text);
-  return /^(?:да|ага|угу|ок|окей|подтверждаю|верно|правда|согласен|согласна|yes|yep|yeah|confirm)(?:[.!?…]*)$/.test(q);
-}
-
-function isNegativeReply(text) {
-  const q = normalizeLooseText(text);
-  return /^(?:нет|неа|не надо|не нужно|неверно|ошибка|ложь|отмена|отклоняю|no|nope|deny)(?:[.!?…]*)$/.test(q);
-}
-
-function isForgetUserRequest(text) {
-  const q = normalizeLooseText(text);
-  return FORGET_PATTERNS.some(re => re.test(q)) && /(обо мне|меня|про меня|мою|мою инфу|мою информацию|всю инфу обо мне|всё обо мне|все обо мне|удали всё про меня)/i.test(q);
-}
-
-function isForgetChannelRequest(text) {
-  const q = normalizeLooseText(text);
-  return FORGET_PATTERNS.some(re => re.test(q)) && /(чат|канал|разговор|переписку|историю чата|историю канала|наш чат|этот канал|этот чат)/i.test(q);
+  const q = normalizeText(value);
+  return allowed.has(q) ? q : '16:9';
 }
 
 class DiscordBot {
@@ -142,139 +79,15 @@ class DiscordBot {
     return `${guildId}:${userId}`;
   }
 
-  async handlePendingReviewReply(message, text) {
-    const pendingItems = this.stateStore.getPendingReviewsForUser(message.guild.id, message.author.id);
-    if (!pendingItems.length) return false;
-
-    const item = pendingItems[0];
-    if (isAffirmativeReply(text)) {
-      const approved = this.stateStore.approvePendingReview({
-        guildId: message.guild.id,
-        userId: message.author.id,
-        channelId: message.channel.id,
-        reviewId: item.id,
-      });
-      if (approved) {
-        await this.stateStore.save();
-        await message.reply({
-          content: `✅ Запомнил: ${item.suggestedNote?.text || item.text}`,
-          allowedMentions: { repliedUser: false },
-        });
-        return true;
-      }
-    }
-
-    if (isNegativeReply(text)) {
-      const rejected = this.stateStore.rejectPendingReview({
-        guildId: message.guild.id,
-        userId: message.author.id,
-        reviewId: item.id,
-      });
-      if (rejected) {
-        await this.stateStore.save();
-        await message.reply({
-          content: '✅ Убрал из памяти.',
-          allowedMentions: { repliedUser: false },
-        });
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  async handleForgetRequest(message, text) {
-    if (isForgetUserRequest(text)) {
-      this.stateStore.clearUserMemory(message.guild.id, message.author.id);
-      await this.stateStore.save();
-      await message.reply({
-        content: '✅ Хорошо, я удалил всё, что помнил о тебе.',
-        allowedMentions: { repliedUser: false },
-      });
-      return true;
-    }
-
-    if (isForgetChannelRequest(text) && this.isAdmin(message.memberPermissions)) {
-      this.stateStore.clearChannelMemory(message.channel.id);
-      await this.stateStore.save();
-      await message.reply({
-        content: '✅ Память по этому каналу очищена.',
-        allowedMentions: { repliedUser: false },
-      });
-      return true;
-    }
-
-    return false;
-  }
-
-  addTime(guildId, userId, seconds) {
-    if (seconds <= 0) return;
-    const key = this.getKey(guildId, userId);
-    const voiceTimes = this.stateStore.getVoiceTimes();
-    voiceTimes[key] = (voiceTimes[key] || 0) + seconds;
-  }
-
-  getCurrentSessionSeconds(key) {
-    const startedAt = this.activeSessions.get(key);
-    return startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
-  }
-
-  getTotalSeconds(guildId, userId) {
-    const key = this.getKey(guildId, userId);
-    const voiceTimes = this.stateStore.getVoiceTimes();
-    return (voiceTimes[key] || 0) + this.getCurrentSessionSeconds(key);
-  }
-
-  startSession(guildId, userId) {
-    const key = this.getKey(guildId, userId);
-    if (!this.activeSessions.has(key)) this.activeSessions.set(key, Date.now());
-  }
-
-  endSession(guildId, userId) {
-    const key = this.getKey(guildId, userId);
-    const startedAt = this.activeSessions.get(key);
-    if (!startedAt) return;
-    const secs = Math.floor((Date.now() - startedAt) / 1000);
-    if (secs > 0) this.addTime(guildId, userId, secs);
-    this.activeSessions.delete(key);
-  }
-
-  checkpointSessions(force = false) {
-    const now = Date.now();
-    let changed = false;
-    for (const [key, startedAt] of this.activeSessions.entries()) {
-      const elapsed = Math.floor((now - startedAt) / 1000);
-      if (elapsed > 0 && (force || elapsed >= 60)) {
-        const [guildId, userId] = key.split(':');
-        const voiceTimes = this.stateStore.getVoiceTimes();
-        voiceTimes[key] = (voiceTimes[key] || 0) + elapsed;
-        this.activeSessions.set(key, now);
-        changed = true;
-      }
-    }
-    if (changed || force) return this.stateStore.save();
-  }
-
-  async restoreCurrentVoiceSessions() {
-    const guild = this.client.guilds.cache.get(this.config.GUILD_ID) || await this.client.guilds.fetch(this.config.GUILD_ID).catch(() => null);
-    if (!guild) return;
-    this.activeSessions.clear();
-    for (const [userId, voiceState] of guild.voiceStates.cache) {
-      if (voiceState.channelId && userId !== this.client.user.id) this.startSession(this.config.GUILD_ID, userId);
-    }
-  }
-
   getRandomPresencePhrase() {
-    return `${pickRandom(PRESENCE_VERBS)} ${pickRandom(PRESENCE_NOUNS)}`;
+    return pickRandom(PRESENCE_PHRASES);
   }
 
   ensureLifeState() {
     const lifeState = this.stateStore.getLifeState();
     if (!lifeState.startedAt) lifeState.startedAt = Date.now();
-    if (!lifeState.phrase) {
-      lifeState.phrase = this.getRandomPresencePhrase();
-      this.stateStore.setLifeState(lifeState);
-    }
+    if (!lifeState.phrase) lifeState.phrase = this.getRandomPresencePhrase();
+    this.stateStore.setLifeState(lifeState);
     return lifeState;
   }
 
@@ -286,8 +99,8 @@ class DiscordBot {
   buildPresenceActivity() {
     const lifeState = this.ensureLifeState();
     return {
-      name: `Слушает ${lifeState.phrase} • ${formatShortTime(this.buildLifeSeconds())}`,
-      type: ActivityType.Listening,
+      name: `🫧 ${lifeState.phrase} • ${formatShortTime(this.buildLifeSeconds())}`,
+      type: ActivityType.Watching,
       timestamps: { start: lifeState.startedAt },
     };
   }
@@ -312,187 +125,64 @@ class DiscordBot {
     const lifeState = this.ensureLifeState();
     lifeState.phrase = this.getRandomPresencePhrase();
     this.stateStore.setLifeState(lifeState);
-    await this.stateStore.save();
     await this.refreshPresence();
   }
 
-  async getRecentMessages(channel, limit = 5) {
-    const fetched = await channel.messages.fetch({ limit }).catch(() => null);
-    if (!fetched) return [];
-    return [...fetched.values()]
-      .filter(m => !m.author.bot)
-      .reverse()
-      .map(m => ({
-        name: m.member?.displayName || m.author.username,
-        text: m.content?.trim() || '[без текста]',
-      }));
+  startVoiceSession(guildId, userId) {
+    const key = this.getKey(guildId, userId);
+    if (!this.activeSessions.has(key)) this.activeSessions.set(key, Date.now());
   }
 
-  async getMemberName(guild, userId) {
-    const cached = guild.members.cache.get(userId);
-    if (cached) return cached.displayName || cached.user.username;
-    const fetched = await guild.members.fetch(userId).catch(() => null);
-    if (fetched) return fetched.displayName || fetched.user.username;
-    const user = await this.client.users.fetch(userId).catch(() => null);
-    return user?.username || userId;
+  endVoiceSession(guildId, userId) {
+    const key = this.getKey(guildId, userId);
+    const startedAt = this.activeSessions.get(key);
+    if (!startedAt) return;
+    const secs = Math.floor((Date.now() - startedAt) / 1000);
+    if (secs > 0) this.stateStore.addVoiceSeconds(guildId, userId, secs);
+    this.activeSessions.delete(key);
   }
 
-  getLeaderboard(guildId) {
-    const totals = new Map();
-    const voiceTimes = this.stateStore.getVoiceTimes();
-
-    for (const [key, seconds] of Object.entries(voiceTimes)) {
-      const [gId, userId] = key.split(':');
-      if (gId !== guildId) continue;
-      totals.set(userId, (totals.get(userId) || 0) + seconds);
-    }
+  checkpointVoiceSessions(force = false) {
+    const now = Date.now();
+    let changed = false;
 
     for (const [key, startedAt] of this.activeSessions.entries()) {
-      const [gId, userId] = key.split(':');
-      if (gId !== guildId) continue;
-      const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-      totals.set(userId, (totals.get(userId) || 0) + elapsed);
+      const elapsed = Math.floor((now - startedAt) / 1000);
+      if (elapsed > 0 && (force || elapsed >= 60)) {
+        const [guildId, userId] = key.split(':');
+        this.stateStore.addVoiceSeconds(guildId, userId, elapsed);
+        this.activeSessions.set(key, now);
+        changed = true;
+      }
     }
 
-    return [...totals.entries()]
-      .map(([userId, seconds]) => ({ userId, seconds }))
-      .sort((a, b) => b.seconds - a.seconds || a.userId.localeCompare(b.userId));
+    if (changed || force) return this.stateStore.save();
   }
 
-  async buildTopEmbed(guild, targetUser) {
-    const leaderboard = this.getLeaderboard(guild.id);
-    const top = leaderboard.slice(0, TOP_LIMIT);
-    const targetIndex = leaderboard.findIndex(entry => entry.userId === targetUser.id);
-    const targetRank = targetIndex >= 0 ? targetIndex + 1 : null;
-    const targetTotal = this.getTotalSeconds(guild.id, targetUser.id);
+  async restoreCurrentVoiceSessions() {
+    const guild = this.client.guilds.cache.get(this.config.GUILD_ID) || await this.client.guilds.fetch(this.config.GUILD_ID).catch(() => null);
+    if (!guild) return;
 
-    const topRows = await Promise.all(top.map(async (item, i) => {
-      const name = await this.getMemberName(guild, item.userId);
-      const shortName = name.length > 26 ? `${name.slice(0, 25)}…` : name;
-      return `${String(i + 1).padEnd(2)} ${shortName.padEnd(28)} ${formatTopTime(item.seconds)}`;
-    }));
-
-    const description = leaderboard.length === 0
-      ? 'Пока никто не провёл время в войсе.'
-      : ['```', '# Пользователь          Дни/часы', '-----------------------------------------', ...topRows, '```'].join('\n');
-
-    const embed = new EmbedBuilder()
-      .setColor(0x57f287)
-      .setTitle('🏆 Топ по времени в войсе')
-      .setDescription(description)
-      .setFooter({ text: `Всего людей в таблице: ${leaderboard.length}` })
-      .setTimestamp();
-
-    if (targetRank !== null) {
-      const targetName = await this.getMemberName(guild, targetUser.id);
-      embed.addFields({
-        name: 'Твоё место',
-        value: `**#${targetRank}** — **${targetName}**\n**Время:** ${formatTopTime(targetTotal)}`,
-        inline: false,
-      });
-    } else {
-      embed.addFields({ name: 'Твоё место', value: `Пока нет данных по **${targetUser.username}**`, inline: false });
-    }
-
-    return embed;
-  }
-
-  buildLifeEmbed() {
-    const lifeState = this.ensureLifeState();
-    const lifeSeconds = this.buildLifeSeconds();
-    return new EmbedBuilder()
-      .setColor(0x57f287)
-      .setTitle('💚 /life')
-      .setDescription(`**Бот работает уже:** ${formatTime(lifeSeconds)}\n**Текущая фраза:** ${lifeState.phrase}`)
-      .setTimestamp();
-  }
-
-
-  getVoiceTimeTotal(guildId, userId) {
-    return this.stateStore.getVoiceTimeSeconds(guildId, userId) + this.getCurrentSessionSeconds(this.getKey(guildId, userId));
-  }
-
-  async handleVoiceTimeQuery({ message, targetUser = message.author, replyTarget = message }) {
-    const guildId = message.guild.id;
-    const total = this.getVoiceTimeTotal(guildId, targetUser.id);
-    const member = await message.guild.members.fetch(targetUser.id).catch(() => null);
-    const name = member?.displayName || targetUser.username;
-    const content = `⏱ **${name}** провёл в голосовых каналах: **${formatTime(total)}**`;
-    if (replyTarget.reply) {
-      return replyTarget.reply({ content, allowedMentions: { repliedUser: false } });
-    }
-    return message.channel.send({ content });
-  }
-
-  async buildImagePrompt({ userText, userName, channelName = '', aspectRatio = '16:9' }) {
-    const roughPrompt = stripImageTrigger(userText) || userText;
-    const instruction = [
-      'Ты переписываешь запрос пользователя в короткий, но качественный промпт для генерации изображения.',
-      'Верни только готовый промпт, без списков, без кавычек, без пояснений.',
-      'Сделай сцену визуально понятной, с указанием объекта, окружения, света, композиции и стиля.',
-      `Аспект кадра: ${aspectRatio}.`,
-      userName ? `Пользователь: ${userName}.` : '',
-      channelName ? `Контекст канала: ${channelName}.` : '',
-      `Исходный запрос: ${roughPrompt}`,
-    ].filter(Boolean).join('\n\n');
-
-    try {
-      const prompt = await askGemini({
-        apiKey: this.config.GEMINI_API_KEY,
-        model: this.config.GEMINI_MODEL,
-        prompt: instruction,
-        temperature: 0.35,
-        maxOutputTokens: 300,
-        retries: 2,
-      });
-      return prompt.replace(/^["'`\s]+|["'`\s]+$/g, '').trim() || roughPrompt;
-    } catch (e) {
-      console.error('Image prompt rewrite error:', e?.message || e);
-      return roughPrompt;
+    this.activeSessions.clear();
+    for (const [userId, voiceState] of guild.voiceStates.cache) {
+      if (voiceState.channelId && userId !== this.client.user?.id) {
+        this.startVoiceSession(this.config.GUILD_ID, userId);
+      }
     }
   }
 
-  async handleImageRequest({ message, text, replyTarget = message, aspectRatio = '16:9' }) {
-    if (!this.config.GEMINI_API_KEY) {
-      return replyTarget.reply ? replyTarget.reply('⚠️ Gemini пока не подключён.') : message.channel.send('⚠️ Gemini пока не подключён.');
-    }
-
-    const userName = message.member?.displayName || message.author.username;
-    const thinkingMsg = await replyTarget.reply('🧩 Собираю промпт для изображения...');
-    const channelName = message.channel?.name || message.channel?.threadMetadata?.name || '';
-
-    try {
-      const prompt = await this.buildImagePrompt({
-        userText: text,
-        userName,
-        channelName,
-        aspectRatio,
-      });
-      await thinkingMsg.edit('🖼️ Генерирую изображение...');
-
-      const image = await generateImageWithFallback({
-        apiKey: this.config.GEMINI_API_KEY,
-        models: this.config.GEMINI_IMAGE_MODELS,
-        prompt,
-        aspectRatio,
-      });
-
-      const attachment = {
-        attachment: image.buffer,
-        name: `generated-${Date.now()}.png`,
-      };
-
-      await thinkingMsg.edit(`📤 Отправляю результат • модель: ${image.model}`).catch(() => {});
-      await message.reply({
-        content: `✅ Готово. Промпт: ${prompt}`,
-        files: [attachment],
-        allowedMentions: { repliedUser: false },
-      });
-      await thinkingMsg.delete().catch(() => {});
-    } catch (e) {
-      console.error('Image generation error:', e);
-      await thinkingMsg.edit('⚠️ Не удалось сгенерировать изображение.').catch(() => {});
-    }
+  async getRecentMessages(channel, limit = 8) {
+    const messages = await channel.messages.fetch({ limit }).catch(() => null);
+    if (!messages) return [];
+    return [...messages.values()]
+      .reverse()
+      .filter(msg => msg.content && !msg.author?.bot)
+      .map(msg => ({
+        role: msg.author?.bot ? 'assistant' : 'user',
+        name: msg.member?.displayName || msg.author?.username || 'user',
+        text: msg.content,
+      }))
+      .slice(-limit);
   }
 
   async registerCommands() {
@@ -500,38 +190,48 @@ class DiscordBot {
 
     const commands = [
       new SlashCommandBuilder()
-        .setName('time')
-        .setDescription('Показать время, проведённое в голосовых каналах')
-        .addUserOption(option => option.setName('user').setDescription('Пользователь (если не указать — покажет твоё время)').setRequired(false))
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('top')
-        .setDescription('Показать топ по времени в голосовых каналах')
-        .addUserOption(option => option.setName('user').setDescription('Пользователь, которого тоже надо показать внизу, если он не в топе').setRequired(false))
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('life')
-        .setDescription('Показать, сколько живёт бот')
-        .toJSON(),
-      new SlashCommandBuilder()
         .setName('ping')
-        .setDescription('Проверить отклик бота')
+        .setDescription('Проверить задержку бота')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('say')
-        .setDescription('Попросить бота ответить на сообщение через Gemini')
+        .setDescription('Попросить бота ответить через Gemini')
         .addStringOption(option => option.setName('text').setDescription('Текст сообщения').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
+        .setName('image')
+        .setDescription('Сгенерировать картинку через Gemini')
+        .addStringOption(option => option.setName('text').setDescription('Что нарисовать').setRequired(true))
+        .addStringOption(option => option.setName('ratio').setDescription('Соотношение сторон').setRequired(false))
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('time')
+        .setDescription('Показать время в войсе')
+        .addUserOption(option => option.setName('user').setDescription('Кого проверить'))
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('user')
+        .setDescription('Показать время в войсе')
+        .addUserOption(option => option.setName('user').setDescription('Кого проверить'))
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('top')
+        .setDescription('Топ по времени в войсе')
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('life')
+        .setDescription('Показать жизнь бота')
+        .toJSON(),
+      new SlashCommandBuilder()
         .setName('msg')
-        .setDescription('Отправить сообщение от имени бота в выбранный канал')
+        .setDescription('Отправить сообщение от имени бота')
         .setDefaultMemberPermissions(adminOnly)
-        .addChannelOption(option => option.setName('channel').setDescription('Канал, куда отправить сообщение').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
-        .addStringOption(option => option.setName('message').setDescription('Текст сообщения').setRequired(true))
+        .addChannelOption(option => option.setName('channel').setDescription('Канал').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+        .addStringOption(option => option.setName('message').setDescription('Текст').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('purge')
-        .setDescription('Удалить последние N сообщений')
+        .setDescription('Удалить последние сообщения')
         .setDefaultMemberPermissions(adminOnly)
         .addIntegerOption(option => option.setName('amount').setDescription('Сколько удалить').setRequired(true).setMinValue(1).setMaxValue(100))
         .toJSON(),
@@ -547,113 +247,144 @@ class DiscordBot {
     await rest.put(Routes.applicationCommands(this.config.CLIENT_ID), { body: [] });
   }
 
-  async generateAiReply({ channel, guildId, userId, userName, text }) {
-    const recent = await this.getRecentMessages(channel, 5);
+  async buildTopEmbed(guild) {
+    const items = Object.entries(this.stateStore.getVoiceTimes())
+      .filter(([key]) => key.startsWith(`${guild.id}:`))
+      .map(([key, seconds]) => ({ key, seconds: Number(seconds || 0) }))
+      .sort((a, b) => b.seconds - a.seconds)
+      .slice(0, TOP_LIMIT);
+
+    const lines = [];
+    for (const [index, item] of items.entries()) {
+      const userId = item.key.split(':')[1];
+      const member = await guild.members.fetch(userId).catch(() => null);
+      const name = member?.displayName || member?.user?.username || userId;
+      lines.push(`**${index + 1}.** ${name} — ${formatTopTime(item.seconds)}`);
+    }
+
+    return new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('🏆 Топ по войсу')
+      .setDescription(lines.join('\n') || 'Пока пусто')
+      .setTimestamp();
+  }
+
+  buildLifeEmbed() {
+    const lifeState = this.ensureLifeState();
+    return new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle('🫧 Жизнь бота')
+      .addFields(
+        { name: 'Аптайм', value: formatTime(this.buildLifeSeconds()), inline: true },
+        { name: 'Старт', value: lifeState.startedAt ? `<t:${Math.floor(lifeState.startedAt / 1000)}:F>` : '—', inline: true },
+        { name: 'Режим', value: lifeState.phrase || '—', inline: false },
+      )
+      .setTimestamp();
+  }
+
+  async generateChatReply({ channel, guildId, userId, userName, text }) {
+    const recent = await this.getRecentMessages(channel, 10);
     const channelName = channel?.name || channel?.threadMetadata?.name || '';
-    const memoryContext = this.stateStore.getMemoryContext({
-      guildId,
+    const memoryContext = this.stateStore.buildMemoryContext({
       channelId: channel.id,
-      userId,
-      userName,
       channelName,
       queryText: text,
       recentMessages: recent,
     });
 
-    const prompt = buildPrompt({
+    const prompt = buildChatPrompt({
+      basePrompt: this.config.BASE_PROMPT,
       memoryContext,
-      recentMessages: recent,
       userName,
-      text,
       channelName,
-      baseStylePrompt: this.config.BASE_STYLE_PROMPT,
+      text,
     });
 
-    const answer = await askGemini({
+    const answer = await askGeminiWithFallback({
       apiKey: this.config.GEMINI_API_KEY,
-      model: this.config.GEMINI_MODEL,
+      models: this.config.GEMINI_CHAT_MODELS,
       prompt,
     });
 
-    return { answer, recent, memoryContext, channelName };
+    return { answer, recent, channelName };
   }
 
-  async storeConversationTurn({ guildId, channel, userId, userName, userText, botReply, recentMessages, memoryContext, channelName, sourceMessageId = '', statusMessage = null }) {
-    this.stateStore.pushChannelMessage(channel.id, 'user', userName, userText);
-    this.stateStore.pushChannelMessage(channel.id, 'model', 'Bot', botReply);
+  async compactChannelMemory({ channelId, channelName = '' }) {
+    const channel = this.stateStore.getChannelMemory(channelId);
+    const recentTurnsText = (channel.turns || [])
+      .slice(-8)
+      .map(turn => `${turn.role === 'assistant' ? 'Бот' : 'Чат'}: ${turn.text}`)
+      .join('\n');
 
-    if (statusMessage) {
-      await statusMessage.edit(buildProgressMessage([
-        '📝 Обновляю память...',
-        '🔎 Проверяю факты и контекст...'
-      ])).catch(() => {});
+    if (!this.config.GEMINI_API_KEY) {
+      const fallback = this.stateStore.compactFallback(channelId);
+      this.stateStore.updateChannelCompaction(channelId, fallback);
+      return;
     }
 
-    this.stateStore.applyHeuristicMemoryExtraction({
-      guildId,
-      channelId: channel.id,
-      userId,
-      userName,
-      channelName,
-      userText,
-      botReply,
-      sourceMessageId,
-    });
+    try {
+      const prompt = buildMemoryCompactionPrompt({
+        existingSummary: channel.summary || '',
+        channelName: channel.title || channelName || '',
+        recentTurnsText,
+      });
 
-    let extractedUpdate = null;
-    if (this.config.GEMINI_API_KEY) {
-      try {
-        const memoryPrompt = buildMemoryPrompt({
-          userName,
-          channelName,
-          userText,
-          botReply,
-          recentMessages,
-          existingContext: memoryContext,
+      const raw = await askGemini({
+        apiKey: this.config.GEMINI_API_KEY,
+        model: this.config.GEMINI_CHAT_MODELS[0] || this.config.GEMINI_MODEL,
+        prompt,
+        temperature: 0.25,
+        maxOutputTokens: 700,
+        retries: 1,
+      });
+
+      const parsed = extractJsonPayload(raw);
+      if (parsed && (parsed.summary || parsed.digest)) {
+        this.stateStore.updateChannelCompaction(channelId, {
+          summary: String(parsed.summary || channel.summary || '').trim(),
+          digest: String(parsed.digest || '').trim(),
         });
-
-        const rawUpdate = await askGemini({
-          apiKey: this.config.GEMINI_API_KEY,
-          model: this.config.GEMINI_MODEL,
-          prompt: memoryPrompt,
-          temperature: MEMORY_EXTRACTION_MODEL_TEMPERATURE,
-          maxOutputTokens: MEMORY_EXTRACTION_MAX_OUTPUT_TOKENS,
-          retries: 1,
-        });
-
-        extractedUpdate = parseMemoryUpdate(rawUpdate);
-        if (extractedUpdate) {
-          this.stateStore.applyMemoryExtraction({
-            guildId,
-            channelId: channel.id,
-            userId,
-            userName,
-            update: extractedUpdate,
-          });
-        }
-      } catch (e) {
-        console.error('Memory extraction error:', e?.message || e);
+        return;
       }
+    } catch (err) {
+      console.error('Memory compaction failed:', err?.message || err);
     }
 
-    if (Array.isArray(extractedUpdate?.pending_reviews_add) && extractedUpdate.pending_reviews_add.length) {
-      const pending = extractedUpdate.pending_reviews_add[0];
-      const summary = pending?.suggested_note?.text || pending?.suggestedNote?.text || pending?.text;
-      if (summary) {
-        await channel.send({
-          content: `⚠️ Я не уверен в этой информации и не хочу запоминать её как факт без подтверждения: **${summary}**
-Ответь **да** чтобы сохранить или **нет** чтобы удалить.`,
-        }).catch(() => {});
-      }
+    const fallback = this.stateStore.compactFallback(channelId);
+    this.stateStore.updateChannelCompaction(channelId, fallback);
+  }
+
+  async handleImageRequest({ message, text, ratio }) {
+    if (!this.config.GEMINI_API_KEY) {
+      return message.reply('⚠️ Gemini пока не подключён.');
     }
 
-    await this.stateStore.save();
+    const prompt = String(text || '').trim();
+    if (!prompt) return message.reply('Напиши, что именно рисовать.');
 
-    if (statusMessage) {
-      await statusMessage.edit(buildProgressMessage([
-        '📝 Обновляю память...',
-        '✅ Память обновлена.'
-      ])).catch(() => {});
+    const status = await message.reply('🖼 Генерирую изображение...');
+    await message.channel.sendTyping().catch(() => {});
+
+    try {
+      const result = await generateImageWithFallback({
+        apiKey: this.config.GEMINI_API_KEY,
+        models: this.config.GEMINI_IMAGE_MODELS,
+        prompt,
+        aspectRatio: normalizeAspectRatio(ratio),
+      });
+
+      const attachment = new AttachmentBuilder(result.buffer, { name: 'image.png' });
+      await status.delete().catch(() => {});
+      await message.reply({
+        content: `✅ Готово${result.model ? ` • ${result.model}` : ''}`,
+        files: [attachment],
+        allowedMentions: { repliedUser: false },
+      });
+      return;
+    } catch (err) {
+      console.error('Image generation error:', err);
+      await status.edit(`❌ Image generation error: ${clampText(String(err.message || err), 1800)}`).catch(() => {});
+      return;
     }
   }
 
@@ -663,10 +394,11 @@ class DiscordBot {
     }
 
     const userName = message.member?.displayName || message.author.username;
-    const thinkingMsg = await message.reply('🧠 Анализирую запрос...');
+    const status = await message.reply('🧠 Думаю...');
+    await message.channel.sendTyping().catch(() => {});
 
     try {
-      const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
+      const { answer, recent, channelName } = await this.generateChatReply({
         channel: message.channel,
         guildId: message.guild.id,
         userId: message.author.id,
@@ -674,279 +406,294 @@ class DiscordBot {
         text,
       });
 
-      await thinkingMsg.edit('💬 Формирую ответ...');
+      const finalAnswer = clampText(answer, 1900);
+      await status.edit(finalAnswer).catch(() => {});
 
-      await this.storeConversationTurn({
-        guildId: message.guild.id,
-        channel: message.channel,
-        userId: message.author.id,
-        userName,
-        userText: text,
-        botReply: answer,
-        recentMessages: recent,
-        memoryContext,
-        channelName,
-        sourceMessageId: message.id,
-        statusMessage: thinkingMsg,
+      this.stateStore.appendChannelTurn(message.channel.id, {
+        role: 'user',
+        name: userName,
+        text,
+      });
+      this.stateStore.appendChannelTurn(message.channel.id, {
+        role: 'assistant',
+        name: this.client.user?.username || 'Bot',
+        text: finalAnswer,
       });
 
-      await thinkingMsg.delete().catch(() => {});
-      await message.reply({
-        content: answer,
-        allowedMentions: { repliedUser: false },
-      });
-    } catch (e) {
-      console.error('Gemini error:', e);
-      await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
-    }
-  }
+      if (this.stateStore.shouldCompactChannelMemory(message.channel.id, this.config.MEMORY_COMPACT_AFTER_TURNS)) {
+        await status.edit('🗂 Сокращаю долгий контекст...').catch(() => {});
+        await this.compactChannelMemory({
+          channelId: message.channel.id,
+          channelName,
+        });
+      }
 
-  async handleMentionOrReply(message) {
-    const authorName = message.member?.displayName || message.author.username;
-    const cleanText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
-    if (!cleanText) return;
-    if (!this.config.GEMINI_API_KEY) return message.reply('⚠️ Gemini пока не подключён.');
-
-    const thinkingMsg = await message.reply('🧠 Анализирую запрос...');
-    try {
-      const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
-        channel: message.channel,
-        guildId: message.guild.id,
-        userId: message.author.id,
-        userName: authorName,
-        text: cleanText,
-      });
-
-      await thinkingMsg.edit('💬 Формирую ответ...');
-      await this.storeConversationTurn({
-        guildId: message.guild.id,
-        channel: message.channel,
-        userId: message.author.id,
-        userName: authorName,
-        userText: cleanText,
-        botReply: answer,
-        recentMessages: recent,
-        memoryContext,
-        channelName,
-        sourceMessageId: message.id,
-        statusMessage: thinkingMsg,
-      });
-
-      await thinkingMsg.delete().catch(() => {});
-      await message.reply({
-        content: answer,
-        allowedMentions: { repliedUser: false },
-      });
-    } catch (e) {
-      console.error('Gemini error:', e);
-      await thinkingMsg.edit('⚠️ Я сейчас сильно загружен.').catch(() => {});
-    }
-  }
-
-  async start() {
-    this.client.once('ready', async () => {
-      console.log(`✅ Бот онлайн: ${this.client.user.tag} | Gemini: ${this.config.GEMINI_MODEL}`);
-      await this.stateStore.init();
-      this.ensureLifeState();
       await this.stateStore.save();
-      await this.registerCommands().catch(console.error);
-      await this.restoreCurrentVoiceSessions();
+      await status.edit(finalAnswer).catch(() => {});
+      return;
+    } catch (err) {
+      console.error('Gemini error:', err);
+      await status.edit('❌ Gemini сейчас перегружен или ответ не прошёл.').catch(() => {});
+      return;
+    }
+  }
+
+  async handleSlashAi(interaction, text) {
+    if (!this.config.GEMINI_API_KEY) {
+      return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+    const userName = interaction.member?.displayName || interaction.user.username;
+    try {
+      const { answer, recent, channelName } = await this.generateChatReply({
+        channel: interaction.channel,
+        guildId: interaction.guild.id,
+        userId: interaction.user.id,
+        userName,
+        text,
+      });
+
+      await interaction.editReply({ content: clampText(answer, 1900) });
+      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'user', name: userName, text });
+      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'assistant', name: this.client.user?.username || 'Bot', text: clampText(answer, 1900) });
+
+      if (this.stateStore.shouldCompactChannelMemory(interaction.channel.id, this.config.MEMORY_COMPACT_AFTER_TURNS)) {
+        await this.compactChannelMemory({ channelId: interaction.channel.id, channelName });
+      }
+
+      await this.stateStore.save();
+    } catch (err) {
+      console.error('Gemini slash error:', err);
+      await interaction.editReply({ content: '❌ Gemini сейчас перегружен или ответ не прошёл.' });
+    }
+  }
+
+  async handleVoiceTime(interaction, targetUser) {
+    const target = targetUser || interaction.user;
+    const total = this.stateStore.getVoiceTimeSeconds(interaction.guild.id, target.id);
+    const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+    const name = member?.displayName || target.username;
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setAuthor({ name, iconURL: target.displayAvatarURL({ size: 256 }) })
+      .setTitle('⏱ Время в войсе')
+      .setDescription(`**Всего:** ${formatTime(total)}`)
+      .setFooter({ text: `ID: ${target.id}` })
+      .setTimestamp();
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  async handleInteraction(interaction) {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (!interaction.guildId || !this.isHomeGuild(interaction.guildId)) {
+      return interaction.reply({ content: HOME_GUILD_ONLY_REPLY, ephemeral: true }).catch(() => {});
+    }
+
+    if (['msg', 'purge', 'jtm'].includes(interaction.commandName) && !this.isAdmin(interaction.memberPermissions)) {
+      return interaction.reply({ content: '❌ Эта команда только для админов.', ephemeral: true }).catch(() => {});
+    }
+
+    if (interaction.commandName === 'ping') {
+      return interaction.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, ephemeral: true });
+    }
+
+    if (interaction.commandName === 'say') {
+      return this.handleSlashAi(interaction, interaction.options.getString('text', true));
+    }
+
+    if (interaction.commandName === 'image') {
+      const text = interaction.options.getString('text', true);
+      const ratio = interaction.options.getString('ratio') || '16:9';
+      if (!this.config.GEMINI_API_KEY) {
+        return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
+      }
+      await interaction.deferReply();
+      await interaction.editReply('🖼 Генерирую изображение...');
+      try {
+        const result = await generateImageWithFallback({
+          apiKey: this.config.GEMINI_API_KEY,
+          models: this.config.GEMINI_IMAGE_MODELS,
+          prompt: text,
+          aspectRatio: normalizeAspectRatio(ratio),
+        });
+        const attachment = new AttachmentBuilder(result.buffer, { name: 'image.png' });
+        return interaction.editReply({
+          content: `✅ Готово${result.model ? ` • ${result.model}` : ''}`,
+          files: [attachment],
+        });
+      } catch (err) {
+        console.error('Slash image error:', err);
+        return interaction.editReply({ content: `❌ Image generation error: ${clampText(String(err.message || err), 1800)}` });
+      }
+    }
+
+    if (interaction.commandName === 'time' || interaction.commandName === 'user') {
+      const target = interaction.options.getUser('user') || interaction.user;
+      return this.handleVoiceTime(interaction, target);
+    }
+
+    if (interaction.commandName === 'top') {
+      const embed = await this.buildTopEmbed(interaction.guild);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    if (interaction.commandName === 'life') {
+      return interaction.reply({ embeds: [this.buildLifeEmbed()] });
+    }
+
+    if (interaction.commandName === 'msg') {
+      await interaction.deferReply({ ephemeral: true });
+      const channel = interaction.options.getChannel('channel', true);
+      const msgText = interaction.options.getString('message', true);
+      if (!channel.isTextBased()) return interaction.editReply({ content: '❌ Это не текстовый канал.' });
+      try {
+        await channel.send({ content: msgText });
+        await interaction.editReply({ content: `✅ Сообщение отправлено в ${channel}.` });
+      } catch {
+        await interaction.editReply({ content: '❌ Не удалось отправить сообщение.' });
+      }
+      return;
+    }
+
+    if (interaction.commandName === 'purge') {
+      await interaction.deferReply({ ephemeral: true });
+      const amount = interaction.options.getInteger('amount', true);
+      if (!interaction.channel?.isTextBased()) return interaction.editReply({ content: '❌ Это не текстовый канал.' });
+      try {
+        const deleted = await interaction.channel.bulkDelete(amount, true);
+        return interaction.editReply({ content: `✅ Удалено сообщений: **${deleted.size}**` });
+      } catch {
+        return interaction.editReply({ content: '❌ Не удалось удалить сообщения.' });
+      }
+    }
+
+    if (interaction.commandName === 'jtm') {
+      await interaction.deferReply({ ephemeral: true });
+      const voiceChannel = interaction.member?.voice?.channel;
+      if (!voiceChannel) return interaction.editReply({ content: '❌ Ты не в войсе.' });
+      const me = interaction.guild.members.me;
+      const perms = voiceChannel.permissionsFor(me);
+      if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])) {
+        return interaction.editReply({ content: '❌ У меня нет прав зайти в этот войс.' });
+      }
+      try {
+        const existing = getVoiceConnection(interaction.guild.id);
+        if (existing) existing.destroy();
+        joinVoiceChannel({
+          channelId: voiceChannel.id,
+          guildId: interaction.guild.id,
+          adapterCreator: interaction.guild.voiceAdapterCreator,
+          selfDeaf: false,
+          selfMute: false,
+        });
+        await interaction.editReply({ content: `✅ Зашёл в ${voiceChannel}.` });
+      } catch {
+        await interaction.editReply({ content: '❌ Не удалось подключиться к войсу.' });
+      }
+    }
+  }
+
+  async handleMessage(message) {
+    if (message.author.bot || !message.guild || !message.content) return;
+
+    if (!this.isHomeGuild(message.guild.id)) {
+      const isCommandLike = message.content.startsWith(this.config.PREFIX) || message.mentions.has(this.client.user);
+      if (isCommandLike) return message.reply(HOME_GUILD_ONLY_REPLY).catch(() => {});
+      return;
+    }
+
+    const cleanMentionText = this.client.user ? stripMention(message.content, this.client.user.id) : message.content;
+    const authorName = message.member?.displayName || message.author.username;
+
+    if (message.content.startsWith(this.config.PREFIX)) {
+      const args = message.content.slice(this.config.PREFIX.length).trim().split(/\s+/);
+      const cmd = (args.shift() || '').toLowerCase();
+
+      if (cmd === 'say') {
+        const promptText = args.join(' ').trim();
+        if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}say\`.`);
+        return this.handleAiMessage({ message, text: promptText });
+      }
+
+      if (cmd === 'image' || cmd === 'img') {
+        const promptText = args.join(' ').trim();
+        if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}image\`.`);
+        return this.handleImageRequest({ message, text: promptText, ratio: '16:9' });
+      }
+    }
+
+    const isMentioned = message.mentions.has(this.client.user);
+    let isReplyToBot = false;
+    if (message.reference?.messageId) {
+      const replied = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+      if (replied?.author?.id === this.client.user?.id) isReplyToBot = true;
+    }
+
+    if (isMentioned || isReplyToBot) {
+      const text = cleanMentionText.trim();
+      if (!text) return;
+      if (isImageRequest(text)) return this.handleImageRequest({ message, text, ratio: '16:9' });
+      return this.handleAiMessage({ message, text });
+    }
+  }
+
+  async registerEventHandlers() {
+    this.client.on('ready', async () => {
+      console.log(`✅ Logged in as ${this.client.user.tag}`);
+      await this.registerCommands().catch(err => console.error('Command registration error:', err));
       await this.refreshPresence();
+      await this.restoreCurrentVoiceSessions();
 
-      this.checkpointTimer = setInterval(() => this.checkpointSessions(false), CHECKPOINT_MS);
-      this.presenceRefreshTimer = setInterval(() => this.refreshPresence().catch(console.error), PRESENCE_REFRESH_MS);
-      this.presenceRotateTimer = setInterval(() => this.rotatePresencePhrase().catch(console.error), PRESENCE_ROTATE_MS);
+      this.checkpointTimer = setInterval(() => {
+        this.checkpointVoiceSessions(false).catch(err => console.error('Checkpoint error:', err));
+      }, CHECKPOINT_MS);
 
-      console.log(`🌿 Статус: "Слушает ${this.ensureLifeState().phrase}"`);
+      this.presenceRefreshTimer = setInterval(() => {
+        this.refreshPresence().catch(err => console.error('Presence refresh error:', err));
+      }, PRESENCE_REFRESH_MS);
+
+      this.presenceRotateTimer = setInterval(() => {
+        this.rotatePresencePhrase().catch(err => console.error('Presence rotate error:', err));
+      }, PRESENCE_ROTATE_MS);
+    });
+
+    this.client.on('messageCreate', async message => {
+      try {
+        await this.handleMessage(message);
+      } catch (err) {
+        console.error('messageCreate error:', err);
+      }
+    });
+
+    this.client.on('interactionCreate', async interaction => {
+      try {
+        await this.handleInteraction(interaction);
+      } catch (err) {
+        console.error('interactionCreate error:', err);
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: '❌ Что-то пошло не так.' }).catch(() => {});
+        } else {
+          await interaction.reply({ content: '❌ Что-то пошло не так.', ephemeral: true }).catch(() => {});
+        }
+      }
     });
 
     this.client.on('voiceStateUpdate', (oldState, newState) => {
-      if (!newState.guild || newState.guild.id !== this.config.GUILD_ID || newState.id === this.client.user?.id) return;
+      if (!oldState.guild || oldState.guild.id !== this.config.GUILD_ID) return;
+      if (oldState.member?.user?.bot) return;
 
+      const userId = oldState.id;
       const oldChannel = oldState.channelId;
       const newChannel = newState.channelId;
 
-      if (!oldChannel && newChannel) this.startSession(newState.guild.id, newState.id);
-      else if (oldChannel && !newChannel) this.endSession(newState.guild.id, newState.id);
-      else if (oldChannel && newChannel && oldChannel !== newChannel) {
-        this.endSession(newState.guild.id, newState.id);
-        this.startSession(newState.guild.id, newState.id);
-      }
-    });
-
-    this.client.on('messageCreate', async (message) => {
-      if (message.author.bot || !message.guild || !message.content) return;
-
-      if (!this.isHomeGuild(message.guild.id)) {
-        const isCommandLike = message.content.startsWith(this.config.PREFIX) || message.mentions.has(this.client.user);
-        if (isCommandLike) return message.reply(HOME_GUILD_ONLY_REPLY).catch(() => {});
-        return;
-      }
-
-      const authorName = message.member?.displayName || message.author.username;
-      const cleanMessageText = message.content.replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '').trim();
-
-      if (message.content.startsWith(this.config.PREFIX)) {
-        const args = message.content.slice(1).trim().split(/\s+/);
-        const cmd = args[0]?.toLowerCase();
-
-        if (cmd === 'say') {
-          const promptText = args.slice(1).join(' ').trim();
-          if (!promptText) return message.reply(`Напиши текст после \`${this.config.PREFIX}say\`.`);
-          return this.handleAiMessage({ message, text: promptText });
-        }
-      }
-
-      if (cleanMessageText) {
-        const handledForget = await this.handleForgetRequest(message, cleanMessageText);
-        if (handledForget) return;
-
-        const handledPending = await this.handlePendingReviewReply(message, cleanMessageText);
-        if (handledPending) return;
-      }
-
-      const isMentioned = message.mentions.has(this.client.user);
-      let isReplyToBot = false;
-      if (message.reference?.messageId) {
-        const replied = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
-        if (replied?.author.id === this.client.user.id) isReplyToBot = true;
-      }
-      if (!isMentioned && !isReplyToBot) return;
-
-      if (!cleanMessageText) return;
-      return this.handleMentionOrReply(message);
-    });
-
-    this.client.on('interactionCreate', async (interaction) => {
-      if (!interaction.isChatInputCommand()) return;
-
-      if (!interaction.guildId || !this.isHomeGuild(interaction.guildId)) {
-        return interaction.reply({ content: HOME_GUILD_ONLY_REPLY, ephemeral: true }).catch(() => {});
-      }
-
-      if (['msg', 'purge', 'jtm'].includes(interaction.commandName) && !this.isAdmin(interaction.memberPermissions)) {
-        return interaction.reply({ content: '❌ Эта команда только для админов сервера.', ephemeral: true }).catch(() => {});
-      }
-
-      if (interaction.commandName === 'ping') {
-        return interaction.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, ephemeral: true });
-      }
-
-      if (interaction.commandName === 'say') {
-        const text = interaction.options.getString('text', true);
-        await interaction.deferReply();
-        try {
-          if (!this.config.GEMINI_API_KEY) {
-            return interaction.editReply({ content: '⚠️ Gemini пока не подключён.' });
-          }
-          const userName = interaction.member?.displayName || interaction.user.username;
-          const { answer, recent, memoryContext, channelName } = await this.generateAiReply({
-            channel: interaction.channel,
-            guildId: interaction.guild.id,
-            userId: interaction.user.id,
-            userName,
-            text,
-          });
-          await interaction.editReply({ content: clampText(answer, 2000) });
-          await this.storeConversationTurn({
-            guildId: interaction.guild.id,
-            channel: interaction.channel,
-            userId: interaction.user.id,
-            userName,
-            userText: text,
-            botReply: answer,
-            recentMessages: recent,
-            memoryContext,
-            channelName,
-            sourceMessageId: interaction.id,
-          });
-        } catch (e) {
-          console.error('Gemini error:', e);
-          return interaction.editReply({ content: '❌ Gemini сейчас перегружен.' });
-        }
-        return;
-      }
-
-      if (interaction.commandName === 'msg') {
-        await interaction.deferReply({ ephemeral: true });
-        const channel = interaction.options.getChannel('channel', true);
-        const msgText = interaction.options.getString('message', true);
-        if (!channel.isTextBased()) return interaction.editReply({ content: '❌ Это не текстовый канал.' });
-        try {
-          await channel.send({ content: msgText });
-          await interaction.editReply({ content: `✅ Сообщение отправлено в ${channel}.` });
-        } catch (e) {
-          await interaction.editReply({ content: '❌ Не удалось отправить сообщение.' });
-        }
-        return;
-      }
-
-      if (interaction.commandName === 'time') {
-        await interaction.deferReply();
-        const target = interaction.options.getUser('user') || interaction.user;
-        const total = this.getTotalSeconds(interaction.guild.id, target.id);
-        const member = await interaction.guild.members.fetch(target.id).catch(() => null);
-        const name = member?.displayName || target.username;
-        const embed = new EmbedBuilder()
-          .setColor(0x5865f2)
-          .setAuthor({ name, iconURL: target.displayAvatarURL({ size: 256 }) })
-          .setTitle('⏱ Время в войсе')
-          .setDescription(`**Всего:** ${formatTime(total)}`)
-          .setThumbnail(target.displayAvatarURL({ size: 256 }))
-          .setFooter({ text: `ID: ${target.id}` })
-          .setTimestamp();
-        return interaction.editReply({ embeds: [embed] });
-      }
-
-      if (interaction.commandName === 'top') {
-        await interaction.deferReply();
-        const target = interaction.options.getUser('user') || interaction.user;
-        const embed = await this.buildTopEmbed(interaction.guild, target);
-        return interaction.editReply({ embeds: [embed] });
-      }
-
-      if (interaction.commandName === 'life') {
-        await interaction.deferReply();
-        return interaction.editReply({ embeds: [this.buildLifeEmbed()] });
-      }
-
-      if (interaction.commandName === 'purge') {
-        await interaction.deferReply({ ephemeral: true });
-        const amount = interaction.options.getInteger('amount', true);
-        if (!interaction.channel?.isTextBased()) return interaction.editReply({ content: '❌ Это не текстовый канал.' });
-        try {
-          const deleted = await interaction.channel.bulkDelete(amount, true);
-          await interaction.editReply({ content: `✅ Удалено сообщений: **${deleted.size}**` });
-        } catch (e) {
-          await interaction.editReply({ content: '❌ Не удалось удалить сообщения.' });
-        }
-        return;
-      }
-
-      if (interaction.commandName === 'jtm') {
-        await interaction.deferReply({ ephemeral: true });
-        const voiceChannel = interaction.member?.voice?.channel;
-        if (!voiceChannel) return interaction.editReply({ content: '❌ Ты не в войсе.' });
-        const me = interaction.guild.members.me;
-        const perms = voiceChannel.permissionsFor(me);
-        if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])) {
-          return interaction.editReply({ content: '❌ У меня нет прав зайти в этот войс.' });
-        }
-        try {
-          const existing = getVoiceConnection(interaction.guild.id);
-          if (existing) existing.destroy();
-          joinVoiceChannel({
-            channelId: voiceChannel.id,
-            guildId: interaction.guild.id,
-            adapterCreator: interaction.guild.voiceAdapterCreator,
-            selfDeaf: false,
-            selfMute: false,
-          });
-          await interaction.editReply({ content: `✅ Зашёл в ${voiceChannel}.` });
-        } catch (e) {
-          await interaction.editReply({ content: '❌ Не удалось подключиться к войсу.' });
-        }
-      }
+      if (!oldChannel && newChannel) this.startVoiceSession(oldState.guild.id, userId);
+      if (oldChannel && !newChannel) this.endVoiceSession(oldState.guild.id, userId);
+      if (!oldChannel && !newChannel) return;
+      if (oldChannel && newChannel && oldChannel !== newChannel) this.startVoiceSession(oldState.guild.id, userId);
     });
 
     this.client.on('error', console.error);
@@ -959,14 +706,20 @@ class DiscordBot {
 
     process.on('SIGINT', () => this.shutdown('SIGINT'));
     process.on('SIGTERM', () => this.shutdown('SIGTERM'));
+  }
 
+  async start() {
+    await this.registerEventHandlers();
     await this.client.login(this.config.TOKEN);
   }
 
   async shutdown(signal) {
     try {
       console.log(`Получен ${signal}, сохраняю данные...`);
-      await this.checkpointSessions(true);
+      if (this.checkpointTimer) clearInterval(this.checkpointTimer);
+      if (this.presenceRefreshTimer) clearInterval(this.presenceRefreshTimer);
+      if (this.presenceRotateTimer) clearInterval(this.presenceRotateTimer);
+      await this.checkpointVoiceSessions(true);
       await this.stateStore.save();
       if (this.httpServer) this.httpServer.close(() => {});
       if (this.client?.destroy) this.client.destroy();
