@@ -17,6 +17,48 @@ function createEmptyChannelMemory(title = '') {
   };
 }
 
+
+const INTERNAL_MEMORY_PATTERNS = [
+  /(?:я\s+)?(?:запомнил|записал|сохранил|зафиксировал|добавил(?:\s+в)?\s+память)/i,
+  /(?:долгий|краткий)\s+контекст/i,
+  /(?:читал|прочитал|прочёл)\s+(?:из\s+)?(?:базы|базы данных|архива)/i,
+  /voice_times/i,
+  /анналы\s+истории/i,
+];
+
+function isInternalAssistantText(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return INTERNAL_MEMORY_PATTERNS.some(pattern => pattern.test(value));
+}
+
+function sanitizeAssistantMemoryText(text) {
+  const value = String(text || '').trim();
+  if (!value) return value;
+
+  const sentences = value
+    .split(/(?<=[.!?…])\s+|\n+/)
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  const kept = sentences.filter(sentence => !isInternalAssistantText(sentence));
+
+  if (!kept.length) {
+    return value
+      .replace(/(?:я\s+)?(?:запомнил|записал|сохранил|зафиксировал|добавил(?:\s+в)?\s+память)[^.?!…\n]*/ig, '')
+      .replace(/(?:долгий|краткий)\s+контекст[^.?!…\n]*/ig, '')
+      .replace(/voice_times[^.?!…\n]*/ig, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  return kept.join(' ').replace(/\s{2,}/g, ' ').trim();
+}
+
+function isInternalAssistantTurn(turn) {
+  return String(turn?.role || '') === 'assistant' && isInternalAssistantText(turn?.text);
+}
+
 function createEmptyMemory() {
   return {
     schemaVersion: 1,
@@ -33,12 +75,15 @@ function normalizeChannelMemory(raw, title = '') {
   base.summary = clampText(raw.summary || '', 1200);
   base.digest = clampText(raw.digest || '', 300);
   base.turns = Array.isArray(raw.turns)
-    ? raw.turns.map(turn => ({
-        role: String(turn?.role || 'user').slice(0, 20),
-        name: clampText(turn?.name || '', 80),
-        text: clampText(turn?.text || '', 300),
-        ts: turn?.ts || new Date().toISOString(),
-      })).slice(-MAX_HISTORY)
+    ? raw.turns
+        .map(turn => ({
+          role: String(turn?.role || 'user').slice(0, 20),
+          name: clampText(turn?.name || '', 80),
+          text: clampText(turn?.text || '', 300),
+          ts: turn?.ts || new Date().toISOString(),
+        }))
+        .filter(turn => !isInternalAssistantTurn(turn))
+        .slice(-MAX_HISTORY)
     : [];
   base.turnsSinceCompact = Math.max(0, Number(raw.turnsSinceCompact || 0) || 0);
   base.lastUpdatedAt = raw.lastUpdatedAt || null;
@@ -66,10 +111,13 @@ function appendChannelTurn(memoryInput, channelId, { role, name, text }) {
   const memory = normalizeMemory(memoryInput);
   const channel = memory.channels[channelId] || createEmptyChannelMemory();
   channel.turns = Array.isArray(channel.turns) ? channel.turns : [];
+  const safeText = String(role || 'user').slice(0, 20) === 'assistant'
+    ? sanitizeAssistantMemoryText(text)
+    : text;
   channel.turns.push({
     role: String(role || 'user').slice(0, 20),
     name: clampText(name || '', 80),
-    text: clampText(text || '', 300),
+    text: clampText(safeText || '', 300),
     ts: new Date().toISOString(),
   });
   channel.turns = channel.turns.slice(-MAX_HISTORY);
@@ -93,6 +141,7 @@ function setChannelMemory(memoryInput, channelId, nextMemory) {
 function buildRecentTurnsText(turns = []) {
   return (turns || [])
     .filter(Boolean)
+    .filter(turn => !isInternalAssistantTurn(turn))
     .map(turn => {
       const who = turn.role === 'assistant' ? 'Бот' : (turn.name || 'Пользователь');
       return `${who}: ${clampText(turn.text || '', 220)}`;
@@ -140,7 +189,10 @@ function extractJsonPayload(text) {
 
 function compactMemoryFallback(channelMemory) {
   const turns = Array.isArray(channelMemory.turns) ? channelMemory.turns : [];
-  const lastTurns = turns.slice(-6).map(turn => `${turn.role === 'assistant' ? 'Бот' : 'Чат'}: ${turn.text}`);
+  const lastTurns = turns
+    .filter(turn => !isInternalAssistantTurn(turn))
+    .slice(-6)
+    .map(turn => `${turn.role === 'assistant' ? 'Бот' : 'Чат'}: ${turn.text}`);
   const summary = clampText(
     [channelMemory.summary, ...lastTurns].filter(Boolean).join(' | '),
     1100
@@ -163,4 +215,6 @@ module.exports = {
   buildRecentTurnsText,
   extractJsonPayload,
   compactMemoryFallback,
+  sanitizeAssistantMemoryText,
+  isInternalAssistantText,
 };

@@ -23,7 +23,7 @@ const {
 } = require('./constants');
 
 const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText, normalizeText } = require('./utils');
-const { askGemini, askGeminiWithFallback, buildChatPrompt, buildMemoryCompactionPrompt, generateImageWithFallback, extractJsonPayload } = require('./ai');
+const { askGemini, askGeminiWithFallback, buildChatPrompt, buildMemoryCompactionPrompt, generateImageWithFallback, extractJsonPayload, cleanAssistantReply } = require('./ai');
 
 function isCommandLike(text, prefix) {
   const q = normalizeText(text);
@@ -168,6 +168,7 @@ class DiscordBot {
   }
 
   async restoreCurrentVoiceSessions() {
+    if (!this.config.GUILD_ID) return;
     const guild = this.client.guilds.cache.get(this.config.GUILD_ID) || await this.client.guilds.fetch(this.config.GUILD_ID).catch(() => null);
     if (!guild) return;
 
@@ -418,7 +419,7 @@ class DiscordBot {
         text,
       });
 
-      const finalAnswer = clampText(answer, 1900);
+      const finalAnswer = clampText(cleanAssistantReply(answer), 1900);
       await status.edit(finalAnswer).catch(() => {});
 
       this.stateStore.appendChannelTurn(message.channel.id, {
@@ -466,9 +467,9 @@ class DiscordBot {
         text,
       });
 
-      await interaction.editReply({ content: clampText(answer, 1900) });
+      await interaction.editReply({ content: clampText(cleanAssistantReply(answer), 1900) });
       this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'user', name: userName, text });
-      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'assistant', name: this.client.user?.username || 'Bot', text: clampText(answer, 1900) });
+      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'assistant', name: this.client.user?.username || 'Bot', text: clampText(cleanAssistantReply(answer), 1900) });
 
       if (this.stateStore.shouldCompactChannelMemory(interaction.channel.id, this.config.MEMORY_COMPACT_AFTER_TURNS)) {
         await this.compactChannelMemory({ channelId: interaction.channel.id, channelName });
@@ -684,15 +685,15 @@ class DiscordBot {
       await this.restoreCurrentVoiceSessions();
 
       this.checkpointTimer = setInterval(() => {
-        this.checkpointVoiceSessions(false).catch(err => console.error('Checkpoint error:', err));
+        void Promise.resolve(this.checkpointVoiceSessions(false)).catch(err => console.error('Checkpoint error:', err));
       }, CHECKPOINT_MS);
 
       this.presenceRefreshTimer = setInterval(() => {
-        this.refreshPresence().catch(err => console.error('Presence refresh error:', err));
+        void Promise.resolve(this.refreshPresence()).catch(err => console.error('Presence refresh error:', err));
       }, PRESENCE_REFRESH_MS);
 
       this.presenceRotateTimer = setInterval(() => {
-        this.rotatePresencePhrase().catch(err => console.error('Presence rotate error:', err));
+        void Promise.resolve(this.rotatePresencePhrase()).catch(err => console.error('Presence rotate error:', err));
       }, PRESENCE_ROTATE_MS);
     });
 
@@ -735,8 +736,14 @@ class DiscordBot {
     this.client.on('shardError', console.error);
 
     this.httpServer = http.createServer((req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Bot is alive');
+      const url = String(req.url || '/');
+      if (url === '/' || url === '/health' || url === '/healthz' || url === '/healt') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('ok');
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('not found');
     }).listen(process.env.PORT || 8080);
 
     process.on('SIGINT', () => this.shutdown('SIGINT'));

@@ -18,7 +18,7 @@ function parseList(value, fallback = []) {
 module.exports = {
   TOKEN: required('TOKEN'),
   CLIENT_ID: required('CLIENT_ID'),
-  GUILD_ID: required('GUILD_ID'),
+  GUILD_ID: process.env.GUILD_ID || '',
 
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
@@ -28,12 +28,9 @@ module.exports = {
     'gemini-2.0-flash',
   ]),
   GEMINI_IMAGE_MODELS: parseList(process.env.GEMINI_IMAGE_MODELS, [
+    'gemini-2.5-flash-image',
     'gemini-3.1-flash-image',
     'gemini-3-pro-image',
-    'gemini-2.5-flash-image',
-    'imagen-4.0-ultra-generate-001',
-    'imagen-4.0-generate-001',
-    'imagen-4.0-fast-generate-001',
   ]),
   BASE_PROMPT: process.env.BASE_PROMPT || process.env.BASE_STYLE_PROMPT || '',
   PREFIX: process.env.PREFIX || '!',

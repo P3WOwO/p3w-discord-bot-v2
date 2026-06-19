@@ -69,3 +69,10 @@ WHERE row_id = 'main';
 ```
 
 Если хочешь оставить только память чата, но сбросить голосовую статистику, очисти только `voice_times`.
+
+
+## Health check
+Use `/health`, `/healthz`, `/healt`, or `/` for the anti-AFK ping.
+
+## Resetting memory
+To make the bot feel clean again, clear the `ai_memory`, `voice_times`, and `life_state` columns for the `main` row in `bot_state`.

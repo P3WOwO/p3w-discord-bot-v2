@@ -27,12 +27,15 @@ function normalizeImageModelName(model) {
   if (!raw) return raw;
 
   const aliases = {
-    'imagen-4-ultra-generate': 'imagen-4.0-ultra-generate-001',
-    'imagen-4-generate': 'imagen-4.0-generate-001',
-    'imagen-4-fast-generate': 'imagen-4.0-fast-generate-001',
-    'imagen-4.0-ultra-generate': 'imagen-4.0-ultra-generate-001',
-    'imagen-4.0-generate': 'imagen-4.0-generate-001',
-    'imagen-4.0-fast-generate': 'imagen-4.0-fast-generate-001',
+    'imagen-4-ultra-generate': 'gemini-2.5-flash-image',
+    'imagen-4-generate': 'gemini-2.5-flash-image',
+    'imagen-4-fast-generate': 'gemini-2.5-flash-image',
+    'imagen-4.0-ultra-generate': 'gemini-2.5-flash-image',
+    'imagen-4.0-generate': 'gemini-2.5-flash-image',
+    'imagen-4.0-fast-generate': 'gemini-2.5-flash-image',
+    'imagen-4.0-ultra-generate-001': 'gemini-2.5-flash-image',
+    'imagen-4.0-generate-001': 'gemini-2.5-flash-image',
+    'imagen-4.0-fast-generate-001': 'gemini-2.5-flash-image',
     'gemini-3-image': 'gemini-3-pro-image',
     'gemini-3-image-preview': 'gemini-3-pro-image',
     'gemini-3.1-image': 'gemini-3.1-flash-image',
@@ -40,6 +43,31 @@ function normalizeImageModelName(model) {
   };
 
   return aliases[raw] || raw;
+}
+
+function cleanAssistantReply(text) {
+  const value = String(text ?? '').trim();
+  if (!value) return value;
+
+  const internalPatterns = [
+    /(?:я\s+)?(?:запомнил|записал|сохранил|зафиксировал|добавил(?:\s+в)?\s+память)/i,
+    /(?:долгий|краткий)\s+контекст/i,
+    /(?:читал|прочитал|прочёл)\s+(?:из\s+)?(?:базы|базы данных|архива)/i,
+    /voice_times/i,
+    /анналы\s+истории/i,
+    /секретн\w*\s+архив/i,
+  ];
+
+  const rawChunks = value.split(/\n+/);
+  const chunks = rawChunks.flatMap(chunk => chunk.split(/(?<=[.!?…])\s+/));
+
+  const kept = chunks
+    .map(part => part.trim())
+    .filter(Boolean)
+    .filter(part => !internalPatterns.some(pattern => pattern.test(part)));
+
+  const cleaned = kept.join(' ').replace(/\s{2,}/g, ' ').trim();
+  return cleaned || value;
 }
 
 async function askGemini({
@@ -138,6 +166,7 @@ function buildChatPrompt({ basePrompt = '', memoryContext = '', userName = '', c
     basePrompt ? '' : '',
     'Говори как живой собеседник. Подстраивайся под тон пользователя. Не упоминай лишний раз системные ограничения.',
     'Используй долгий контекст только если он реально помогает ответу.',
+    'Никогда не говори пользователю, что ты что-то "запомнил", "сохранил" или "зафиксировал" как внутреннее действие. Если это нужно, просто используй контекст молча.',
     '',
     memoryContext ? `Долгий контекст:\n${memoryContext}` : 'Долгий контекст: пусто',
     '',
@@ -154,6 +183,7 @@ function buildMemoryCompactionPrompt({ existingSummary = '', channelName = '', r
     'Сожми контекст чата в JSON. Нужен только стабильный и полезный контекст, без мусора.',
     'Не пиши про конкретных людей как про личности, если это не важно для понимания самого чата.',
     'Сохрани: текущие темы, незакрытые вопросы, договорённости, шутки/мемы, важные технические детали, стиль общения чата.',
+    'Не сохраняй и не упоминай внутренние действия бота, ответы о памяти, чтении базы или компакции.',
     'Верни ТОЛЬКО JSON без пояснений и без markdown.',
     'Формат: {"summary":"короткая сжатая сводка до 1000 символов","digest":"ещё короче, 1-2 строки"}',
     '',
@@ -205,11 +235,38 @@ async function generateImageWithFallback({
   const modelList = (Array.isArray(models) ? models : [models])
     .map(normalizeImageModelName)
     .filter(Boolean);
-  let lastError = null;
+
   const promptWithFormatHint = buildImagePrompt(prompt, aspectRatio);
+  let lastError = null;
 
   for (const model of modelList) {
     const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent`;
+    const isGemini3Image = /^(gemini-3\.1-flash-image|gemini-3-pro-image)$/i.test(model);
+    const isGemini25Image = /^gemini-2\.5-flash-image$/i.test(model);
+
+    const generationConfig = isGemini3Image
+      ? {
+          responseModalities: ['Image'],
+          responseFormat: {
+            image: {
+              aspectRatio,
+              imageSize,
+            },
+          },
+          temperature: IMAGE_PROMPT_TEMPERATURE,
+          maxOutputTokens: IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
+          topP: 0.9,
+        }
+      : {
+          responseFormat: {
+            image: {
+              aspectRatio,
+            },
+          },
+          temperature: IMAGE_PROMPT_TEMPERATURE,
+          maxOutputTokens: IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
+          topP: 0.9,
+        };
 
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
@@ -221,12 +278,7 @@ async function generateImageWithFallback({
           },
           body: JSON.stringify({
             contents: [{ parts: [{ text: promptWithFormatHint }] }],
-            generationConfig: {
-              temperature: IMAGE_PROMPT_TEMPERATURE,
-              maxOutputTokens: IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
-              topP: 0.9,
-              // only text prompt here; no unsupported image config fields
-            },
+            generationConfig,
           }),
         });
 
@@ -242,7 +294,7 @@ async function generateImageWithFallback({
         const data = await res.json();
         const image = extractImageFromResponse(data);
         if (!image) throw new Error('Gemini image response did not include image data');
-        return { ...image, model, imageSize };
+        return { ...image, model, imageSize: isGemini25Image ? null : imageSize };
       } catch (err) {
         lastError = err;
         const message = String(err?.message || err);
@@ -266,4 +318,5 @@ module.exports = {
   buildImagePrompt,
   generateImageWithFallback,
   extractJsonPayload,
+  cleanAssistantReply,
 };
