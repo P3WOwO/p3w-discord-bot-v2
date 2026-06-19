@@ -16,5 +16,6 @@ module.exports = {
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   SUPABASE_TABLE: process.env.SUPABASE_TABLE || 'bot_state',
   SUPABASE_ROW_ID: process.env.SUPABASE_ROW_ID || 'main',
+  SUPABASE_KNOWLEDGE_TABLE: process.env.SUPABASE_KNOWLEDGE_TABLE || 'bot_knowledge',
   PREFIX: process.env.PREFIX || '!',
 };

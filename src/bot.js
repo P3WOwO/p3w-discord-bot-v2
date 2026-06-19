@@ -425,7 +425,7 @@ class DiscordBot {
   async generateAiReply({ channel, guildId, userId, userName, text }) {
     const recent = await this.getRecentMessages(channel, 5);
     const channelName = channel?.name || channel?.threadMetadata?.name || '';
-    const memoryContext = this.stateStore.getMemoryContext({
+    const memoryContext = await this.stateStore.getMemoryContext({
       guildId,
       channelId: channel.id,
       userId,
