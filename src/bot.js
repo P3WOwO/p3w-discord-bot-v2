@@ -147,7 +147,7 @@ class DiscordBot {
     this.activeSessions.delete(key);
   }
 
-  checkpointVoiceSessions(force = false) {
+  async checkpointVoiceSessions(force = false) {
     const now = Date.now();
     let changed = false;
 
@@ -161,7 +161,10 @@ class DiscordBot {
       }
     }
 
-    if (changed || force) return this.stateStore.save();
+    if (changed || force) {
+      return this.stateStore.save();
+    }
+    return Promise.resolve();
   }
 
   async restoreCurrentVoiceSessions() {
@@ -673,7 +676,7 @@ class DiscordBot {
   }
 
   async registerEventHandlers() {
-    this.client.on('ready', async () => {
+    this.client.once('clientReady', async () => {
       console.log(`✅ Logged in as ${this.client.user.tag}`);
       await this.registerCommands().catch(err => console.error('Command registration error:', err));
       if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; slash commands will be registered globally.');

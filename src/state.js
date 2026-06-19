@@ -13,7 +13,7 @@ const {
   compactMemoryFallback,
 } = require('./memory');
 
-const DATA_DIR = '/data';
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const LOCAL_FALLBACK_FILE = path.join(DATA_DIR, 'bot_state.json');
 
 function ensureDataDir() {

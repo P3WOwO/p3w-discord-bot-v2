@@ -22,6 +22,26 @@ function isRetryableMessage(message) {
   return ['429', '503', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout'].some(token => lower.includes(token));
 }
 
+function normalizeImageModelName(model) {
+  const raw = String(model || '').trim();
+  if (!raw) return raw;
+
+  const aliases = {
+    'imagen-4-ultra-generate': 'imagen-4.0-ultra-generate-001',
+    'imagen-4-generate': 'imagen-4.0-generate-001',
+    'imagen-4-fast-generate': 'imagen-4.0-fast-generate-001',
+    'imagen-4.0-ultra-generate': 'imagen-4.0-ultra-generate-001',
+    'imagen-4.0-generate': 'imagen-4.0-generate-001',
+    'imagen-4.0-fast-generate': 'imagen-4.0-fast-generate-001',
+    'gemini-3-image': 'gemini-3-pro-image',
+    'gemini-3-image-preview': 'gemini-3-pro-image',
+    'gemini-3.1-image': 'gemini-3.1-flash-image',
+    'gemini-3.1-image-preview': 'gemini-3.1-flash-image',
+  };
+
+  return aliases[raw] || raw;
+}
+
 async function askGemini({
   apiKey,
   model,
@@ -86,7 +106,7 @@ async function askGeminiWithFallback({
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
 }) {
-  const modelList = Array.isArray(models) ? models.filter(Boolean) : [models].filter(Boolean);
+  const modelList = (Array.isArray(models) ? models : [models]).filter(Boolean);
   let lastError = null;
 
   for (const model of modelList) {
@@ -182,7 +202,9 @@ async function generateImageWithFallback({
 }) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
 
-  const modelList = Array.isArray(models) ? models.filter(Boolean) : [models].filter(Boolean);
+  const modelList = (Array.isArray(models) ? models : [models])
+    .map(normalizeImageModelName)
+    .filter(Boolean);
   let lastError = null;
   const promptWithFormatHint = buildImagePrompt(prompt, aspectRatio);
 

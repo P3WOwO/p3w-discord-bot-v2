@@ -2,7 +2,7 @@
 
 Чистая версия бота:
 - Gemini для чата
-- Gemini для картинок
+- Gemini для картинок через рабочие model IDs и fallback-список
 - долгий контекст чата через сжатую память канала
 - без системы "да / нет" для памяти
 - voice times в Supabase
@@ -21,7 +21,7 @@
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL` — модель чата, по умолчанию `gemini-2.5-flash-lite`
 - `GEMINI_CHAT_MODELS` — список моделей чата через запятую
-- `GEMINI_IMAGE_MODELS` — список моделей для картинок через запятую
+- `GEMINI_IMAGE_MODELS` — список моделей для картинок через запятую. Поддерживаются `gemini-3.1-flash-image`, `gemini-3-pro-image`, `gemini-2.5-flash-image`, а также корректные IDs Imagen 4 вроде `imagen-4.0-ultra-generate-001`.
 
 Дополнительно:
 - `BASE_PROMPT` или `BASE_STYLE_PROMPT`
@@ -55,3 +55,17 @@ npm start
 - добавлен `!ping` как текстовый тест
 - бот больше не молчит из-за жёсткой проверки одного guild для безопасных ответов
 - если `GUILD_ID` пустой, он всё равно отвечает на mention/reply и команды
+
+## Как полностью очистить память
+
+Если нужно начать с чистого чата, удали или обнули значения в строке `bot_state` в Supabase:
+
+```sql
+UPDATE bot_state
+SET ai_memory = '{}'::jsonb,
+    voice_times = '{}'::jsonb,
+    life_state = '{}'::jsonb
+WHERE row_id = 'main';
+```
+
+Если хочешь оставить только память чата, но сбросить голосовую статистику, очисти только `voice_times`.
