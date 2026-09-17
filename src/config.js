@@ -27,14 +27,15 @@ module.exports = {
     'gemini-2.5-flash',
     'gemini-2.0-flash',
   ]),
+  // Только реально существующие модели + правильные эндпоинты в ai.js.
   GEMINI_IMAGE_MODELS: parseList(process.env.GEMINI_IMAGE_MODELS, [
     'gemini-2.5-flash-image',
-    'gemini-3.1-flash-image',
-    'gemini-3-pro-image',
+    'imagen-4.0-generate-001',
   ]),
   BASE_PROMPT: process.env.BASE_PROMPT || process.env.BASE_STYLE_PROMPT || '',
   PREFIX: process.env.PREFIX || '!',
-  MEMORY_COMPACT_AFTER_TURNS: Number(process.env.MEMORY_COMPACT_AFTER_TURNS || 8) || 8,
+  CONTEXT_MAX_TURNS: Number(process.env.CONTEXT_MAX_TURNS || 25) || 25,
+  CONTEXT_SUMMARY_EVERY: Number(process.env.CONTEXT_SUMMARY_EVERY || 30) || 30,
 
   SUPABASE_URL: process.env.SUPABASE_URL || '',
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',

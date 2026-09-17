@@ -1,13 +1,7 @@
-const {
-  SYSTEM_PROMPT,
-  CHAT_TEMPERATURE,
-  CHAT_MAX_OUTPUT_TOKENS,
-  MEMORY_TEMPERATURE,
-  MEMORY_MAX_OUTPUT_TOKENS,
-  IMAGE_PROMPT_TEMPERATURE,
-  IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
-} = require('./constants');
-const { extractJsonPayload } = require('./memory');
+const { SYSTEM_PROMPT, CHAT_TEMPERATURE, CHAT_MAX_OUTPUT_TOKENS } = require('./constants');
+
+const API_BASE = 'https://generativelanguage.googleapis.com';
+const IMAGEN_PATTERN = /^imagen-/i;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -19,55 +13,7 @@ function isRetryableStatus(status) {
 
 function isRetryableMessage(message) {
   const lower = String(message || '').toLowerCase();
-  return ['429', '503', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout'].some(token => lower.includes(token));
-}
-
-function normalizeImageModelName(model) {
-  const raw = String(model || '').trim();
-  if (!raw) return raw;
-
-  const aliases = {
-    'imagen-4-ultra-generate': 'gemini-2.5-flash-image',
-    'imagen-4-generate': 'gemini-2.5-flash-image',
-    'imagen-4-fast-generate': 'gemini-2.5-flash-image',
-    'imagen-4.0-ultra-generate': 'gemini-2.5-flash-image',
-    'imagen-4.0-generate': 'gemini-2.5-flash-image',
-    'imagen-4.0-fast-generate': 'gemini-2.5-flash-image',
-    'imagen-4.0-ultra-generate-001': 'gemini-2.5-flash-image',
-    'imagen-4.0-generate-001': 'gemini-2.5-flash-image',
-    'imagen-4.0-fast-generate-001': 'gemini-2.5-flash-image',
-    'gemini-3-image': 'gemini-3-pro-image',
-    'gemini-3-image-preview': 'gemini-3-pro-image',
-    'gemini-3.1-image': 'gemini-3.1-flash-image',
-    'gemini-3.1-image-preview': 'gemini-3.1-flash-image',
-  };
-
-  return aliases[raw] || raw;
-}
-
-function cleanAssistantReply(text) {
-  const value = String(text ?? '').trim();
-  if (!value) return value;
-
-  const internalPatterns = [
-    /(?:я\s+)?(?:запомнил|записал|сохранил|зафиксировал|добавил(?:\s+в)?\s+память)/i,
-    /(?:долгий|краткий)\s+контекст/i,
-    /(?:читал|прочитал|прочёл)\s+(?:из\s+)?(?:базы|базы данных|архива)/i,
-    /voice_times/i,
-    /анналы\s+истории/i,
-    /секретн\w*\s+архив/i,
-  ];
-
-  const rawChunks = value.split(/\n+/);
-  const chunks = rawChunks.flatMap(chunk => chunk.split(/(?<=[.!?…])\s+/));
-
-  const kept = chunks
-    .map(part => part.trim())
-    .filter(Boolean)
-    .filter(part => !internalPatterns.some(pattern => pattern.test(part)));
-
-  const cleaned = kept.join(' ').replace(/\s{2,}/g, ' ').trim();
-  return cleaned || value;
+  return ['429', '500', '503', '504', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout'].some(token => lower.includes(token));
 }
 
 async function askGemini({
@@ -81,7 +27,7 @@ async function askGemini({
 }) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
 
-  const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent`;
+  const url = `${API_BASE}/v1beta/models/${model}:generateContent`;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -96,7 +42,7 @@ async function askGemini({
           generationConfig: {
             temperature,
             maxOutputTokens,
-            topP: 0.9,
+            topP: 0.95,
             ...generationConfig,
           },
         }),
@@ -158,46 +104,11 @@ async function askGeminiWithFallback({
   throw lastError || new Error('Gemini fallback failed');
 }
 
-function buildChatPrompt({ basePrompt = '', memoryContext = '', userName = '', channelName = '', text = '' }) {
-  return [
-    SYSTEM_PROMPT,
-    '',
-    basePrompt ? `Дополнительный стиль общения:\n${basePrompt}` : '',
-    basePrompt ? '' : '',
-    'Говори как живой собеседник. Подстраивайся под тон пользователя. Не упоминай лишний раз системные ограничения.',
-    'Используй долгий контекст только если он реально помогает ответу.',
-    'Никогда не говори пользователю, что ты что-то "запомнил", "сохранил" или "зафиксировал" как внутреннее действие. Если это нужно, просто используй контекст молча.',
-    '',
-    memoryContext ? `Долгий контекст:\n${memoryContext}` : 'Долгий контекст: пусто',
-    '',
-    `Пользователь: ${userName || 'unknown'}`,
-    `Канал: ${channelName || 'unknown'}`,
-    `Сообщение: ${text}`,
-    '',
-    'Ответь по-русски, если пользователь пишет по-русски. Можно шутить, если это уместно.',
-  ].filter(Boolean).join('\n');
-}
-
-function buildMemoryCompactionPrompt({ existingSummary = '', channelName = '', recentTurnsText = '' }) {
-  return [
-    'Сожми контекст чата в JSON. Нужен только стабильный и полезный контекст, без мусора.',
-    'Не пиши про конкретных людей как про личности, если это не важно для понимания самого чата.',
-    'Сохрани: текущие темы, незакрытые вопросы, договорённости, шутки/мемы, важные технические детали, стиль общения чата.',
-    'Не сохраняй и не упоминай внутренние действия бота, ответы о памяти, чтении базы или компакции.',
-    'Верни ТОЛЬКО JSON без пояснений и без markdown.',
-    'Формат: {"summary":"короткая сжатая сводка до 1000 символов","digest":"ещё короче, 1-2 строки"}',
-    '',
-    channelName ? `Канал: ${channelName}` : '',
-    existingSummary ? `Текущий контекст:\n${existingSummary}` : 'Текущий контекст: пусто',
-    '',
-    recentTurnsText ? `Свежие сообщения:\n${recentTurnsText}` : 'Свежие сообщения: пусто',
-  ].filter(Boolean).join('\n');
-}
+// ===== Картинки =====
 
 function buildImagePrompt(text, aspectRatio = '16:9') {
-  const userPrompt = String(text || '').trim();
   return [
-    userPrompt,
+    String(text || '').trim(),
     '',
     `Формат кадра: ${aspectRatio}.`,
     'Высокая детализация, чистая композиция, выразительное освещение.',
@@ -209,11 +120,11 @@ function extractImageFromResponse(data) {
   for (const candidate of candidates) {
     const parts = candidate?.content?.parts || [];
     for (const part of parts) {
-      const inlineData = part?.inlineData;
+      const inlineData = part?.inlineData || part?.inline_data;
       if (inlineData?.data) {
         return {
           buffer: Buffer.from(inlineData.data, 'base64'),
-          mimeType: inlineData.mimeType || 'image/png',
+          mimeType: inlineData.mimeType || inlineData.mime_type || 'image/png',
           text: parts.map(p => p?.text).filter(Boolean).join('\n').trim(),
         };
       }
@@ -222,101 +133,169 @@ function extractImageFromResponse(data) {
   return null;
 }
 
-async function generateImageWithFallback({
-  apiKey,
-  models,
-  prompt,
-  aspectRatio = '16:9',
-  imageSize = '2K',
-  retries = 2,
-}) {
-  if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
-
-  const modelList = (Array.isArray(models) ? models : [models])
-    .map(normalizeImageModelName)
-    .filter(Boolean);
-
-  const promptWithFormatHint = buildImagePrompt(prompt, aspectRatio);
+// Gemini image models (например gemini-2.5-flash-image) — через generateContent.
+async function generateImageGemini({ apiKey, model, prompt, aspectRatio, retries }) {
+  const url = `${API_BASE}/v1beta/models/${model}:generateContent`;
   let lastError = null;
 
-  for (const model of modelList) {
-    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent`;
-    const isGemini3Image = /^(gemini-3\.1-flash-image|gemini-3-pro-image)$/i.test(model);
-    const isGemini25Image = /^gemini-2\.5-flash-image$/i.test(model);
-
-    const generationConfig = isGemini3Image
-      ? {
-          responseModalities: ['Image'],
-          responseFormat: {
-            image: {
-              aspectRatio,
-              imageSize,
-            },
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            imageConfig: { aspectRatio },
           },
-          temperature: IMAGE_PROMPT_TEMPERATURE,
-          maxOutputTokens: IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
-          topP: 0.9,
-        }
-      : {
-          responseFormat: {
-            image: {
-              aspectRatio,
-            },
-          },
-          temperature: IMAGE_PROMPT_TEMPERATURE,
-          maxOutputTokens: IMAGE_PROMPT_MAX_OUTPUT_TOKENS,
-          topP: 0.9,
-        };
+        }),
+      });
 
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: promptWithFormatHint }] }],
-            generationConfig,
-          }),
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          if (isRetryableStatus(res.status) && attempt < retries) {
-            await sleep(Math.pow(2, attempt) * 1000);
-            continue;
-          }
-          throw new Error(`Gemini image ${res.status}: ${errText}`);
-        }
-
-        const data = await res.json();
-        const image = extractImageFromResponse(data);
-        if (!image) throw new Error('Gemini image response did not include image data');
-        return { ...image, model, imageSize: isGemini25Image ? null : imageSize };
-      } catch (err) {
-        lastError = err;
-        const message = String(err?.message || err);
-        if (attempt < retries && isRetryableMessage(message)) {
+      if (!res.ok) {
+        const errText = await res.text();
+        if (isRetryableStatus(res.status) && attempt < retries) {
           await sleep(Math.pow(2, attempt) * 1000);
           continue;
         }
-        break;
+        throw new Error(`${model} ${res.status}: ${errText}`);
       }
+
+      const data = await res.json();
+      const image = extractImageFromResponse(data);
+      if (!image) throw new Error(`${model}: ответ не содержит изображение`);
+      return { ...image, model };
+    } catch (err) {
+      lastError = err;
+      const message = String(err?.message || err);
+      if (attempt < retries && isRetryableMessage(message)) {
+        await sleep(Math.pow(2, attempt) * 1000);
+        continue;
+      }
+      break;
+    }
+  }
+
+  throw lastError;
+}
+
+// Imagen models (imagen-4.0-generate-001) — отдельный эндпоинт :predict.
+async function generateImageImagen({ apiKey, model, prompt, aspectRatio, retries }) {
+  const url = `${API_BASE}/v1/models/${model}:predict`;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          instances: [{ prompt }],
+          parameters: {
+            sampleCount: 1,
+            aspectRatio,
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        if (isRetryableStatus(res.status) && attempt < retries) {
+          await sleep(Math.pow(2, attempt) * 1000);
+          continue;
+        }
+        throw new Error(`${model} ${res.status}: ${errText}`);
+      }
+
+      const data = await res.json();
+      const prediction = data?.predictions?.[0];
+      const base64 = prediction?.bytesBase64Encoded || prediction?.image;
+      if (!base64) throw new Error(`${model}: ответ не содержит изображение`);
+      return {
+        buffer: Buffer.from(base64, 'base64'),
+        mimeType: prediction?.mimeType || 'image/png',
+        text: '',
+        model,
+      };
+    } catch (err) {
+      lastError = err;
+      const message = String(err?.message || err);
+      if (attempt < retries && isRetryableMessage(message)) {
+        await sleep(Math.pow(2, attempt) * 1000);
+        continue;
+      }
+      break;
+    }
+  }
+
+  throw lastError;
+}
+
+async function generateImageWithFallback({ apiKey, models, prompt, aspectRatio = '16:9', retries = 2 }) {
+  if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
+
+  const modelList = (Array.isArray(models) ? models : [models]).filter(Boolean);
+  const finalPrompt = buildImagePrompt(prompt, aspectRatio);
+  let lastError = null;
+
+  for (const model of modelList) {
+    const isImagen = IMAGEN_PATTERN.test(model);
+    try {
+      return isImagen
+        ? await generateImageImagen({ apiKey, model, prompt: finalPrompt, aspectRatio, retries })
+        : await generateImageGemini({ apiKey, model, prompt: finalPrompt, aspectRatio, retries });
+    } catch (err) {
+      lastError = err;
+      console.error(`Image model failed: ${model}:`, err?.message || err);
     }
   }
 
   throw lastError || new Error('Не удалось сгенерировать изображение');
 }
 
+// ===== Промпты чата =====
+
+function buildChatPrompt({ basePrompt = '', chatContext = '', userName = '', channelName = '', text = '' }) {
+  return [
+    SYSTEM_PROMPT,
+    '',
+    basePrompt ? `Дополнительный стиль общения:\n${basePrompt}` : '',
+    '',
+    chatContext ? `Контекст чата:\n${chatContext}` : 'Контекст чата: пусто',
+    '',
+    `Пользователь: ${userName || 'unknown'}`,
+    channelName ? `Канал: ${channelName}` : '',
+    `Сообщение: ${text}`,
+  ].filter(Boolean).join('\n');
+}
+
+// Промпт авто-выжимки старых сообщений (дешёвый вызов раз в N сообщений).
+function buildSummaryPrompt({ existingSummary = '', oldMessages = '' }) {
+  return [
+    'Сожми переписку в очень короткую выжимку (максимум 2-3 предложения).',
+    'Сохрани только суть: темы, договорённости, важные факты, внутренние шутки канала.',
+    'Без имён-обращений, без оценок, без markdown. Верни только текст выжимки.',
+    '',
+    existingSummary ? `Текущая выжимка:\n${existingSummary}` : 'Текущая выжимка: пусто',
+    '',
+    oldMessages ? `Старые сообщения:\n${oldMessages}` : 'Старые сообщения: пусто',
+  ].filter(Boolean).join('\n');
+}
+
 module.exports = {
   askGemini,
   askGeminiWithFallback,
   buildChatPrompt,
-  buildMemoryCompactionPrompt,
+  buildSummaryPrompt,
   buildImagePrompt,
   generateImageWithFallback,
-  extractJsonPayload,
-  cleanAssistantReply,
 };
+
+
+

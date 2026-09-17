@@ -3,15 +3,11 @@ const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 const { DEFAULT_LIFE_STATE } = require('./constants');
 const {
-  createEmptyMemory,
-  normalizeMemory,
-  appendChannelTurn,
-  getChannelMemory,
-  setChannelMemory,
-  buildMemoryContext,
-  extractJsonPayload,
-  compactMemoryFallback,
-} = require('./memory');
+  createChannelContext,
+  normalizeChannelContext,
+  addTurnToContext,
+} = require('./context');
+const { clampText } = require('./utils');
 
 const DATA_DIR = process.env.DATA_DIR || path.join('/tmp', 'p3w-bot');
 const LOCAL_FALLBACK_FILE = path.join(DATA_DIR, 'bot_state.json');
@@ -34,7 +30,7 @@ class StateStore {
     this.state = {
       voiceTimes: {},
       lifeState: clone(DEFAULT_LIFE_STATE),
-      aiMemory: createEmptyMemory(),
+      aiMemory: { channels: {} },
     };
   }
 
@@ -61,6 +57,18 @@ class StateStore {
     this.enabled = false;
   }
 
+  normalizeAiMemory(raw) {
+    const channels = raw?.channels && typeof raw.channels === 'object' ? raw.channels : {};
+    return {
+      channels: Object.fromEntries(
+        Object.entries(channels).map(([channelId, channelMemory]) => [
+          channelId,
+          normalizeChannelContext(channelMemory),
+        ])
+      ),
+    };
+  }
+
   async loadFromSupabase() {
     const { SUPABASE_TABLE, SUPABASE_ROW_ID } = this.config;
     const { data, error } = await this.supabase
@@ -76,7 +84,7 @@ class StateStore {
       this.state.lifeState = data.life_state && typeof data.life_state === 'object'
         ? { ...clone(DEFAULT_LIFE_STATE), ...data.life_state }
         : clone(DEFAULT_LIFE_STATE);
-      this.state.aiMemory = normalizeMemory(data.ai_memory);
+      this.state.aiMemory = this.normalizeAiMemory(data.ai_memory);
       return;
     }
 
@@ -124,7 +132,7 @@ class StateStore {
       if (raw?.lifeState && typeof raw.lifeState === 'object') {
         this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...raw.lifeState };
       }
-      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = normalizeMemory(raw.aiMemory);
+      if (raw?.aiMemory && typeof raw.aiMemory === 'object') this.state.aiMemory = this.normalizeAiMemory(raw.aiMemory);
     } catch (err) {
       console.error('⚠️ Local fallback load failed:', err.message || err);
     }
@@ -138,6 +146,8 @@ class StateStore {
       console.error('⚠️ Local fallback save failed:', err.message || err);
     }
   }
+
+  // ===== API состояния =====
 
   getVoiceTimes() {
     return this.state.voiceTimes;
@@ -156,7 +166,6 @@ class StateStore {
 
   getLifeState() {
     if (!this.state.lifeState.startedAt) this.state.lifeState.startedAt = Date.now();
-    if (!this.state.lifeState.phrase) this.state.lifeState.phrase = null;
     return this.state.lifeState;
   }
 
@@ -164,55 +173,42 @@ class StateStore {
     this.state.lifeState = { ...clone(DEFAULT_LIFE_STATE), ...next };
   }
 
-  getAiMemory() {
-    this.state.aiMemory = normalizeMemory(this.state.aiMemory);
-    return this.state.aiMemory;
+  getChannelContext(channelId) {
+    const memory = this.normalizeAiMemory(this.state.aiMemory);
+    this.state.aiMemory = memory;
+    return memory.channels[channelId] || createChannelContext();
   }
 
-  getChannelMemory(channelId) {
-    return getChannelMemory(this.getAiMemory(), channelId);
-  }
-
-  setChannelMemory(channelId, nextMemory) {
-    this.state.aiMemory = setChannelMemory(this.getAiMemory(), channelId, nextMemory);
+  setChannelContext(channelId, ctx) {
+    const memory = this.normalizeAiMemory(this.state.aiMemory);
+    memory.channels[channelId] = normalizeChannelContext(ctx);
+    this.state.aiMemory = memory;
   }
 
   appendChannelTurn(channelId, turn) {
-    this.state.aiMemory = appendChannelTurn(this.getAiMemory(), channelId, turn);
+    const ctx = this.getChannelContext(channelId);
+    addTurnToContext(ctx, turn);
+    this.setChannelContext(channelId, ctx);
   }
 
-  updateChannelCompaction(channelId, { summary, digest }) {
-    const memory = this.getAiMemory();
-    const channel = memory.channels[channelId] || {};
-    memory.channels[channelId] = {
-      ...channel,
-      summary: String(summary || '').trim(),
-      digest: String(digest || '').trim(),
-      turns: Array.isArray(channel.turns) ? channel.turns.slice(-20) : [],
-      turnsSinceCompact: 0,
-      lastCompactedAt: new Date().toISOString(),
-      lastUpdatedAt: new Date().toISOString(),
-    };
-    this.state.aiMemory = normalizeMemory(memory);
+  clearChannelContext(channelId) {
+    const memory = this.normalizeAiMemory(this.state.aiMemory);
+    delete memory.channels[channelId];
+    this.state.aiMemory = memory;
   }
 
-  shouldCompactChannelMemory(channelId, threshold = 8) {
-    const channel = this.getChannelMemory(channelId);
-    return (Number(channel.turnsSinceCompact || 0) || 0) >= threshold;
+  shouldSummarizeChannel(channelId, threshold) {
+    const ctx = this.getChannelContext(channelId);
+    return (Number(ctx.turnsSinceSummary || 0) || 0) >= threshold;
   }
 
-  buildMemoryContext({ channelId, channelName = '', queryText = '', recentMessages = [] }) {
-    return buildMemoryContext(this.getAiMemory(), {
-      channelId,
-      channelName,
-      queryText,
-      recentMessages,
-    });
-  }
-
-  compactFallback(channelId) {
-    const channel = this.getChannelMemory(channelId);
-    return compactMemoryFallback(channel);
+  applyChannelSummary(channelId, summary) {
+    const ctx = this.getChannelContext(channelId);
+    ctx.summary = clampText(summary || '', 800);
+    ctx.archive = [];
+    ctx.turnsSinceSummary = 0;
+    ctx.lastUpdatedAt = new Date().toISOString();
+    this.setChannelContext(channelId, ctx);
   }
 
   getSnapshot() {
@@ -221,3 +217,4 @@ class StateStore {
 }
 
 module.exports = { StateStore };
+

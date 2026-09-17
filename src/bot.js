@@ -1,4 +1,4 @@
-const {
+﻿const {
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
@@ -9,6 +9,7 @@ const {
   ChannelType,
   PermissionFlagsBits,
   AttachmentBuilder,
+  Events,
 } = require('discord.js');
 const { joinVoiceChannel, getVoiceConnection } = require('@discordjs/voice');
 const http = require('http');
@@ -16,19 +17,21 @@ const http = require('http');
 const {
   CHECKPOINT_MS,
   PRESENCE_REFRESH_MS,
-  PRESENCE_ROTATE_MS,
+  STATUS_ROTATE_MS,
   TOP_LIMIT,
   HOME_GUILD_ONLY_REPLY,
-  PRESENCE_PHRASES,
+  STATUS_VERBS,
+  STATUS_NOUNS,
 } = require('./constants');
 
 const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText, normalizeText } = require('./utils');
-const { askGemini, askGeminiWithFallback, buildChatPrompt, buildMemoryCompactionPrompt, generateImageWithFallback, extractJsonPayload, cleanAssistantReply } = require('./ai');
-
-function isCommandLike(text, prefix) {
-  const q = normalizeText(text);
-  return q.startsWith(prefix);
-}
+const {
+  askGemini,
+  askGeminiWithFallback,
+  buildChatPrompt,
+  buildSummaryPrompt,
+  generateImageWithFallback,
+} = require('./ai');
 
 function stripMention(text, botId) {
   return String(text || '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
@@ -36,7 +39,7 @@ function stripMention(text, botId) {
 
 function isImageRequest(text) {
   const q = normalizeText(text).toLowerCase();
-  return /^(?:сгенерируй|нарисуй|создай|сделай)\b/.test(q) || /^(?:generate|create)\b/.test(q) || /(?:\bарт\b|\bimage\b|\bpicture\b)/.test(q);
+  return /^(?:СЃРіРµРЅРµСЂРёСЂСѓР№|РЅР°СЂРёСЃСѓР№|СЃРѕР·РґР°Р№|СЃРґРµР»Р°Р№)\b/.test(q) || /^(?:generate|create|draw)\b/.test(q) || /(?:\bР°СЂС‚\b|\bimage\b|\bpicture\b)/.test(q);
 }
 
 function normalizeAspectRatio(value) {
@@ -48,6 +51,14 @@ function normalizeAspectRatio(value) {
 function escapeRegExp(value) {
   return String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
+
+function buildRandomStatus() {
+  return `${pickRandom(STATUS_VERBS)} ${pickRandom(STATUS_NOUNS)}`;
+}
+
+const { buildChatContext, buildSummarySource } = require('./context');
+
+const ADMIN_COMMANDS = new Set(['msg', 'clear', 'jtm', 'forget']);
 
 class DiscordBot {
   constructor(config, stateStore) {
@@ -65,9 +76,8 @@ class DiscordBot {
     });
 
     this.activeSessions = new Map();
-    this.checkpointTimer = null;
-    this.presenceRefreshTimer = null;
-    this.presenceRotateTimer = null;
+    this.timers = [];
+    this.statusPair = null;
     this.httpServer = null;
   }
 
@@ -84,29 +94,18 @@ class DiscordBot {
     return `${guildId}:${userId}`;
   }
 
-  getRandomPresencePhrase() {
-    return pickRandom(PRESENCE_PHRASES);
-  }
+  // ===== РЎС‚Р°С‚СѓСЃС‹ (СЃР»СѓС‡Р°Р№РЅС‹Р№ РіР»Р°РіРѕР» + СЃСѓС‰РµСЃС‚РІРёС‚РµР»СЊРЅРѕРµ, СЃРјРµРЅР° СЂР°Р· РІ С‡Р°СЃ) =====
 
-  ensureLifeState() {
-    const lifeState = this.stateStore.getLifeState();
-    if (!lifeState.startedAt) lifeState.startedAt = Date.now();
-    if (!lifeState.phrase) lifeState.phrase = this.getRandomPresencePhrase();
-    this.stateStore.setLifeState(lifeState);
-    return lifeState;
-  }
-
-  buildLifeSeconds() {
-    const lifeState = this.ensureLifeState();
-    return lifeState.startedAt ? Math.max(0, Math.floor((Date.now() - lifeState.startedAt) / 1000)) : 0;
+  ensureStatusPair() {
+    if (!this.statusPair) this.statusPair = buildRandomStatus();
+    return this.statusPair;
   }
 
   buildPresenceActivity() {
-    const lifeState = this.ensureLifeState();
     return {
-      name: `🫧 ${lifeState.phrase} • ${formatShortTime(this.buildLifeSeconds())}`,
-      type: ActivityType.Watching,
-      timestamps: { start: lifeState.startedAt },
+      name: 'p3w',
+      type: ActivityType.Custom,
+      state: this.ensureStatusPair(),
     };
   }
 
@@ -126,12 +125,12 @@ class DiscordBot {
     }
   }
 
-  async rotatePresencePhrase() {
-    const lifeState = this.ensureLifeState();
-    lifeState.phrase = this.getRandomPresencePhrase();
-    this.stateStore.setLifeState(lifeState);
+  async rotateStatus() {
+    this.statusPair = buildRandomStatus();
     await this.refreshPresence();
   }
+
+  // ===== Р’РѕР№СЃ-СЃРµСЃСЃРёРё =====
 
   startVoiceSession(guildId, userId) {
     const key = this.getKey(guildId, userId);
@@ -180,6 +179,8 @@ class DiscordBot {
     }
   }
 
+  // ===== РЈС‚РёР»РёС‚С‹ С‡Р°С‚Р° =====
+
   async getRecentMessages(channel, limit = 8) {
     const messages = await channel.messages.fetch({ limit }).catch(() => null);
     if (!messages) return [];
@@ -200,53 +201,58 @@ class DiscordBot {
     const commands = [
       new SlashCommandBuilder()
         .setName('ping')
-        .setDescription('Проверить задержку бота')
+        .setDescription('РџСЂРѕРІРµСЂРёС‚СЊ Р·Р°РґРµСЂР¶РєСѓ Р±РѕС‚Р°')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('say')
-        .setDescription('Попросить бота ответить через Gemini')
-        .addStringOption(option => option.setName('text').setDescription('Текст сообщения').setRequired(true))
+        .setDescription('РџРѕРїСЂРѕСЃРёС‚СЊ Р±РѕС‚Р° РѕС‚РІРµС‚РёС‚СЊ С‡РµСЂРµР· Gemini')
+        .addStringOption(option => option.setName('text').setDescription('РўРµРєСЃС‚ СЃРѕРѕР±С‰РµРЅРёСЏ').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('image')
-        .setDescription('Сгенерировать картинку через Gemini')
-        .addStringOption(option => option.setName('text').setDescription('Что нарисовать').setRequired(true))
-        .addStringOption(option => option.setName('ratio').setDescription('Соотношение сторон').setRequired(false))
+        .setDescription('РЎРіРµРЅРµСЂРёСЂРѕРІР°С‚СЊ РєР°СЂС‚РёРЅРєСѓ С‡РµСЂРµР· Gemini')
+        .addStringOption(option => option.setName('text').setDescription('Р§С‚Рѕ РЅР°СЂРёСЃРѕРІР°С‚СЊ').setRequired(true))
+        .addStringOption(option => option.setName('ratio').setDescription('РЎРѕРѕС‚РЅРѕС€РµРЅРёРµ СЃС‚РѕСЂРѕРЅ').setRequired(false))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('time')
-        .setDescription('Показать время в войсе')
-        .addUserOption(option => option.setName('user').setDescription('Кого проверить'))
+        .setDescription('РџРѕРєР°Р·Р°С‚СЊ РІСЂРµРјСЏ РІ РІРѕР№СЃРµ')
+        .addUserOption(option => option.setName('user').setDescription('РљРѕРіРѕ РїСЂРѕРІРµСЂРёС‚СЊ'))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('user')
-        .setDescription('Показать время в войсе')
-        .addUserOption(option => option.setName('user').setDescription('Кого проверить'))
+        .setDescription('РџРѕРєР°Р·Р°С‚СЊ РІСЂРµРјСЏ РІ РІРѕР№СЃРµ')
+        .addUserOption(option => option.setName('user').setDescription('РљРѕРіРѕ РїСЂРѕРІРµСЂРёС‚СЊ'))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('top')
-        .setDescription('Топ по времени в войсе')
+        .setDescription('РўРѕРї РїРѕ РІСЂРµРјРµРЅРё РІ РІРѕР№СЃРµ')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('life')
-        .setDescription('Показать жизнь бота')
+        .setDescription('РџРѕРєР°Р·Р°С‚СЊ Р¶РёР·РЅСЊ Р±РѕС‚Р°')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('msg')
-        .setDescription('Отправить сообщение от имени бота')
+        .setDescription('РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РѕС‚ РёРјРµРЅРё Р±РѕС‚Р°')
         .setDefaultMemberPermissions(adminOnly)
-        .addChannelOption(option => option.setName('channel').setDescription('Канал').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
-        .addStringOption(option => option.setName('message').setDescription('Текст').setRequired(true))
+        .addChannelOption(option => option.setName('channel').setDescription('РљР°РЅР°Р»').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+        .addStringOption(option => option.setName('message').setDescription('РўРµРєСЃС‚').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
-        .setName('purge')
-        .setDescription('Удалить последние сообщения')
+        .setName('clear')
+        .setDescription('РЈРґР°Р»РёС‚СЊ РїРѕСЃР»РµРґРЅРёРµ СЃРѕРѕР±С‰РµРЅРёСЏ')
         .setDefaultMemberPermissions(adminOnly)
-        .addIntegerOption(option => option.setName('amount').setDescription('Сколько удалить').setRequired(true).setMinValue(1).setMaxValue(100))
+        .addIntegerOption(option => option.setName('amount').setDescription('РЎРєРѕР»СЊРєРѕ СѓРґР°Р»РёС‚СЊ').setRequired(true).setMinValue(1).setMaxValue(100))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('jtm')
-        .setDescription('Зайти в твой войс')
+        .setDescription('Р—Р°Р№С‚Рё РІ С‚РІРѕР№ РІРѕР№СЃ')
+        .setDefaultMemberPermissions(adminOnly)
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('forget')
+        .setDescription('РћС‡РёСЃС‚РёС‚СЊ С‡Р°С‚-РїР°РјСЏС‚СЊ Р±РѕС‚Р° РІ СЌС‚РѕРј РєР°РЅР°Р»Рµ')
         .setDefaultMemberPermissions(adminOnly)
         .toJSON(),
     ];
@@ -272,42 +278,51 @@ class DiscordBot {
       const userId = item.key.split(':')[1];
       const member = await guild.members.fetch(userId).catch(() => null);
       const name = member?.displayName || member?.user?.username || userId;
-      lines.push(`**${index + 1}.** ${name} — ${formatTopTime(item.seconds)}`);
+      lines.push(`**${index + 1}.** ${name} вЂ” ${formatTopTime(item.seconds)}`);
     }
 
     return new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle('🏆 Топ по войсу')
-      .setDescription(lines.join('\n') || 'Пока пусто')
+      .setTitle('рџЏ† РўРѕРї РїРѕ РІРѕР№СЃСѓ')
+      .setDescription(lines.join('\n') || 'РџРѕРєР° РїСѓСЃС‚Рѕ')
       .setTimestamp();
   }
 
   buildLifeEmbed() {
-    const lifeState = this.ensureLifeState();
+    const lifeState = this.stateStore.getLifeState();
+    const seconds = lifeState.startedAt
+      ? Math.max(0, Math.floor((Date.now() - lifeState.startedAt) / 1000))
+      : 0;
+
     return new EmbedBuilder()
       .setColor(0x57f287)
-      .setTitle('🫧 Жизнь бота')
+      .setTitle('рџ«§ Р–РёР·РЅСЊ Р±РѕС‚Р°')
       .addFields(
-        { name: 'Аптайм', value: formatTime(this.buildLifeSeconds()), inline: true },
-        { name: 'Старт', value: lifeState.startedAt ? `<t:${Math.floor(lifeState.startedAt / 1000)}:F>` : '—', inline: true },
-        { name: 'Режим', value: lifeState.phrase || '—', inline: false },
+        { name: 'РђРїС‚Р°Р№Рј', value: formatTime(seconds), inline: true },
+        { name: 'РЎС‚Р°СЂС‚', value: lifeState.startedAt ? `<t:${Math.floor(lifeState.startedAt / 1000)}:F>` : 'вЂ”', inline: true },
+        { name: 'Р§РµРј Р·Р°РЅСЏС‚', value: this.buildPresenceActivity().state, inline: false },
       )
       .setTimestamp();
   }
 
-  async generateChatReply({ channel, guildId, userId, userName, text }) {
-    const recent = await this.getRecentMessages(channel, 10);
-    const channelName = channel?.name || channel?.threadMetadata?.name || '';
-    const memoryContext = this.stateStore.buildMemoryContext({
-      channelId: channel.id,
-      channelName,
-      queryText: text,
-      recentMessages: recent,
-    });
+  // ===== Р§Р°С‚ СЃ РР =====
+
+  async generateChatReply({ channel, userName, text }) {
+    const channelId = channel.id;
+    const channelName = channel?.name || '';
+    const ctx = this.stateStore.getChannelContext(channelId);
+
+    let chatContext = buildChatContext(ctx);
+
+    // РЎС‚СЂР°С…РѕРІРєР°: РµСЃР»Рё РІ РїР°РјСЏС‚Рё РµС‰С‘ РїСѓСЃС‚Рѕ, Р±РµСЂС‘Рј СЃРІРµР¶РёРµ СЃРѕРѕР±С‰РµРЅРёСЏ РёР· Discord.
+    if (!chatContext) {
+      const recent = await this.getRecentMessages(channel, 10);
+      chatContext = recent.map(turn => `${turn.role === 'assistant' ? 'Р‘РѕС‚' : turn.name}: ${turn.text}`).join('\n');
+    }
 
     const prompt = buildChatPrompt({
       basePrompt: this.config.BASE_PROMPT,
-      memoryContext,
+      chatContext,
       userName,
       channelName,
       text,
@@ -319,63 +334,115 @@ class DiscordBot {
       prompt,
     });
 
-    return { answer, recent, channelName };
+    return { answer, channelName };
   }
 
-  async compactChannelMemory({ channelId, channelName = '' }) {
-    const channel = this.stateStore.getChannelMemory(channelId);
-    const recentTurnsText = (channel.turns || [])
-      .slice(-8)
-      .map(turn => `${turn.role === 'assistant' ? 'Бот' : 'Чат'}: ${turn.text}`)
-      .join('\n');
+  // РђРІС‚Рѕ-РІС‹Р¶РёРјРєР° СЃС‚Р°СЂС‹С… СЃРѕРѕР±С‰РµРЅРёР№: РґРµС€С‘РІС‹Р№ РІС‹Р·РѕРІ Gemini СЂР°Р· РІ N СЃРѕРѕР±С‰РµРЅРёР№.
+  async maybeSummarizeChannel(channelId, channelName = '') {
+    if (!this.config.GEMINI_API_KEY) return;
+    if (!this.stateStore.shouldSummarizeChannel(channelId, this.config.CONTEXT_SUMMARY_EVERY)) return;
 
-    if (!this.config.GEMINI_API_KEY) {
-      const fallback = this.stateStore.compactFallback(channelId);
-      this.stateStore.updateChannelCompaction(channelId, fallback);
+    const ctx = this.stateStore.getChannelContext(channelId);
+    const oldMessages = buildSummarySource(ctx);
+    if (!oldMessages) {
+      ctx.turnsSinceSummary = 0;
+      this.stateStore.setChannelContext(channelId, ctx);
       return;
     }
 
     try {
-      const prompt = buildMemoryCompactionPrompt({
-        existingSummary: channel.summary || '',
-        channelName: channel.title || channelName || '',
-        recentTurnsText,
-      });
-
       const raw = await askGemini({
         apiKey: this.config.GEMINI_API_KEY,
         model: this.config.GEMINI_CHAT_MODELS[0] || this.config.GEMINI_MODEL,
-        prompt,
+        prompt: buildSummaryPrompt({ existingSummary: ctx.summary, oldMessages }),
         temperature: 0.25,
-        maxOutputTokens: 700,
+        maxOutputTokens: 300,
         retries: 1,
       });
 
-      const parsed = extractJsonPayload(raw);
-      if (parsed && (parsed.summary || parsed.digest)) {
-        this.stateStore.updateChannelCompaction(channelId, {
-          summary: String(parsed.summary || channel.summary || '').trim(),
-          digest: String(parsed.digest || '').trim(),
-        });
-        return;
-      }
+      const summary = clampText(String(raw || '').trim(), 800);
+      this.stateStore.applyChannelSummary(channelId, summary || ctx.summary);
     } catch (err) {
-      console.error('Memory compaction failed:', err?.message || err);
+      console.error('Context summary failed:', err?.message || err);
+    }
+  }
+
+  async handleAiMessage({ message, text }) {
+    if (!this.config.GEMINI_API_KEY) {
+      return message.reply('вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.');
     }
 
-    const fallback = this.stateStore.compactFallback(channelId);
-    this.stateStore.updateChannelCompaction(channelId, fallback);
+    const userName = message.member?.displayName || message.author.username;
+    const status = await message.reply('рџ’­ Р”СѓРјР°СЋ...');
+    await message.channel.sendTyping().catch(() => {});
+
+    try {
+      const { answer } = await this.generateChatReply({
+        channel: message.channel,
+        userName,
+        text,
+      });
+
+      const finalAnswer = clampText(String(answer || ''), 1900);
+      await status.edit(finalAnswer).catch(() => {});
+
+      this.stateStore.appendChannelTurn(message.channel.id, { role: 'user', name: userName, text });
+      this.stateStore.appendChannelTurn(message.channel.id, {
+        role: 'assistant',
+        name: this.client.user?.username || 'Bot',
+        text: finalAnswer,
+      });
+
+      await this.maybeSummarizeChannel(message.channel.id, message.channel?.name || '');
+      await this.stateStore.save();
+    } catch (err) {
+      console.error('Gemini error:', err);
+      await status.edit('вќЊ Gemini СЃРµР№С‡Р°СЃ РїРµСЂРµРіСЂСѓР¶РµРЅ РёР»Рё РѕС‚РІРµС‚ РЅРµ РїСЂРѕС€С‘Р».').catch(() => {});
+    }
+  }
+
+  async handleSlashAi(interaction, text) {
+    if (!this.config.GEMINI_API_KEY) {
+      return interaction.reply({ content: 'вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+    const userName = interaction.member?.displayName || interaction.user.username;
+
+    try {
+      const { answer } = await this.generateChatReply({
+        channel: interaction.channel,
+        userName,
+        text,
+      });
+
+      const finalAnswer = clampText(String(answer || ''), 1900);
+      await interaction.editReply({ content: finalAnswer });
+
+      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'user', name: userName, text });
+      this.stateStore.appendChannelTurn(interaction.channel.id, {
+        role: 'assistant',
+        name: this.client.user?.username || 'Bot',
+        text: finalAnswer,
+      });
+
+      await this.maybeSummarizeChannel(interaction.channel.id, interaction.channel?.name || '');
+      await this.stateStore.save();
+    } catch (err) {
+      console.error('Gemini slash error:', err);
+      await interaction.editReply({ content: 'вќЊ Gemini СЃРµР№С‡Р°СЃ РїРµСЂРµРіСЂСѓР¶РµРЅ РёР»Рё РѕС‚РІРµС‚ РЅРµ РїСЂРѕС€С‘Р».' });
+    }
   }
 
   async handleImageRequest({ message, text, ratio }) {
     if (!this.config.GEMINI_API_KEY) {
-      return message.reply('⚠️ Gemini пока не подключён.');
+      return message.reply('вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.');
     }
 
     const prompt = String(text || '').trim();
-    if (!prompt) return message.reply('Напиши, что именно рисовать.');
+    if (!prompt) return message.reply('РќР°РїРёС€Рё, С‡С‚Рѕ РёРјРµРЅРЅРѕ СЂРёСЃРѕРІР°С‚СЊ.');
 
-    const status = await message.reply('🖼 Генерирую изображение...');
+    const status = await message.reply('рџ–ј Р“РµРЅРµСЂРёСЂСѓСЋ РёР·РѕР±СЂР°Р¶РµРЅРёРµ...');
     await message.channel.sendTyping().catch(() => {});
 
     try {
@@ -388,97 +455,14 @@ class DiscordBot {
 
       const attachment = new AttachmentBuilder(result.buffer, { name: 'image.png' });
       await status.delete().catch(() => {});
-      await message.reply({
-        content: `✅ Готово${result.model ? ` • ${result.model}` : ''}`,
+      return message.reply({
+        content: `вњ… Р“РѕС‚РѕРІРѕ${result.model ? ` вЂў ${result.model}` : ''}`,
         files: [attachment],
         allowedMentions: { repliedUser: false },
       });
-      return;
     } catch (err) {
       console.error('Image generation error:', err);
-      await status.edit(`❌ Image generation error: ${clampText(String(err.message || err), 1800)}`).catch(() => {});
-      return;
-    }
-  }
-
-  async handleAiMessage({ message, text }) {
-    if (!this.config.GEMINI_API_KEY) {
-      return message.reply('⚠️ Gemini пока не подключён.');
-    }
-
-    const userName = message.member?.displayName || message.author.username;
-    const status = await message.reply('🧠 Думаю...');
-    await message.channel.sendTyping().catch(() => {});
-
-    try {
-      const { answer, recent, channelName } = await this.generateChatReply({
-        channel: message.channel,
-        guildId: message.guild.id,
-        userId: message.author.id,
-        userName,
-        text,
-      });
-
-      const finalAnswer = clampText(cleanAssistantReply(answer), 1900);
-      await status.edit(finalAnswer).catch(() => {});
-
-      this.stateStore.appendChannelTurn(message.channel.id, {
-        role: 'user',
-        name: userName,
-        text,
-      });
-      this.stateStore.appendChannelTurn(message.channel.id, {
-        role: 'assistant',
-        name: this.client.user?.username || 'Bot',
-        text: finalAnswer,
-      });
-
-      if (this.stateStore.shouldCompactChannelMemory(message.channel.id, this.config.MEMORY_COMPACT_AFTER_TURNS)) {
-        await status.edit('🗂 Сокращаю долгий контекст...').catch(() => {});
-        await this.compactChannelMemory({
-          channelId: message.channel.id,
-          channelName,
-        });
-      }
-
-      await this.stateStore.save();
-      await status.edit(finalAnswer).catch(() => {});
-      return;
-    } catch (err) {
-      console.error('Gemini error:', err);
-      await status.edit('❌ Gemini сейчас перегружен или ответ не прошёл.').catch(() => {});
-      return;
-    }
-  }
-
-  async handleSlashAi(interaction, text) {
-    if (!this.config.GEMINI_API_KEY) {
-      return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
-    }
-
-    await interaction.deferReply();
-    const userName = interaction.member?.displayName || interaction.user.username;
-    try {
-      const { answer, recent, channelName } = await this.generateChatReply({
-        channel: interaction.channel,
-        guildId: interaction.guild.id,
-        userId: interaction.user.id,
-        userName,
-        text,
-      });
-
-      await interaction.editReply({ content: clampText(cleanAssistantReply(answer), 1900) });
-      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'user', name: userName, text });
-      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'assistant', name: this.client.user?.username || 'Bot', text: clampText(cleanAssistantReply(answer), 1900) });
-
-      if (this.stateStore.shouldCompactChannelMemory(interaction.channel.id, this.config.MEMORY_COMPACT_AFTER_TURNS)) {
-        await this.compactChannelMemory({ channelId: interaction.channel.id, channelName });
-      }
-
-      await this.stateStore.save();
-    } catch (err) {
-      console.error('Gemini slash error:', err);
-      await interaction.editReply({ content: '❌ Gemini сейчас перегружен или ответ не прошёл.' });
+      await status.edit(`вќЊ РћС€РёР±РєР° РіРµРЅРµСЂР°С†РёРё: ${clampText(String(err.message || err), 1800)}`).catch(() => {});
     }
   }
 
@@ -491,8 +475,8 @@ class DiscordBot {
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setAuthor({ name, iconURL: target.displayAvatarURL({ size: 256 }) })
-      .setTitle('⏱ Время в войсе')
-      .setDescription(`**Всего:** ${formatTime(total)}`)
+      .setTitle('вЏ± Р’СЂРµРјСЏ РІ РІРѕР№СЃРµ')
+      .setDescription(`**Р’СЃРµРіРѕ:** ${formatTime(total)}`)
       .setFooter({ text: `ID: ${target.id}` })
       .setTimestamp();
 
@@ -503,19 +487,20 @@ class DiscordBot {
     if (!interaction.isChatInputCommand()) return;
 
     if (!interaction.guildId) {
-      return interaction.reply({ content: '❌ Эта команда работает только на сервере.', ephemeral: true }).catch(() => {});
+      return interaction.reply({ content: 'вќЊ Р­С‚Р° РєРѕРјР°РЅРґР° СЂР°Р±РѕС‚Р°РµС‚ С‚РѕР»СЊРєРѕ РЅР° СЃРµСЂРІРµСЂРµ.', ephemeral: true }).catch(() => {});
     }
 
-    if (!this.isHomeGuild(interaction.guildId) && ['msg', 'purge', 'jtm'].includes(interaction.commandName)) {
-      return interaction.reply({ content: HOME_GUILD_ONLY_REPLY, ephemeral: true }).catch(() => {});
-    }
-
-    if (['msg', 'purge', 'jtm'].includes(interaction.commandName) && !this.isAdmin(interaction.memberPermissions)) {
-      return interaction.reply({ content: '❌ Эта команда только для админов.', ephemeral: true }).catch(() => {});
+    if (ADMIN_COMMANDS.has(interaction.commandName)) {
+      if (!this.isHomeGuild(interaction.guildId)) {
+        return interaction.reply({ content: HOME_GUILD_ONLY_REPLY, ephemeral: true }).catch(() => {});
+      }
+      if (!this.isAdmin(interaction.memberPermissions)) {
+        return interaction.reply({ content: 'вќЊ Р­С‚Р° РєРѕРјР°РЅРґР° С‚РѕР»СЊРєРѕ РґР»СЏ Р°РґРјРёРЅРѕРІ.', ephemeral: true }).catch(() => {});
+      }
     }
 
     if (interaction.commandName === 'ping') {
-      return interaction.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, ephemeral: true });
+      return interaction.reply({ content: `рџЏ“ Pong! \`${this.client.ws.ping}ms\``, ephemeral: true });
     }
 
     if (interaction.commandName === 'say') {
@@ -526,10 +511,10 @@ class DiscordBot {
       const text = interaction.options.getString('text', true);
       const ratio = interaction.options.getString('ratio') || '16:9';
       if (!this.config.GEMINI_API_KEY) {
-        return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
+        return interaction.reply({ content: 'вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.', ephemeral: true });
       }
       await interaction.deferReply();
-      await interaction.editReply('🖼 Генерирую изображение...');
+      await interaction.editReply('рџ–ј Р“РµРЅРµСЂРёСЂСѓСЋ РёР·РѕР±СЂР°Р¶РµРЅРёРµ...');
       try {
         const result = await generateImageWithFallback({
           apiKey: this.config.GEMINI_API_KEY,
@@ -539,12 +524,12 @@ class DiscordBot {
         });
         const attachment = new AttachmentBuilder(result.buffer, { name: 'image.png' });
         return interaction.editReply({
-          content: `✅ Готово${result.model ? ` • ${result.model}` : ''}`,
+          content: `вњ… Р“РѕС‚РѕРІРѕ${result.model ? ` вЂў ${result.model}` : ''}`,
           files: [attachment],
         });
       } catch (err) {
         console.error('Slash image error:', err);
-        return interaction.editReply({ content: `❌ Image generation error: ${clampText(String(err.message || err), 1800)}` });
+        return interaction.editReply({ content: `вќЊ РћС€РёР±РєР° РіРµРЅРµСЂР°С†РёРё: ${clampText(String(err.message || err), 1800)}` });
       }
     }
 
@@ -565,41 +550,37 @@ class DiscordBot {
     if (interaction.commandName === 'msg') {
       await interaction.deferReply({ ephemeral: true });
       const channel = interaction.options.getChannel('channel', true);
-      const msgText = interaction.options.getString('message', true);
-      if (!channel.isTextBased()) return interaction.editReply({ content: '❌ Это не текстовый канал.' });
+      const content = interaction.options.getString('message', true);
       try {
-        await channel.send({ content: msgText });
-        await interaction.editReply({ content: `✅ Сообщение отправлено в ${channel}.` });
-      } catch {
-        await interaction.editReply({ content: '❌ Не удалось отправить сообщение.' });
+        await channel.send({ content, allowedMentions: { parse: ['users', 'roles'] } });
+        return interaction.editReply({ content: `вњ… РћС‚РїСЂР°РІР»РµРЅРѕ РІ ${channel}.` });
+      } catch (err) {
+        console.error('msg error:', err);
+        return interaction.editReply({ content: 'вќЊ РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ. РџСЂРѕРІРµСЂСЊ РїСЂР°РІР° Р±РѕС‚Р° РІ РєР°РЅР°Р»Рµ.' });
       }
-      return;
     }
 
-    if (interaction.commandName === 'purge') {
+    if (interaction.commandName === 'clear') {
       await interaction.deferReply({ ephemeral: true });
       const amount = interaction.options.getInteger('amount', true);
-      if (!interaction.channel?.isTextBased()) return interaction.editReply({ content: '❌ Это не текстовый канал.' });
-      try {
-        const deleted = await interaction.channel.bulkDelete(amount, true);
-        return interaction.editReply({ content: `✅ Удалено сообщений: **${deleted.size}**` });
-      } catch {
-        return interaction.editReply({ content: '❌ Не удалось удалить сообщения.' });
-      }
+      const deleted = await interaction.channel.bulkDelete(amount, true).catch(() => null);
+      const count = deleted ? (typeof deleted === 'number' ? deleted : deleted.size) : 0;
+      return interaction.editReply({ content: `рџ§№ РЈРґР°Р»РµРЅРѕ СЃРѕРѕР±С‰РµРЅРёР№: ${count}.` });
+    }
+
+    if (interaction.commandName === 'forget') {
+      this.stateStore.clearChannelContext(interaction.channel.id);
+      await this.stateStore.save();
+      return interaction.reply({ content: 'рџ§Ѕ Р§Р°С‚-РїР°РјСЏС‚СЊ СЌС‚РѕРіРѕ РєР°РЅР°Р»Р° РѕС‡РёС‰РµРЅР°, РЅР°С‡РёРЅР°РµРј СЃ С‡РёСЃС‚РѕРіРѕ Р»РёСЃС‚Р°.', ephemeral: true });
     }
 
     if (interaction.commandName === 'jtm') {
-      await interaction.deferReply({ ephemeral: true });
       const voiceChannel = interaction.member?.voice?.channel;
-      if (!voiceChannel) return interaction.editReply({ content: '❌ Ты не в войсе.' });
-      const me = interaction.guild.members.me;
-      const perms = voiceChannel.permissionsFor(me);
-      if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])) {
-        return interaction.editReply({ content: '❌ У меня нет прав зайти в этот войс.' });
+      if (!voiceChannel) {
+        return interaction.reply({ content: 'вќЊ РўС‹ РЅРµ РІ РІРѕР№СЃРµ, РЅРµРєСѓРґР° Р·Р°С…РѕРґРёС‚СЊ.', ephemeral: true });
       }
+      await interaction.deferReply();
       try {
-        const existing = getVoiceConnection(interaction.guild.id);
-        if (existing) existing.destroy();
         joinVoiceChannel({
           channelId: voiceChannel.id,
           guildId: interaction.guild.id,
@@ -607,9 +588,10 @@ class DiscordBot {
           selfDeaf: false,
           selfMute: false,
         });
-        await interaction.editReply({ content: `✅ Зашёл в ${voiceChannel}.` });
-      } catch {
-        await interaction.editReply({ content: '❌ Не удалось подключиться к войсу.' });
+        return interaction.editReply({ content: `вњ… Р—Р°С€С‘Р» РІ ${voiceChannel}.` });
+      } catch (err) {
+        console.error('jtm error:', err);
+        return interaction.editReply({ content: 'вќЊ РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕРґРєР»СЋС‡РёС‚СЊСЃСЏ Рє РІРѕР№СЃСѓ.' });
       }
     }
   }
@@ -625,15 +607,15 @@ class DiscordBot {
       : (prefix !== '!' && rawContent.startsWith('!') ? '!' : null);
 
     const directMention = botId
-      ? new RegExp(`<@!?${escapeRegExp(botId)}>`).test(rawContent)
-      : false;
+      ? new RegExp(`<@!?${escapeRegExp(botId)}>`, 'i').test(rawContent)
+    : false;
 
     const repliedMessage = message.reference?.messageId
       ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
       : null;
     const isReplyToBot = Boolean(botId && repliedMessage?.author?.id === botId);
 
-    const cleanMentionText = botId ? rawContent.replace(new RegExp(`<@!?${escapeRegExp(botId)}>`,'g'), '').trim() : rawContent;
+    const cleanMentionText = stripMention(rawContent, botId);
     const isCommandLike = Boolean(prefixUsed || directMention || isReplyToBot);
 
     if (!isCommandLike && !rawContent) return;
@@ -643,24 +625,24 @@ class DiscordBot {
       const cmd = (args.shift() || '').toLowerCase();
 
       if (cmd === 'ping') {
-        return message.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, allowedMentions: { repliedUser: false } });
+        return message.reply({ content: `рџЏ“ Pong! \`${this.client.ws.ping}ms\``, allowedMentions: { repliedUser: false } });
       }
 
       if (cmd === 'say') {
         const promptText = args.join(' ').trim();
-        if (!promptText) return message.reply(`Напиши текст после \`${prefix}say\`.`);
+        if (!promptText) return message.reply(`РќР°РїРёС€Рё С‚РµРєСЃС‚ РїРѕСЃР»Рµ \`${prefix}say\`.`);
         return this.handleAiMessage({ message, text: promptText });
       }
 
       if (cmd === 'image' || cmd === 'img') {
         const promptText = args.join(' ').trim();
-        if (!promptText) return message.reply(`Напиши текст после \`${prefix}image\`.`);
+        if (!promptText) return message.reply(`РќР°РїРёС€Рё С‚РµРєСЃС‚ РїРѕСЃР»Рµ \`${prefix}image\`.`);
         return this.handleImageRequest({ message, text: promptText, ratio: '16:9' });
       }
 
       if (cmd === 'help' || cmd === 'h') {
         return message.reply({
-          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash-команды \`/ping\`, \`/say\`, \`/image\`.`,
+          content: `РљРѕРјР°РЅРґС‹: \`${prefix}ping\`, \`${prefix}say С‚РµРєСЃС‚\`, \`${prefix}image С‚РµРєСЃС‚\`, slash-РєРѕРјР°РЅРґС‹: /ping, /say, /image, /time, /user, /top, /life, /msg, /clear, /forget, /jtm`,
           allowedMentions: { repliedUser: false },
         });
       }
@@ -669,32 +651,26 @@ class DiscordBot {
     if (directMention || isReplyToBot) {
       const text = cleanMentionText.replace(/^[\s,:\-]+/, '').trim();
       if (!text) {
-        return message.reply({ content: 'Да, я тут. Напиши, что нужно.', allowedMentions: { repliedUser: false } }).catch(() => {});
+        return message.reply({ content: 'Р”Р°, СЏ С‚СѓС‚. РќР°РїРёС€Рё, С‡С‚Рѕ РЅСѓР¶РЅРѕ.', allowedMentions: { repliedUser: false } }).catch(() => {});
       }
       if (isImageRequest(text)) return this.handleImageRequest({ message, text, ratio: '16:9' });
       return this.handleAiMessage({ message, text });
     }
   }
 
-  async registerEventHandlers() {
-    this.client.once('clientReady', async () => {
-      console.log(`✅ Logged in as ${this.client.user.tag}`);
+  registerEventHandlers() {
+    this.client.once(Events.ClientReady, async () => {
+      console.log(`вњ… Logged in as ${this.client.user.tag}`);
       await this.registerCommands().catch(err => console.error('Command registration error:', err));
-      if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; slash commands will be registered globally.');
+      if (!this.config.GUILD_ID) console.warn('вљ пёЏ GUILD_ID is empty; slash commands will be registered globally.');
       await this.refreshPresence();
       await this.restoreCurrentVoiceSessions();
 
-      this.checkpointTimer = setInterval(() => {
-        void Promise.resolve(this.checkpointVoiceSessions(false)).catch(err => console.error('Checkpoint error:', err));
-      }, CHECKPOINT_MS);
-
-      this.presenceRefreshTimer = setInterval(() => {
-        void Promise.resolve(this.refreshPresence()).catch(err => console.error('Presence refresh error:', err));
-      }, PRESENCE_REFRESH_MS);
-
-      this.presenceRotateTimer = setInterval(() => {
-        void Promise.resolve(this.rotatePresencePhrase()).catch(err => console.error('Presence rotate error:', err));
-      }, PRESENCE_ROTATE_MS);
+      this.addTimer(CHECKPOINT_MS, () => this.checkpointVoiceSessions(false), 'Checkpoint error');
+      // Р РѕС‚Р°С†РёСЏ СЃС‚Р°С‚СѓСЃР°: РЅРѕРІР°СЏ СЃР»СѓС‡Р°Р№РЅР°СЏ РїР°СЂР° СЂР°Р· РІ С‡Р°СЃ.
+      this.addTimer(STATUS_ROTATE_MS, () => this.rotateStatus(), 'Status rotate error');
+      // РџРµСЂРёРѕРґРёС‡РµСЃРєРё РїРѕРґС‚РІРµСЂР¶РґР°РµРј presence С‚РѕР№ Р¶Рµ РїР°СЂРѕР№ (Discord РёРЅРѕРіРґР° СЃР±СЂР°СЃС‹РІР°РµС‚).
+      this.addTimer(PRESENCE_REFRESH_MS, () => this.refreshPresence(), 'Presence refresh error');
     });
 
     this.client.on('messageCreate', async message => {
@@ -711,9 +687,9 @@ class DiscordBot {
       } catch (err) {
         console.error('interactionCreate error:', err);
         if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ content: '❌ Что-то пошло не так.' }).catch(() => {});
+          await interaction.editReply({ content: 'вќЊ Р§С‚Рѕ-С‚Рѕ РїРѕС€Р»Рѕ РЅРµ С‚Р°Рє.' }).catch(() => {});
         } else {
-          await interaction.reply({ content: '❌ Что-то пошло не так.', ephemeral: true }).catch(() => {});
+          await interaction.reply({ content: 'вњ– Р§С‚Рѕ-С‚Рѕ РїРѕС€Р»Рѕ РЅРµ С‚Р°Рє.', ephemeral: true }).catch(() => {});
         }
       }
     });
@@ -750,21 +726,26 @@ class DiscordBot {
     process.on('SIGTERM', () => this.shutdown('SIGTERM'));
   }
 
+  addTimer(interval, fn, errorLabel) {
+    const timer = setInterval(() => {
+      void Promise.resolve(fn()).catch(err => console.error(`${errorLabel}:`, err));
+    }, interval);
+    this.timers.push(timer);
+  }
+
   async start() {
-    await this.registerEventHandlers();
+    this.registerEventHandlers();
     await this.client.login(this.config.TOKEN);
   }
 
   async shutdown(signal) {
     try {
-      console.log(`Получен ${signal}, сохраняю данные...`);
-      if (this.checkpointTimer) clearInterval(this.checkpointTimer);
-      if (this.presenceRefreshTimer) clearInterval(this.presenceRefreshTimer);
-      if (this.presenceRotateTimer) clearInterval(this.presenceRotateTimer);
+      console.log(`РџРѕР»СѓС‡РµРЅ ${signal}, СЃРѕС…СЂР°РЅСЏСЋ РґР°РЅРЅС‹Рµ...`);
+      this.timers.forEach(timer => clearInterval(timer));
       await this.checkpointVoiceSessions(true);
       await this.stateStore.save();
       if (this.httpServer) this.httpServer.close(() => {});
-      if (this.client?.destroy) this.client.destroy();
+      if (this.client?.destroy) await this.client.destroy();
     } catch (e) {
       console.error('Shutdown error:', e);
     } finally {
