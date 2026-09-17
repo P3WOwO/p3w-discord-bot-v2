@@ -32,6 +32,7 @@ const {
   buildSummaryPrompt,
   generateImageWithFallback,
 } = require('./ai');
+const { RpgGame, commandData: rpgCommands } = require('./rpg');
 
 function stripMention(text, botId) {
   return String(text || '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
@@ -87,6 +88,7 @@ class DiscordBot {
     this.timers = [];
     this.statusPair = null;
     this.httpServer = null;
+    this.rpg = new RpgGame(this.config);
   }
 
   isHomeGuild(guildId) {
@@ -263,6 +265,7 @@ class DiscordBot {
         .setDescription('Очистить чат-память бота в этом канале')
         .setDefaultMemberPermissions(adminOnly)
         .toJSON(),
+      ...rpgCommands,
     ];
 
     const rest = new REST({ version: '10' }).setToken(this.config.TOKEN);
@@ -497,6 +500,14 @@ class DiscordBot {
   }
 
   async handleInteraction(interaction) {
+    // RPG: slash-команды и кнопки со своим префиксом.
+    if (interaction.isChatInputCommand() && interaction.commandName === 'rpg') {
+      return this.rpg.handleCommand(interaction);
+    }
+    if ((interaction.isButton() || interaction.isAnySelectMenu()) && String(interaction.customId || '').startsWith('rpg:')) {
+      return this.rpg.handleComponent(interaction);
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     if (!interaction.guildId) {
@@ -676,6 +687,7 @@ class DiscordBot {
       console.log(`✅ Logged in as ${this.client.user.tag}`);
       await this.registerCommands().catch(err => console.error('Command registration error:', err));
       if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; slash commands will be registered globally.');
+      await this.rpg.init().catch(err => console.error('RPG init error:', err));
       await this.refreshPresence();
       await this.restoreCurrentVoiceSessions();
 
