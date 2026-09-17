@@ -15,6 +15,14 @@ function parseList(value, fallback = []) {
   return [...new Set(merged)];
 }
 
+function cleanEnv(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^["'`]+/, '')
+    .replace(/["'`]+$/, '')
+    .trim();
+}
+
 module.exports = {
   TOKEN: required('TOKEN'),
   CLIENT_ID: required('CLIENT_ID'),
@@ -30,15 +38,14 @@ module.exports = {
   // Только реально существующие модели + правильные эндпоинты в ai.js.
   GEMINI_IMAGE_MODELS: parseList(process.env.GEMINI_IMAGE_MODELS, [
     'gemini-2.5-flash-image',
-    'gemini-2.0-flash-preview-image-generation',
   ]),
   BASE_PROMPT: process.env.BASE_PROMPT || process.env.BASE_STYLE_PROMPT || '',
   PREFIX: process.env.PREFIX || '!',
   CONTEXT_MAX_TURNS: Number(process.env.CONTEXT_MAX_TURNS || 25) || 25,
   CONTEXT_SUMMARY_EVERY: Number(process.env.CONTEXT_SUMMARY_EVERY || 30) || 30,
 
-  SUPABASE_URL: process.env.SUPABASE_URL || '',
-  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+  SUPABASE_URL: cleanEnv(process.env.SUPABASE_URL),
+  SUPABASE_SERVICE_ROLE_KEY: cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY),
   SUPABASE_TABLE: process.env.SUPABASE_TABLE || 'bot_state',
   SUPABASE_ROW_ID: process.env.SUPABASE_ROW_ID || 'main',
 };

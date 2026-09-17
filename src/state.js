@@ -11,6 +11,7 @@ const { clampText } = require('./utils');
 
 const DATA_DIR = process.env.DATA_DIR || path.join('/tmp', 'p3w-bot');
 const LOCAL_FALLBACK_FILE = path.join(DATA_DIR, 'bot_state.json');
+const SUPABASE_RECONNECT_MS = Number(process.env.SUPABASE_RECONNECT_MS || 3 * 60 * 1000) || 3 * 60 * 1000;
 
 function ensureDataDir() {
   try {
@@ -27,6 +28,7 @@ class StateStore {
     this.config = config;
     this.supabase = null;
     this.enabled = false;
+    this.reconnectTimer = null;
     this.state = {
       voiceTimes: {},
       lifeState: clone(DEFAULT_LIFE_STATE),
@@ -36,25 +38,75 @@ class StateStore {
 
   async init() {
     this.loadLocalFallback();
+    await this.connectSupabase();
 
-    if (this.config.SUPABASE_URL && this.config.SUPABASE_SERVICE_ROLE_KEY) {
+    if (!this.enabled) {
+      this.startReconnectTimer();
+    }
+  }
+
+  async connectSupabase() {
+    if (!this.config.SUPABASE_URL || !this.config.SUPABASE_SERVICE_ROLE_KEY) {
+      console.log('⚠️ Supabase env vars not found, using local fallback only');
+      return;
+    }
+
+    if (!this.supabase) {
       this.supabase = createClient(this.config.SUPABASE_URL, this.config.SUPABASE_SERVICE_ROLE_KEY, {
         auth: { persistSession: false, autoRefreshToken: false },
       });
-
-      try {
-        await this.loadFromSupabase();
-        this.enabled = true;
-        console.log(`✅ Supabase storage is enabled (table=${this.config.SUPABASE_TABLE}, row=${this.config.SUPABASE_ROW_ID})`);
-        return;
-      } catch (err) {
-        console.error('⚠️ Supabase init/load failed, using local fallback only:', err.message || err);
-      }
-    } else {
-      console.log('⚠️ Supabase env vars not found, using local fallback only');
     }
 
-    this.enabled = false;
+    // Снимок локального состояния до загрузки: при переподключении смержим, ничего не потеряем.
+    const localSnapshot = clone(this.state);
+
+    try {
+      await this.loadFromSupabase();
+      this.mergeLocalState(localSnapshot);
+      this.enabled = true;
+      console.log(`✅ Supabase storage is enabled (table=${this.config.SUPABASE_TABLE}, row=${this.config.SUPABASE_ROW_ID})`);
+      console.log(`✅ Loaded from Supabase: voice entries=${Object.keys(this.state.voiceTimes).length}, channels=${Object.keys(this.state.aiMemory.channels).length}`);
+    } catch (err) {
+      this.enabled = false;
+      const cause = err?.cause?.code || err?.cause?.message || '';
+      let host = 'INVALID URL';
+      try { host = new URL(this.config.SUPABASE_URL).host; } catch {}
+      console.error(`⚠️ Supabase init/load failed: ${err?.message || err}${cause ? ` (cause: ${cause})` : ''} | host: ${host}`);
+    }
+  }
+
+  // Данные, накопленные локально пока Supabase был недоступен, объединяем с базой (берём максимум).
+  mergeLocalState(localSnapshot) {
+    for (const [key, value] of Object.entries(localSnapshot.voiceTimes || {})) {
+      if (Number(value || 0) > Number(this.state.voiceTimes[key] || 0)) {
+        this.state.voiceTimes[key] = Number(value || 0);
+      }
+    }
+
+    const localStart = localSnapshot.lifeState?.startedAt;
+    const remoteStart = this.state.lifeState?.startedAt;
+    if (localStart && (!remoteStart || localStart < remoteStart)) {
+      this.state.lifeState.startedAt = localStart;
+    }
+
+    const countTurns = (memory) => Object.values(memory?.channels || {})
+      .reduce((sum, ch) => sum + (ch?.turns?.length || 0), 0);
+    if (countTurns(localSnapshot.aiMemory) > countTurns(this.state.aiMemory)) {
+      this.state.aiMemory = this.normalizeAiMemory(localSnapshot.aiMemory);
+    }
+  }
+
+  startReconnectTimer() {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = setInterval(async () => {
+      if (this.enabled) {
+        clearInterval(this.reconnectTimer);
+        this.reconnectTimer = null;
+        return;
+      }
+      console.log('🔁 Retrying Supabase connection...');
+      await this.connectSupabase();
+    }, SUPABASE_RECONNECT_MS);
   }
 
   normalizeAiMemory(raw) {
