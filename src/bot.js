@@ -1,4 +1,4 @@
-﻿const {
+const {
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
@@ -39,7 +39,7 @@ function stripMention(text, botId) {
 
 function isImageRequest(text) {
   const q = normalizeText(text).toLowerCase();
-  return /^(?:СЃРіРµРЅРµСЂРёСЂСѓР№|РЅР°СЂРёСЃСѓР№|СЃРѕР·РґР°Р№|СЃРґРµР»Р°Р№)\b/.test(q) || /^(?:generate|create|draw)\b/.test(q) || /(?:\bР°СЂС‚\b|\bimage\b|\bpicture\b)/.test(q);
+  return /^(?:сгенерируй|нарисуй|создай|сделай)\b/.test(q) || /^(?:generate|create|draw)\b/.test(q) || /(?:\bарт\b|\bimage\b|\bpicture\b)/.test(q);
 }
 
 function normalizeAspectRatio(value) {
@@ -94,7 +94,7 @@ class DiscordBot {
     return `${guildId}:${userId}`;
   }
 
-  // ===== РЎС‚Р°С‚СѓСЃС‹ (СЃР»СѓС‡Р°Р№РЅС‹Р№ РіР»Р°РіРѕР» + СЃСѓС‰РµСЃС‚РІРёС‚РµР»СЊРЅРѕРµ, СЃРјРµРЅР° СЂР°Р· РІ С‡Р°СЃ) =====
+  // ===== Статусы (случайный глагол + существительное, смена раз в час) =====
 
   ensureStatusPair() {
     if (!this.statusPair) this.statusPair = buildRandomStatus();
@@ -130,7 +130,7 @@ class DiscordBot {
     await this.refreshPresence();
   }
 
-  // ===== Р’РѕР№СЃ-СЃРµСЃСЃРёРё =====
+  // ===== Войс-сессии =====
 
   startVoiceSession(guildId, userId) {
     const key = this.getKey(guildId, userId);
@@ -179,7 +179,7 @@ class DiscordBot {
     }
   }
 
-  // ===== РЈС‚РёР»РёС‚С‹ С‡Р°С‚Р° =====
+  // ===== Утилиты чата =====
 
   async getRecentMessages(channel, limit = 8) {
     const messages = await channel.messages.fetch({ limit }).catch(() => null);
@@ -201,58 +201,58 @@ class DiscordBot {
     const commands = [
       new SlashCommandBuilder()
         .setName('ping')
-        .setDescription('РџСЂРѕРІРµСЂРёС‚СЊ Р·Р°РґРµСЂР¶РєСѓ Р±РѕС‚Р°')
+        .setDescription('Проверить задержку бота')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('say')
-        .setDescription('РџРѕРїСЂРѕСЃРёС‚СЊ Р±РѕС‚Р° РѕС‚РІРµС‚РёС‚СЊ С‡РµСЂРµР· Gemini')
-        .addStringOption(option => option.setName('text').setDescription('РўРµРєСЃС‚ СЃРѕРѕР±С‰РµРЅРёСЏ').setRequired(true))
+        .setDescription('Попросить бота ответить через Gemini')
+        .addStringOption(option => option.setName('text').setDescription('Текст сообщения').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('image')
-        .setDescription('РЎРіРµРЅРµСЂРёСЂРѕРІР°С‚СЊ РєР°СЂС‚РёРЅРєСѓ С‡РµСЂРµР· Gemini')
-        .addStringOption(option => option.setName('text').setDescription('Р§С‚Рѕ РЅР°СЂРёСЃРѕРІР°С‚СЊ').setRequired(true))
-        .addStringOption(option => option.setName('ratio').setDescription('РЎРѕРѕС‚РЅРѕС€РµРЅРёРµ СЃС‚РѕСЂРѕРЅ').setRequired(false))
+        .setDescription('Сгенерировать картинку через Gemini')
+        .addStringOption(option => option.setName('text').setDescription('Что нарисовать').setRequired(true))
+        .addStringOption(option => option.setName('ratio').setDescription('Соотношение сторон').setRequired(false))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('time')
-        .setDescription('РџРѕРєР°Р·Р°С‚СЊ РІСЂРµРјСЏ РІ РІРѕР№СЃРµ')
-        .addUserOption(option => option.setName('user').setDescription('РљРѕРіРѕ РїСЂРѕРІРµСЂРёС‚СЊ'))
+        .setDescription('Показать время в войсе')
+        .addUserOption(option => option.setName('user').setDescription('Кого проверить'))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('user')
-        .setDescription('РџРѕРєР°Р·Р°С‚СЊ РІСЂРµРјСЏ РІ РІРѕР№СЃРµ')
-        .addUserOption(option => option.setName('user').setDescription('РљРѕРіРѕ РїСЂРѕРІРµСЂРёС‚СЊ'))
+        .setDescription('Показать время в войсе')
+        .addUserOption(option => option.setName('user').setDescription('Кого проверить'))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('top')
-        .setDescription('РўРѕРї РїРѕ РІСЂРµРјРµРЅРё РІ РІРѕР№СЃРµ')
+        .setDescription('Топ по времени в войсе')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('life')
-        .setDescription('РџРѕРєР°Р·Р°С‚СЊ Р¶РёР·РЅСЊ Р±РѕС‚Р°')
+        .setDescription('Показать жизнь бота')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('msg')
-        .setDescription('РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РѕС‚ РёРјРµРЅРё Р±РѕС‚Р°')
+        .setDescription('Отправить сообщение от имени бота')
         .setDefaultMemberPermissions(adminOnly)
-        .addChannelOption(option => option.setName('channel').setDescription('РљР°РЅР°Р»').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
-        .addStringOption(option => option.setName('message').setDescription('РўРµРєСЃС‚').setRequired(true))
+        .addChannelOption(option => option.setName('channel').setDescription('Канал').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true))
+        .addStringOption(option => option.setName('message').setDescription('Текст').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('clear')
-        .setDescription('РЈРґР°Р»РёС‚СЊ РїРѕСЃР»РµРґРЅРёРµ СЃРѕРѕР±С‰РµРЅРёСЏ')
+        .setDescription('Удалить последние сообщения')
         .setDefaultMemberPermissions(adminOnly)
-        .addIntegerOption(option => option.setName('amount').setDescription('РЎРєРѕР»СЊРєРѕ СѓРґР°Р»РёС‚СЊ').setRequired(true).setMinValue(1).setMaxValue(100))
+        .addIntegerOption(option => option.setName('amount').setDescription('Сколько удалить').setRequired(true).setMinValue(1).setMaxValue(100))
         .toJSON(),
       new SlashCommandBuilder()
         .setName('jtm')
-        .setDescription('Р—Р°Р№С‚Рё РІ С‚РІРѕР№ РІРѕР№СЃ')
+        .setDescription('Зайти в твой войс')
         .setDefaultMemberPermissions(adminOnly)
         .toJSON(),
       new SlashCommandBuilder()
         .setName('forget')
-        .setDescription('РћС‡РёСЃС‚РёС‚СЊ С‡Р°С‚-РїР°РјСЏС‚СЊ Р±РѕС‚Р° РІ СЌС‚РѕРј РєР°РЅР°Р»Рµ')
+        .setDescription('Очистить чат-память бота в этом канале')
         .setDefaultMemberPermissions(adminOnly)
         .toJSON(),
     ];
@@ -278,13 +278,13 @@ class DiscordBot {
       const userId = item.key.split(':')[1];
       const member = await guild.members.fetch(userId).catch(() => null);
       const name = member?.displayName || member?.user?.username || userId;
-      lines.push(`**${index + 1}.** ${name} вЂ” ${formatTopTime(item.seconds)}`);
+      lines.push(`**${index + 1}.** ${name} — ${formatTopTime(item.seconds)}`);
     }
 
     return new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle('рџЏ† РўРѕРї РїРѕ РІРѕР№СЃСѓ')
-      .setDescription(lines.join('\n') || 'РџРѕРєР° РїСѓСЃС‚Рѕ')
+      .setTitle('🏆 Топ по войсу')
+      .setDescription(lines.join('\n') || 'Пока пусто')
       .setTimestamp();
   }
 
@@ -296,16 +296,16 @@ class DiscordBot {
 
     return new EmbedBuilder()
       .setColor(0x57f287)
-      .setTitle('рџ«§ Р–РёР·РЅСЊ Р±РѕС‚Р°')
+      .setTitle('🫧 Жизнь бота')
       .addFields(
-        { name: 'РђРїС‚Р°Р№Рј', value: formatTime(seconds), inline: true },
-        { name: 'РЎС‚Р°СЂС‚', value: lifeState.startedAt ? `<t:${Math.floor(lifeState.startedAt / 1000)}:F>` : 'вЂ”', inline: true },
-        { name: 'Р§РµРј Р·Р°РЅСЏС‚', value: this.buildPresenceActivity().state, inline: false },
+        { name: 'Аптайм', value: formatTime(seconds), inline: true },
+        { name: 'Старт', value: lifeState.startedAt ? `<t:${Math.floor(lifeState.startedAt / 1000)}:F>` : '—', inline: true },
+        { name: 'Чем занят', value: this.buildPresenceActivity().state, inline: false },
       )
       .setTimestamp();
   }
 
-  // ===== Р§Р°С‚ СЃ РР =====
+  // ===== Чат с ИИ =====
 
   async generateChatReply({ channel, userName, text }) {
     const channelId = channel.id;
@@ -314,10 +314,10 @@ class DiscordBot {
 
     let chatContext = buildChatContext(ctx);
 
-    // РЎС‚СЂР°С…РѕРІРєР°: РµСЃР»Рё РІ РїР°РјСЏС‚Рё РµС‰С‘ РїСѓСЃС‚Рѕ, Р±РµСЂС‘Рј СЃРІРµР¶РёРµ СЃРѕРѕР±С‰РµРЅРёСЏ РёР· Discord.
+    // Страховка: если в памяти ещё пусто, берём свежие сообщения из Discord.
     if (!chatContext) {
       const recent = await this.getRecentMessages(channel, 10);
-      chatContext = recent.map(turn => `${turn.role === 'assistant' ? 'Р‘РѕС‚' : turn.name}: ${turn.text}`).join('\n');
+      chatContext = recent.map(turn => `${turn.role === 'assistant' ? 'Бот' : turn.name}: ${turn.text}`).join('\n');
     }
 
     const prompt = buildChatPrompt({
@@ -337,7 +337,7 @@ class DiscordBot {
     return { answer, channelName };
   }
 
-  // РђРІС‚Рѕ-РІС‹Р¶РёРјРєР° СЃС‚Р°СЂС‹С… СЃРѕРѕР±С‰РµРЅРёР№: РґРµС€С‘РІС‹Р№ РІС‹Р·РѕРІ Gemini СЂР°Р· РІ N СЃРѕРѕР±С‰РµРЅРёР№.
+  // Авто-выжимка старых сообщений: дешёвый вызов Gemini раз в N сообщений.
   async maybeSummarizeChannel(channelId, channelName = '') {
     if (!this.config.GEMINI_API_KEY) return;
     if (!this.stateStore.shouldSummarizeChannel(channelId, this.config.CONTEXT_SUMMARY_EVERY)) return;
@@ -369,11 +369,11 @@ class DiscordBot {
 
   async handleAiMessage({ message, text }) {
     if (!this.config.GEMINI_API_KEY) {
-      return message.reply('вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.');
+      return message.reply('⚠️ Gemini пока не подключён.');
     }
 
     const userName = message.member?.displayName || message.author.username;
-    const status = await message.reply('рџ’­ Р”СѓРјР°СЋ...');
+    const status = await message.reply('💭 Думаю...');
     await message.channel.sendTyping().catch(() => {});
 
     try {
@@ -397,13 +397,13 @@ class DiscordBot {
       await this.stateStore.save();
     } catch (err) {
       console.error('Gemini error:', err);
-      await status.edit('вќЊ Gemini СЃРµР№С‡Р°СЃ РїРµСЂРµРіСЂСѓР¶РµРЅ РёР»Рё РѕС‚РІРµС‚ РЅРµ РїСЂРѕС€С‘Р».').catch(() => {});
+      await status.edit('❌ Gemini сейчас перегружен или ответ не прошёл.').catch(() => {});
     }
   }
 
   async handleSlashAi(interaction, text) {
     if (!this.config.GEMINI_API_KEY) {
-      return interaction.reply({ content: 'вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.', ephemeral: true });
+      return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
     }
 
     await interaction.deferReply();
@@ -430,19 +430,19 @@ class DiscordBot {
       await this.stateStore.save();
     } catch (err) {
       console.error('Gemini slash error:', err);
-      await interaction.editReply({ content: 'вќЊ Gemini СЃРµР№С‡Р°СЃ РїРµСЂРµРіСЂСѓР¶РµРЅ РёР»Рё РѕС‚РІРµС‚ РЅРµ РїСЂРѕС€С‘Р».' });
+      await interaction.editReply({ content: '❌ Gemini сейчас перегружен или ответ не прошёл.' });
     }
   }
 
   async handleImageRequest({ message, text, ratio }) {
     if (!this.config.GEMINI_API_KEY) {
-      return message.reply('вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.');
+      return message.reply('⚠️ Gemini пока не подключён.');
     }
 
     const prompt = String(text || '').trim();
-    if (!prompt) return message.reply('РќР°РїРёС€Рё, С‡С‚Рѕ РёРјРµРЅРЅРѕ СЂРёСЃРѕРІР°С‚СЊ.');
+    if (!prompt) return message.reply('Напиши, что именно рисовать.');
 
-    const status = await message.reply('рџ–ј Р“РµРЅРµСЂРёСЂСѓСЋ РёР·РѕР±СЂР°Р¶РµРЅРёРµ...');
+    const status = await message.reply('🖼 Генерирую изображение...');
     await message.channel.sendTyping().catch(() => {});
 
     try {
@@ -456,13 +456,13 @@ class DiscordBot {
       const attachment = new AttachmentBuilder(result.buffer, { name: 'image.png' });
       await status.delete().catch(() => {});
       return message.reply({
-        content: `вњ… Р“РѕС‚РѕРІРѕ${result.model ? ` вЂў ${result.model}` : ''}`,
+        content: `✅ Готово${result.model ? ` • ${result.model}` : ''}`,
         files: [attachment],
         allowedMentions: { repliedUser: false },
       });
     } catch (err) {
       console.error('Image generation error:', err);
-      await status.edit(`вќЊ РћС€РёР±РєР° РіРµРЅРµСЂР°С†РёРё: ${clampText(String(err.message || err), 1800)}`).catch(() => {});
+      await status.edit(`❌ Ошибка генерации: ${clampText(String(err.message || err), 1800)}`).catch(() => {});
     }
   }
 
@@ -475,8 +475,8 @@ class DiscordBot {
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setAuthor({ name, iconURL: target.displayAvatarURL({ size: 256 }) })
-      .setTitle('вЏ± Р’СЂРµРјСЏ РІ РІРѕР№СЃРµ')
-      .setDescription(`**Р’СЃРµРіРѕ:** ${formatTime(total)}`)
+      .setTitle('⏱ Время в войсе')
+      .setDescription(`**Всего:** ${formatTime(total)}`)
       .setFooter({ text: `ID: ${target.id}` })
       .setTimestamp();
 
@@ -487,7 +487,7 @@ class DiscordBot {
     if (!interaction.isChatInputCommand()) return;
 
     if (!interaction.guildId) {
-      return interaction.reply({ content: 'вќЊ Р­С‚Р° РєРѕРјР°РЅРґР° СЂР°Р±РѕС‚Р°РµС‚ С‚РѕР»СЊРєРѕ РЅР° СЃРµСЂРІРµСЂРµ.', ephemeral: true }).catch(() => {});
+      return interaction.reply({ content: '❌ Эта команда работает только на сервере.', ephemeral: true }).catch(() => {});
     }
 
     if (ADMIN_COMMANDS.has(interaction.commandName)) {
@@ -495,12 +495,12 @@ class DiscordBot {
         return interaction.reply({ content: HOME_GUILD_ONLY_REPLY, ephemeral: true }).catch(() => {});
       }
       if (!this.isAdmin(interaction.memberPermissions)) {
-        return interaction.reply({ content: 'вќЊ Р­С‚Р° РєРѕРјР°РЅРґР° С‚РѕР»СЊРєРѕ РґР»СЏ Р°РґРјРёРЅРѕРІ.', ephemeral: true }).catch(() => {});
+        return interaction.reply({ content: '❌ Эта команда только для админов.', ephemeral: true }).catch(() => {});
       }
     }
 
     if (interaction.commandName === 'ping') {
-      return interaction.reply({ content: `рџЏ“ Pong! \`${this.client.ws.ping}ms\``, ephemeral: true });
+      return interaction.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, ephemeral: true });
     }
 
     if (interaction.commandName === 'say') {
@@ -511,10 +511,10 @@ class DiscordBot {
       const text = interaction.options.getString('text', true);
       const ratio = interaction.options.getString('ratio') || '16:9';
       if (!this.config.GEMINI_API_KEY) {
-        return interaction.reply({ content: 'вљ пёЏ Gemini РїРѕРєР° РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ.', ephemeral: true });
+        return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
       }
       await interaction.deferReply();
-      await interaction.editReply('рџ–ј Р“РµРЅРµСЂРёСЂСѓСЋ РёР·РѕР±СЂР°Р¶РµРЅРёРµ...');
+      await interaction.editReply('🖼 Генерирую изображение...');
       try {
         const result = await generateImageWithFallback({
           apiKey: this.config.GEMINI_API_KEY,
@@ -524,12 +524,12 @@ class DiscordBot {
         });
         const attachment = new AttachmentBuilder(result.buffer, { name: 'image.png' });
         return interaction.editReply({
-          content: `вњ… Р“РѕС‚РѕРІРѕ${result.model ? ` вЂў ${result.model}` : ''}`,
+          content: `✅ Готово${result.model ? ` • ${result.model}` : ''}`,
           files: [attachment],
         });
       } catch (err) {
         console.error('Slash image error:', err);
-        return interaction.editReply({ content: `вќЊ РћС€РёР±РєР° РіРµРЅРµСЂР°С†РёРё: ${clampText(String(err.message || err), 1800)}` });
+        return interaction.editReply({ content: `❌ Ошибка генерации: ${clampText(String(err.message || err), 1800)}` });
       }
     }
 
@@ -553,10 +553,10 @@ class DiscordBot {
       const content = interaction.options.getString('message', true);
       try {
         await channel.send({ content, allowedMentions: { parse: ['users', 'roles'] } });
-        return interaction.editReply({ content: `вњ… РћС‚РїСЂР°РІР»РµРЅРѕ РІ ${channel}.` });
+        return interaction.editReply({ content: `✅ Отправлено в ${channel}.` });
       } catch (err) {
         console.error('msg error:', err);
-        return interaction.editReply({ content: 'вќЊ РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ. РџСЂРѕРІРµСЂСЊ РїСЂР°РІР° Р±РѕС‚Р° РІ РєР°РЅР°Р»Рµ.' });
+        return interaction.editReply({ content: '❌ Не удалось отправить сообщение. Проверь права бота в канале.' });
       }
     }
 
@@ -565,19 +565,19 @@ class DiscordBot {
       const amount = interaction.options.getInteger('amount', true);
       const deleted = await interaction.channel.bulkDelete(amount, true).catch(() => null);
       const count = deleted ? (typeof deleted === 'number' ? deleted : deleted.size) : 0;
-      return interaction.editReply({ content: `рџ§№ РЈРґР°Р»РµРЅРѕ СЃРѕРѕР±С‰РµРЅРёР№: ${count}.` });
+      return interaction.editReply({ content: `🧹 Удалено сообщений: ${count}.` });
     }
 
     if (interaction.commandName === 'forget') {
       this.stateStore.clearChannelContext(interaction.channel.id);
       await this.stateStore.save();
-      return interaction.reply({ content: 'рџ§Ѕ Р§Р°С‚-РїР°РјСЏС‚СЊ СЌС‚РѕРіРѕ РєР°РЅР°Р»Р° РѕС‡РёС‰РµРЅР°, РЅР°С‡РёРЅР°РµРј СЃ С‡РёСЃС‚РѕРіРѕ Р»РёСЃС‚Р°.', ephemeral: true });
+      return interaction.reply({ content: '🧽 Чат-память этого канала очищена, начинаем с чистого листа.', ephemeral: true });
     }
 
     if (interaction.commandName === 'jtm') {
       const voiceChannel = interaction.member?.voice?.channel;
       if (!voiceChannel) {
-        return interaction.reply({ content: 'вќЊ РўС‹ РЅРµ РІ РІРѕР№СЃРµ, РЅРµРєСѓРґР° Р·Р°С…РѕРґРёС‚СЊ.', ephemeral: true });
+        return interaction.reply({ content: '❌ Ты не в войсе, некуда заходить.', ephemeral: true });
       }
       await interaction.deferReply();
       try {
@@ -588,10 +588,10 @@ class DiscordBot {
           selfDeaf: false,
           selfMute: false,
         });
-        return interaction.editReply({ content: `вњ… Р—Р°С€С‘Р» РІ ${voiceChannel}.` });
+        return interaction.editReply({ content: `✅ Зашёл в ${voiceChannel}.` });
       } catch (err) {
         console.error('jtm error:', err);
-        return interaction.editReply({ content: 'вќЊ РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕРґРєР»СЋС‡РёС‚СЊСЃСЏ Рє РІРѕР№СЃСѓ.' });
+        return interaction.editReply({ content: '❌ Не удалось подключиться к войсу.' });
       }
     }
   }
@@ -625,24 +625,24 @@ class DiscordBot {
       const cmd = (args.shift() || '').toLowerCase();
 
       if (cmd === 'ping') {
-        return message.reply({ content: `рџЏ“ Pong! \`${this.client.ws.ping}ms\``, allowedMentions: { repliedUser: false } });
+        return message.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, allowedMentions: { repliedUser: false } });
       }
 
       if (cmd === 'say') {
         const promptText = args.join(' ').trim();
-        if (!promptText) return message.reply(`РќР°РїРёС€Рё С‚РµРєСЃС‚ РїРѕСЃР»Рµ \`${prefix}say\`.`);
+        if (!promptText) return message.reply(`Напиши текст после \`${prefix}say\`.`);
         return this.handleAiMessage({ message, text: promptText });
       }
 
       if (cmd === 'image' || cmd === 'img') {
         const promptText = args.join(' ').trim();
-        if (!promptText) return message.reply(`РќР°РїРёС€Рё С‚РµРєСЃС‚ РїРѕСЃР»Рµ \`${prefix}image\`.`);
+        if (!promptText) return message.reply(`Напиши текст после \`${prefix}image\`.`);
         return this.handleImageRequest({ message, text: promptText, ratio: '16:9' });
       }
 
       if (cmd === 'help' || cmd === 'h') {
         return message.reply({
-          content: `РљРѕРјР°РЅРґС‹: \`${prefix}ping\`, \`${prefix}say С‚РµРєСЃС‚\`, \`${prefix}image С‚РµРєСЃС‚\`, slash-РєРѕРјР°РЅРґС‹: /ping, /say, /image, /time, /user, /top, /life, /msg, /clear, /forget, /jtm`,
+          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash-команды: /ping, /say, /image, /time, /user, /top, /life, /msg, /clear, /forget, /jtm`,
           allowedMentions: { repliedUser: false },
         });
       }
@@ -651,7 +651,7 @@ class DiscordBot {
     if (directMention || isReplyToBot) {
       const text = cleanMentionText.replace(/^[\s,:\-]+/, '').trim();
       if (!text) {
-        return message.reply({ content: 'Р”Р°, СЏ С‚СѓС‚. РќР°РїРёС€Рё, С‡С‚Рѕ РЅСѓР¶РЅРѕ.', allowedMentions: { repliedUser: false } }).catch(() => {});
+        return message.reply({ content: 'Да, я тут. Напиши, что нужно.', allowedMentions: { repliedUser: false } }).catch(() => {});
       }
       if (isImageRequest(text)) return this.handleImageRequest({ message, text, ratio: '16:9' });
       return this.handleAiMessage({ message, text });
@@ -660,16 +660,16 @@ class DiscordBot {
 
   registerEventHandlers() {
     this.client.once(Events.ClientReady, async () => {
-      console.log(`вњ… Logged in as ${this.client.user.tag}`);
+      console.log(`✅ Logged in as ${this.client.user.tag}`);
       await this.registerCommands().catch(err => console.error('Command registration error:', err));
-      if (!this.config.GUILD_ID) console.warn('вљ пёЏ GUILD_ID is empty; slash commands will be registered globally.');
+      if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; slash commands will be registered globally.');
       await this.refreshPresence();
       await this.restoreCurrentVoiceSessions();
 
       this.addTimer(CHECKPOINT_MS, () => this.checkpointVoiceSessions(false), 'Checkpoint error');
-      // Р РѕС‚Р°С†РёСЏ СЃС‚Р°С‚СѓСЃР°: РЅРѕРІР°СЏ СЃР»СѓС‡Р°Р№РЅР°СЏ РїР°СЂР° СЂР°Р· РІ С‡Р°СЃ.
+      // Ротация статуса: новая случайная пара раз в час.
       this.addTimer(STATUS_ROTATE_MS, () => this.rotateStatus(), 'Status rotate error');
-      // РџРµСЂРёРѕРґРёС‡РµСЃРєРё РїРѕРґС‚РІРµСЂР¶РґР°РµРј presence С‚РѕР№ Р¶Рµ РїР°СЂРѕР№ (Discord РёРЅРѕРіРґР° СЃР±СЂР°СЃС‹РІР°РµС‚).
+      // Периодически подтверждаем presence той же парой (Discord иногда сбрасывает).
       this.addTimer(PRESENCE_REFRESH_MS, () => this.refreshPresence(), 'Presence refresh error');
     });
 
@@ -687,9 +687,9 @@ class DiscordBot {
       } catch (err) {
         console.error('interactionCreate error:', err);
         if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ content: 'вќЊ Р§С‚Рѕ-С‚Рѕ РїРѕС€Р»Рѕ РЅРµ С‚Р°Рє.' }).catch(() => {});
+          await interaction.editReply({ content: '❌ Что-то пошло не так.' }).catch(() => {});
         } else {
-          await interaction.reply({ content: 'вњ– Р§С‚Рѕ-С‚Рѕ РїРѕС€Р»Рѕ РЅРµ С‚Р°Рє.', ephemeral: true }).catch(() => {});
+          await interaction.reply({ content: '✖ Что-то пошло не так.', ephemeral: true }).catch(() => {});
         }
       }
     });
@@ -740,7 +740,7 @@ class DiscordBot {
 
   async shutdown(signal) {
     try {
-      console.log(`РџРѕР»СѓС‡РµРЅ ${signal}, СЃРѕС…СЂР°РЅСЏСЋ РґР°РЅРЅС‹Рµ...`);
+      console.log(`Получен ${signal}, сохраняю данные...`);
       this.timers.forEach(timer => clearInterval(timer));
       await this.checkpointVoiceSessions(true);
       await this.stateStore.save();

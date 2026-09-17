@@ -31,6 +31,7 @@ module.exports = {
   GEMINI_IMAGE_MODELS: parseList(process.env.GEMINI_IMAGE_MODELS, [
     'gemini-2.5-flash-image',
     'imagen-4.0-generate-001',
+    'imagen-3.0-generate-002',
   ]),
   BASE_PROMPT: process.env.BASE_PROMPT || process.env.BASE_STYLE_PROMPT || '',
   PREFIX: process.env.PREFIX || '!',

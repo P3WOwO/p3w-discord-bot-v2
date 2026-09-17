@@ -85,6 +85,7 @@ class StateStore {
         ? { ...clone(DEFAULT_LIFE_STATE), ...data.life_state }
         : clone(DEFAULT_LIFE_STATE);
       this.state.aiMemory = this.normalizeAiMemory(data.ai_memory);
+      console.log(`✅ Loaded from Supabase: voice entries=${Object.keys(this.state.voiceTimes).length}, channels=${Object.keys(this.state.aiMemory.channels).length}`);
       return;
     }
 

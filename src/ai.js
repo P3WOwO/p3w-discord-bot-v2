@@ -134,48 +134,52 @@ function extractImageFromResponse(data) {
 }
 
 // Gemini image models (например gemini-2.5-flash-image) — через generateContent.
+// Пробуем с imageConfig (пропорции), при отказе API — повторяем без него.
 async function generateImageGemini({ apiKey, model, prompt, aspectRatio, retries }) {
   const url = `${API_BASE}/v1beta/models/${model}:generateContent`;
+  const configVariants = [
+    { responseModalities: ['TEXT', 'IMAGE'], imageConfig: { aspectRatio } },
+    { responseModalities: ['TEXT', 'IMAGE'] },
+  ];
   let lastError = null;
 
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseModalities: ['TEXT', 'IMAGE'],
-            imageConfig: { aspectRatio },
+  for (const generationConfig of configVariants) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
           },
-        }),
-      });
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig,
+          }),
+        });
 
-      if (!res.ok) {
-        const errText = await res.text();
-        if (isRetryableStatus(res.status) && attempt < retries) {
+        if (!res.ok) {
+          const errText = await res.text();
+          if (isRetryableStatus(res.status) && attempt < retries) {
+            await sleep(Math.pow(2, attempt) * 1000);
+            continue;
+          }
+          throw new Error(`${model} ${res.status}: ${String(errText).slice(0, 300)}`);
+        }
+
+        const data = await res.json();
+        const image = extractImageFromResponse(data);
+        if (!image) throw new Error(`${model}: ответ не содержит изображение`);
+        return { ...image, model };
+      } catch (err) {
+        lastError = err;
+        const message = String(err?.message || err);
+        if (attempt < retries && isRetryableMessage(message)) {
           await sleep(Math.pow(2, attempt) * 1000);
           continue;
         }
-        throw new Error(`${model} ${res.status}: ${errText}`);
+        break;
       }
-
-      const data = await res.json();
-      const image = extractImageFromResponse(data);
-      if (!image) throw new Error(`${model}: ответ не содержит изображение`);
-      return { ...image, model };
-    } catch (err) {
-      lastError = err;
-      const message = String(err?.message || err);
-      if (attempt < retries && isRetryableMessage(message)) {
-        await sleep(Math.pow(2, attempt) * 1000);
-        continue;
-      }
-      break;
     }
   }
 
@@ -242,7 +246,7 @@ async function generateImageWithFallback({ apiKey, models, prompt, aspectRatio =
 
   const modelList = (Array.isArray(models) ? models : [models]).filter(Boolean);
   const finalPrompt = buildImagePrompt(prompt, aspectRatio);
-  let lastError = null;
+  const errors = [];
 
   for (const model of modelList) {
     const isImagen = IMAGEN_PATTERN.test(model);
@@ -251,12 +255,14 @@ async function generateImageWithFallback({ apiKey, models, prompt, aspectRatio =
         ? await generateImageImagen({ apiKey, model, prompt: finalPrompt, aspectRatio, retries })
         : await generateImageGemini({ apiKey, model, prompt: finalPrompt, aspectRatio, retries });
     } catch (err) {
-      lastError = err;
-      console.error(`Image model failed: ${model}:`, err?.message || err);
+      const message = String(err?.message || err).slice(0, 250);
+      errors.push(`${model}: ${message}`);
+      console.error(`Image model failed: ${model}:`, message);
     }
   }
 
-  throw lastError || new Error('Не удалось сгенерировать изображение');
+  // Показываем в чат ошибки всех моделей — так видно, почему упала каждая.
+  throw new Error(`Не удалось сгенерировать изображение. Попытки: ${errors.join(' | ')}`);
 }
 
 // ===== Промпты чата =====
