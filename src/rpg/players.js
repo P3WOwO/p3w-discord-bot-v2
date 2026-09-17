@@ -73,6 +73,15 @@ function init(config) {
     });
     enabled = true;
     console.log('🎲 RPG storage: Supabase (rpg_state)');
+    // Пробная проверка: таблица существует? Если нет — громко пишем в лог при старте.
+    supabase.from(TABLE).select('user_id').limit(1).then(({ error }) => {
+      if (error) {
+        console.error('⚠️ RPG: TABLE rpg_state IS NOT AVAILABLE:', error.message);
+        console.error('⚠️ RPG: ПРОГРЕСС ИГРОКОВ НЕ БУДЕТ СОХРАНЯТЬСЯ! Запусти rpg_state.sql в Supabase SQL Editor!');
+      } else {
+        console.log('✅ RPG table rpg_state is available');
+      }
+    }).catch(err => console.error('⚠️ RPG table probe failed:', err.message));
   } else {
     console.log('🎲 RPG storage: local fallback only');
   }
@@ -82,7 +91,8 @@ async function getProfile(user, guildId) {
   let profile = cache.get(user.id);
   if (!profile && enabled) {
     try {
-      const { data } = await supabase.from(TABLE).select('data').eq('user_id', user.id).maybeSingle();
+      const { data, error } = await supabase.from(TABLE).select('data').eq('user_id', user.id).maybeSingle();
+      if (error) console.error('⚠️ RPG profile load failed:', error.message);
       profile = data?.data || null;
     } catch (err) {
       console.error('⚠️ RPG profile load failed:', err.message);
@@ -109,12 +119,18 @@ async function saveProfile(profile) {
   saveLocal();
   if (!enabled) return;
   try {
-    await supabase.from(TABLE).upsert({
+    const { error } = await supabase.from(TABLE).upsert({
       user_id: profile.userId,
       guild_id: profile.guildId || null,
       data: profile,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' });
+    if (error) {
+      console.error('⚠️ RPG PROFILE SAVE FAILED:', error.message);
+      if (/relation|does not exist/i.test(error.message || '')) {
+        console.error('⚠️ RPG: ТАБЛИЦЫ rpg_state НЕТ — запусти rpg_state.sql в Supabase SQL Editor!');
+      }
+    }
   } catch (err) {
     console.error('⚠️ RPG profile save failed:', err.message);
   }
