@@ -380,6 +380,8 @@ async function handleComponent(interaction) {
     case 'selljunk':
       return handleItemAction(interaction, profile, null, 'selljunk');
     case 'hunt':
+      // rpg:hunt (кнопка в меню) — показать выбор зоны; rpg:hunt:<zone> — бой сразу.
+      if (!arg1) return showHunt(interaction, profile);
       return doHunt(interaction, profile, arg1);
     case 'hunt-menu':
       return showHunt(interaction, profile);
