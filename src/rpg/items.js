@@ -35,11 +35,15 @@ function rollRarityFromWeights(weights) {
   return picked ? picked.id : 'common';
 }
 
-// Огненный -> Огненная / Огненное / Огненные
+// Огненный -> Огненная / Огненное / Огненные (с учётом ск/ж/ч и т.п.).
 function declineAdjective(adj, gender) {
   const a = String(adj || '');
-  if (gender === 'f') return a.replace(/ый$/, 'ая').replace(/ий$/, 'яя').replace(/ой$/, 'ая');
-  if (gender === 'n') return a.replace(/ый$/, 'ое').replace(/ий$/, 'ее').replace(/ой$/, 'ое');
+  const stem = a.slice(0, -2);
+  const soft = /ий$/.test(a) && !/[кгх]$/.test(stem); // свежий/синий -> ее/ие
+  const f = /[кгхжшчщ]$/.test(stem) ? 'ая' : 'яя';    // громкая, свежая, оглушающая
+  const n = /[кгх]$/.test(stem) ? 'ое' : 'ее';        // громкое, свежее, оглушающее
+  if (gender === 'f') return a.replace(/ый$/, 'ая').replace(/ий$/, f).replace(/ой$/, 'ая');
+  if (gender === 'n') return soft ? a.replace(/ий$/, 'ее') : a.replace(/ый$/, 'ое').replace(/ий$/, n).replace(/ой$/, 'ое');
   if (gender === 'pl') return a.replace(/ый$/, 'ые').replace(/ий$/, 'ие').replace(/ой$/, 'ые');
   return a;
 }

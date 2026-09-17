@@ -105,6 +105,7 @@ async function doHunt(interaction, profile, zoneId) {
 
   const result = hunt.hunt(profile, zoneId);
   if (!result.ok) {
+    console.error(`RPG hunt failed: reason=${result.reason}, zone=${zoneId}, playerLevel=${profile.level}`);
     return interaction.reply({ content: '❌ Ошибка охоты, попробуй ещё раз.', ephemeral: true }).catch(() => {});
   }
 
@@ -333,6 +334,11 @@ async function doHuntForCommand(interaction, profile, zoneId) {
 
 // ===== Кнопки =====
 
+// Значение селект-меню (у select'ов выбор лежит в interaction.values, не в customId).
+function selectValue(interaction) {
+  return Array.isArray(interaction.values) && interaction.values.length ? interaction.values[0] : null;
+}
+
 async function handleComponent(interaction) {
   const raw = String(interaction.customId || '').slice(PREFIX.length);
   if (!raw) return;
@@ -362,8 +368,14 @@ async function handleComponent(interaction) {
       return;
     }
     case 'item': {
+      // rpg:item:<uid>:<action> — кнопки; rpg:item + values[0] — селект-меню сумки.
       if (arg1 && arg2) return handleItemAction(interaction, profile, arg1, arg2);
-      return showItem(interaction, profile, arg1);
+      const uid = arg1 || selectValue(interaction);
+      if (!uid) {
+        console.error('RPG item: no uid, customId:', interaction.customId, 'values:', interaction.values);
+        return interaction.reply({ content: '❌ Предмет не найден.', ephemeral: true }).catch(() => {});
+      }
+      return showItem(interaction, profile, uid);
     }
     case 'selljunk':
       return handleItemAction(interaction, profile, null, 'selljunk');
@@ -372,11 +384,13 @@ async function handleComponent(interaction) {
     case 'hunt-menu':
       return showHunt(interaction, profile);
     case 'zone': {
-      if (!arg1) return showHunt(interaction, profile);
+      // rpg:zone — селект-меню выбора зоны.
+      const zoneId = arg1 || selectValue(interaction);
+      if (!zoneId) return showHunt(interaction, profile);
       if (hunt.isOnCooldown(profile)) {
         return interaction.reply({ content: `⏳ Перезарядка: ещё ${hunt.cooldownLeft(profile)} с.`, ephemeral: true }).catch(() => {});
       }
-      return doHunt(interaction, profile, arg1);
+      return doHunt(interaction, profile, zoneId);
     }
     case 'chests':
       return showChests(interaction, profile);
