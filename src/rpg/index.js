@@ -6,6 +6,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
+  PermissionFlagsBits,
 } = require('discord.js');
 const { stats: cfg, rarities, itemBases, chests: chestCfg } = require('./data');
 const items = require('./items');
@@ -297,7 +298,105 @@ function commandData() {
       .setDescription('Вызвать игрока на дуэль (PvP с рейтингом)')
       .addUserOption(option => option.setName('opponent').setDescription('Противник').setRequired(true))
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName('give')
+      .setDescription('[Админ] Выдать/забрать опыт, монеты и т.д.')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addUserOption(option => option.setName('user').setDescription('Кому').setRequired(true))
+      .addStringOption(option =>
+        option.setName('type')
+          .setDescription('Что выдать')
+          .setRequired(true)
+          .addChoices(
+            { name: '🪙 Монеты', value: 'coins' },
+            { name: '🗝 Ключи', value: 'keys' },
+            { name: '📗 Опыт', value: 'xp' },
+            { name: '⬆️ Уровни', value: 'levels' },
+            { name: '🗡 Рейтинг', value: 'rating' },
+          ))
+      .addIntegerOption(option => option.setName('amount').setDescription('Количество (отрицательное = забрать)').setRequired(true))
+      .toJSON(),
   ];
+}
+
+// ===== Админ-выдача =====
+
+async function handleGive(interaction, bot) {
+  // Права: только админы + только домашний сервер (если задан GUILD_ID).
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return interaction.editReply({ content: '❌ Только для админов.' }).catch(() => {});
+  }
+  if (bot?.config?.GUILD_ID && interaction.guildId !== bot.config.GUILD_ID) {
+    return interaction.editReply({ content: '❌ Команда работает только на домашнем сервере.' }).catch(() => {});
+  }
+
+  const target = interaction.options.getUser('user', true);
+  const type = interaction.options.getString('type', true);
+  const amount = interaction.options.getInteger('amount', true);
+  if (amount === 0) return interaction.editReply({ content: '❌ amount = 0 — и что я должен сделать?' }).catch(() => {});
+  if (Math.abs(amount) > 1_000_000) return interaction.editReply({ content: '❌ Слишком жирно, максимум ±1 000 000.' }).catch(() => {});
+
+  const targetProfile = await players.getProfile({
+    id: target.id,
+    username: target.username,
+    displayName: interaction.options.getMember('user')?.displayName || target.username,
+  }, interaction.guildId);
+
+  const before = { gold: targetProfile.gold, keys: targetProfile.keys, level: targetProfile.level, rating: targetProfile.rating };
+  const names = { coins: '🪙 монеты', keys: '🗝 ключи', xp: '📗 опыт', levels: '⬆️ уровни', rating: '🗡 рейтинг' };
+
+  let levelUps = 0;
+
+  if (type === 'coins') {
+    targetProfile.gold = Math.max(0, targetProfile.gold + amount);
+  } else if (type === 'keys') {
+    targetProfile.keys = Math.max(0, (targetProfile.keys || 0) + amount);
+  } else if (type === 'xp') {
+    if (amount > 0) levelUps = players.addXp(targetProfile, amount);
+    else targetProfile.xp = Math.max(0, targetProfile.xp + amount);
+  } else if (type === 'levels') {
+    const maxLevel = cfg.levelCurve?.maxLevel || 50;
+    if (amount > 0) {
+      // Выдаём уровни через XP — чтобы статы росли честно по кривой.
+      let cumXp = 0;
+      for (let lvl = targetProfile.level; lvl < Math.min(maxLevel, targetProfile.level + amount); lvl++) {
+        cumXp += players.xpForLevel(lvl);
+      }
+      levelUps = players.addXp(targetProfile, cumXp);
+    } else {
+      const newLevel = Math.max(1, targetProfile.level + amount);
+      const delta = newLevel - targetProfile.level;
+      targetProfile.level = newLevel;
+      targetProfile.xp = 0;
+      const growth = cfg.levelStats || { hp: 14, atk: 1.4, def: 0.8, spd: 0.35 };
+      for (const [stat, value] of Object.entries(growth)) {
+        targetProfile.stats[stat] = Math.round(((targetProfile.stats[stat] || 0) + value * delta) * 10) / 10;
+      }
+    }
+  } else if (type === 'rating') {
+    targetProfile.rating = Math.max(100, (targetProfile.rating || 1000) + amount);
+  } else {
+    return interaction.editReply({ content: '❌ Неизвестный тип.' }).catch(() => {});
+  }
+
+  await players.saveProfile(targetProfile);
+
+  const changes = [];
+  if (type === 'coins') changes.push(`🪙 ${before.gold} → ${targetProfile.gold}`);
+  if (type === 'keys') changes.push(`🗝 ${before.keys} → ${targetProfile.keys}`);
+  if (type === 'xp') changes.push(`📗 +${amount} XP${levelUps ? ` (уровней поднято: ${levelUps}, теперь ${targetProfile.level})` : ''}`);
+  if (type === 'levels') changes.push(`⬆️ ${before.level} → ${targetProfile.level}`);
+  if (type === 'rating') changes.push(`🗡 ${before.rating} → ${targetProfile.rating}`);
+
+  const sign = amount > 0 ? 'выдал' : 'забрал';
+  const embed = new EmbedBuilder()
+    .setColor(amount > 0 ? 0x57f287 : 0xed4245)
+    .setTitle(`⚖️ ${sign} ${names[type]} (${amount > 0 ? '+' : ''}${amount})`)
+    .setDescription(`Для **${targetProfile.name}**`)
+    .addFields({ name: 'Изменения', value: changes.join('\n') })
+    .setTimestamp();
+
+  await interaction.editReply({ embeds: [embed] }).catch(() => {});
 }
 
 async function handleCommand(interaction, bot) {
@@ -337,6 +436,10 @@ async function handleCommand(interaction, bot) {
     }
     return;
   }
+  if (interaction.commandName === 'give') {
+    return handleGive(interaction, bot);
+  }
+
   if (interaction.commandName === 'dungeon') {
     await interaction.editReply({ content: 'Выбери данж через кнопки ниже 👇' }).catch(() => {});
     // Показываем меню данжей: reply уже есть, эмулируем через отдельное ephemeral-сообщение.
@@ -693,7 +796,7 @@ class RpgGame {
 
   async handleCommand(interaction) {
     try {
-      await handleCommand(interaction);
+      await handleCommand(interaction, this);
     } catch (err) {
       console.error('RPG command error:', err);
       const payload = { content: '❌ RPG: что-то сломалось, глянь логи.', ephemeral: true };
