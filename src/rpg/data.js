@@ -19,6 +19,8 @@ const itemBases = loadJson('items.json', { slots: [], bases: {}, genders: {}, sl
 const affixes = loadJson('affixes.json', { prefixes: [], suffixes: [] });
 const mobs = loadJson('mobs.json', { archetypes: [], zones: [], modifiers: [] });
 const chests = loadJson('chests.json', { chests: [] });
+const dungeons = loadJson('dungeons.json', { dungeons: [], cooldownMinutes: 3 });
+const pets = loadJson('pets.json', {});
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -53,6 +55,8 @@ module.exports = {
   affixes,
   mobs,
   chests,
+  dungeons,
+  pets,
   randInt,
   pick,
   clamp,

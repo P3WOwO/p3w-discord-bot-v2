@@ -56,6 +56,12 @@ function equipmentLine(profile) {
   return parts.join('\n') || 'Пусто, надень что-нибудь в 🎒';
 }
 
+function petsLine(profile) {
+  const pet = players.getActivePet(profile);
+  if (!pet) return 'Нет активного питомца';
+  return `${pet.emoji} **${pet.name}** (ур.${pet.level}) — +${players.totalStats(profile).petBonus || 0}% к статам`;
+}
+
 function profileEmbed(profile) {
   const s = players.totalStats(profile);
   return new EmbedBuilder()
@@ -68,6 +74,8 @@ function profileEmbed(profile) {
       { name: `🪙 Монеты: ${profile.gold}`, value: `🗝 Ключи: ${profile.keys || 0}`, inline: true },
       { name: 'Score', value: String(profile.score || players.calcScore(profile)), inline: true },
       { name: 'Экипировка', value: equipmentLine(profile), inline: false },
+      { name: '🐾 Питомец', value: petsLine(profile), inline: true },
+      { name: '🗡 PvP', value: `Рейтинг: ${profile.rating || 1000} (${profile.pvpWins || 0}П / ${profile.pvpLosses || 0}Пр)`, inline: true },
     )
     .setTimestamp();
 }
@@ -112,6 +120,7 @@ function battleResultEmbed(huntResult, profile) {
     rewards.push(`🪙 +${huntResult.gold}`, `📗 +${huntResult.xp} XP`);
     if (huntResult.item) rewards.push(`🎁 ${itemShort(huntResult.item)}`);
     if (huntResult.key) rewards.push('🗝 +1 ключ!');
+    if (huntResult.pet) rewards.push(`🐾 Пойман питомец: **${huntResult.pet.name}** (ур.${huntResult.pet.level})!`);
     if (huntResult.invFull) rewards.push('⚠️ Сумка полна — предмет продан автоматически');
   } else {
     rewards.push(`📗 +${huntResult.xp} XP (утешительные)`);
@@ -147,6 +156,78 @@ function zonesListEmbed(profile) {
     .setFooter({ text: 'Охота приносит XP, монеты, лут и ключи' });
 }
 
+function dungeonResultEmbed(result, profile) {
+  const d = result.dungeon;
+  const e = new EmbedBuilder()
+    .setColor(result.win ? 0x57f287 : 0xed4245)
+    .setTitle(`${d.emoji} ${d.name}: ${result.win ? 'зачищен!' : 'провал'}`)
+    .addFields(
+      { name: 'Волны', value: `${result.win ? 'Все пройдены' : `Дошёл до ${result.waveReached}/${d.waves}`} + босс`, inline: true },
+      { name: '👑 Босс', value: result.boss ? (result.win ? `${result.boss.name} — повержен` : `${result.boss.name} оказался сильнее`) : '—', inline: true },
+    );
+
+  const rewards = [];
+  if (result.win) {
+    rewards.push(`🪙 +${result.gold}`, `📗 +${result.xp} XP`);
+    for (const item of result.items || []) rewards.push(`🎁 ${itemShort(item)}`);
+    if (result.keys) rewards.push('🗝 +1 ключ!');
+    if (result.pet) rewards.push(`🐾 Пойман питомец: **${result.pet.name}** (ур.${result.pet.level})!`);
+    if (result.invFull) rewards.push('⚠️ Сумка полна — часть лута продана');
+  } else {
+    rewards.push(`📗 +${result.xp} XP (за смелость)`);
+  }
+  if (result.levelUps) rewards.push(`🎉 **УРОВЕНЬ! Теперь ${profile.level}**`);
+  e.addFields({ name: 'Награды', value: rewards.join('\n') || '—' });
+
+  if (result.log && result.log.length) {
+    e.addFields({ name: 'Ход забега', value: result.log.join('\n').slice(0, 1020) });
+  }
+  return e;
+}
+
+function dungeonsListEmbed(profile) {
+  const list = (require('./data').dungeons.dungeons || []).map(d => {
+    const locked = profile.level < (d.minLevel || 1);
+    const cost = d.currency === 'gold' ? `${d.entryCost} 🪙` : `${d.entryCost} 🗝`;
+    return `${d.emoji} **${d.name}** — ур.${d.minLevel}+, вход ${cost}, волн: ${d.waves} + босс${locked ? ' 🔒' : ''}`;
+  });
+  return new EmbedBuilder()
+    .setColor(0x9b59b6)
+    .setTitle('🐉 Данжи')
+    .setDescription(list.join('\n') || 'Пусто')
+    .setFooter({ text: 'Данж = волны мобов + босс. Лут жирнее охоты, шанс поймать питомца выше' });
+}
+
+function pvpResultEmbed(result, attacker, defender) {
+  const { battle } = result;
+  const e = new EmbedBuilder()
+    .setColor(result.win ? 0x57f287 : 0xed4245)
+    .setTitle(`🗡 ${result.sparring ? '🥊 Спарринг' : 'PvP'}: ${result.win ? `${attacker.name} победил` : `${defender.name} победил`}`)
+    .addFields(
+      { name: attacker.name, value: `HP ${battle.aHp}/${battle.aMaxHp}${result.sparring ? '' : `\nРейтинг: ${result.ratingBefore} → ${result.ratingAfter}`}`, inline: true },
+      { name: defender.name, value: `HP ${battle.bHp}/${battle.bMaxHp}${result.sparring ? '' : `\nРейтинг: ${result.opponentRating} → ${defender.rating}`}`, inline: true },
+      { name: 'Раунды', value: String(battle.rounds), inline: true },
+      { name: 'Награды', value: `🪙 +${result.coins}` },
+    );
+  if (battle.log && battle.log.length) {
+    e.addFields({ name: 'Лог боя', value: battle.log.join('\n').slice(0, 1020) });
+  }
+  return e;
+}
+
+function petsEmbed(profile) {
+  const petsList = (profile.pets || []).map(p => {
+    const active = p.uid === profile.activePetId ? ' ✅активен' : '';
+    const pct = Math.min(require('./data').pets.bonusCap || 15, (require('./data').pets.bonusBase || 2) + p.level * (require('./data').pets.bonusPerLevel || 0.15));
+    return `${p.emoji} **${p.name}** (ур.${p.level}) — +${pct}% к статам${active}`;
+  });
+  return new EmbedBuilder()
+    .setColor(0x2ecc71)
+    .setTitle(`🐾 Питомцы (${(profile.pets || []).length})`)
+    .setDescription(petsList.slice(0, 25).join('\n') || 'Питомцев нет — ловятся после побед на охоте и в данжах!')
+    .setFooter({ text: 'Активный питомец даёт бонус ко всем статам. Отпустить = монеты' });
+}
+
 module.exports = {
   STAT_NAMES,
   rarityEmoji,
@@ -157,4 +238,8 @@ module.exports = {
   battleResultEmbed,
   chestResultEmbed,
   zonesListEmbed,
+  dungeonResultEmbed,
+  dungeonsListEmbed,
+  pvpResultEmbed,
+  petsEmbed,
 };

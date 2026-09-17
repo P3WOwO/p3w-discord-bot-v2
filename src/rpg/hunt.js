@@ -4,6 +4,7 @@ const { generateMob } = require('./mobs');
 const { simulateBattle } = require('./combat');
 const items = require('./items');
 const players = require('./players');
+const pets = require('./pets');
 
 function isOnCooldown(profile) {
   const cd = (cfg.cooldowns?.hunt || 40) * 1000;
@@ -78,6 +79,9 @@ function hunt(profile, zoneId) {
     }
     result.key = rollKey(mob);
     if (result.key) profile.keys += 1;
+
+    // Шанс поймать моба как питомца.
+    result.pet = pets.tryCapture(mob, profile, playerStats.luck || 0);
   } else {
     result.xp = Math.max(1, Math.round(mob.xp * 0.2));
     result.levelUps = players.addXp(profile, result.xp);

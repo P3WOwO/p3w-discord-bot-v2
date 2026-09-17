@@ -5,6 +5,17 @@
   "critBase": 5,
   "combat": { "maxRounds": 30, "mitigationK": 50, "variance": 0.1 },
   "cooldowns": { "hunt": 40 },
+  "voice": { "coinsPerMinute": 1, "keyChancePerMinute": 1 },
+  "pvp": {
+    "startRating": 1000,
+    "minLevel": 5,
+    "kFactor": 32,
+    "winCoinsBase": 50,
+    "winCoinsPerRating": 0.5,
+    "loseCoins": 15,
+    "sparCoins": 10,
+    "cooldown": 120
+  },
   "inventoryCap": 60,
   "sellPricePerScore": 2,
   "startingGold": 200,

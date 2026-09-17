@@ -2,8 +2,9 @@
 const fs = require('fs');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
-const { stats: cfg, itemBases } = require('./data');
+const { stats: cfg, itemBases, pets: petsCfg } = require('./data');
 const items = require('./items');
+const petUtils = require('./pets');
 
 const TABLE = 'rpg_state';
 const DATA_DIR = process.env.DATA_DIR || path.join('/tmp', 'p3w-bot');
@@ -30,7 +31,14 @@ function createProfile(user) {
     stats: { ...(cfg.baseStats || { hp: 120, atk: 12, def: 6, spd: 10 }) },
     equipment: emptyEquipment(),
     inventory: [],
+    pets: [],
+    activePetId: null,
+    rating: cfg.pvp?.startRating || 1000,
+    pvpWins: 0,
+    pvpLosses: 0,
     lastHunt: 0,
+    lastDungeon: 0,
+    lastPvp: 0,
     createdAt: new Date().toISOString(),
     score: 0,
   };
@@ -84,6 +92,13 @@ async function getProfile(user, guildId) {
   profile.userId = user.id;
   profile.name = user.displayName || profile.name || user.username;
   if (guildId) profile.guildId = guildId;
+  // Нормализация старых профилей: новые поля, добавленные в апдейтах.
+  profile.pets = Array.isArray(profile.pets) ? profile.pets : [];
+  profile.rating = profile.rating || cfg.pvp?.startRating || 1000;
+  profile.pvpWins = profile.pvpWins || 0;
+  profile.pvpLosses = profile.pvpLosses || 0;
+  profile.lastDungeon = profile.lastDungeon || 0;
+  profile.lastPvp = profile.lastPvp || 0;
   cache.set(user.id, profile);
   return profile;
 }
@@ -162,7 +177,25 @@ function totalStats(profile) {
     }
   }
   for (const key of ['hp', 'atk', 'def', 'spd']) s[key] = Math.round(s[key]);
+
+  // Активный питомец: % ко всем главным статам.
+  const pet = getActivePet(profile);
+  if (pet) {
+    const pct = petUtils.bonusPct(pet);
+    for (const key of ['hp', 'atk', 'def', 'spd']) {
+      s[key] = Math.round(s[key] * (1 + pct / 100));
+    }
+    s.petBonus = pct;
+  }
   return s;
+}
+
+function getActivePet(profile) {
+  return (profile.pets || []).find(p => p.uid === profile.activePetId) || null;
+}
+
+function getCached(userId) {
+  return cache.get(userId) || null;
 }
 
 function calcScore(profile) {
@@ -211,6 +244,8 @@ module.exports = {
   findItem,
   equippedItem,
   emptyEquipment,
+  getActivePet,
+  getCached,
 };
 
 

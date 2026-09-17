@@ -1,0 +1,10 @@
+{
+  "captureChance": 8,
+  "luckToCapture": 0.2,
+  "maxPets": 20,
+  "bonusBase": 2,
+  "bonusPerLevel": 0.15,
+  "bonusCap": 15,
+  "releasePricePerLevel": 15,
+  "modifierCaptureBonus": { "elite": 5, "cursed": 8, "golden": 4 }
+}

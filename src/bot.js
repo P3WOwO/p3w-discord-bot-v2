@@ -159,18 +159,26 @@ class DiscordBot {
   async checkpointVoiceSessions(force = false) {
     const now = Date.now();
     let changed = false;
+    const awarded = [];
 
     for (const [key, startedAt] of this.activeSessions.entries()) {
       const elapsed = Math.floor((now - startedAt) / 1000);
       if (elapsed > 0 && (force || elapsed >= 60)) {
         const [guildId, userId] = key.split(':');
         this.stateStore.addVoiceSeconds(guildId, userId, elapsed);
+        // RPG: монеты за время в войсе (только для активных игроков с профилем в кэше).
+        awarded.push({ userId, seconds: elapsed });
         this.activeSessions.set(key, now);
         changed = true;
       }
     }
 
     if (changed || force) {
+      if (awarded.length) {
+        for (const { userId, seconds } of awarded) {
+          void this.rpg.awardVoiceTime(userId, seconds);
+        }
+      }
       return this.stateStore.save();
     }
     return Promise.resolve();

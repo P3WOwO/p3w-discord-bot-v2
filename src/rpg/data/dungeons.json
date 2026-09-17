@@ -1,0 +1,29 @@
+{
+  "cooldownMinutes": 3,
+  "dungeons": [
+    {
+      "id": "sewer-lair", "name": "Логово в канализации", "emoji": "🕳️",
+      "minLevel": 8, "waves": 3, "entryCost": 150, "currency": "gold",
+      "levelRange": [8, 14], "mobs": ["rat", "zombie", "bandit"], "boss": "zombie",
+      "gold": [80, 140], "xp": [60, 90],
+      "itemCount": [1, 2], "rarityWeights": { "common": 20, "uncommon": 35, "rare": 30, "epic": 12, "legendary": 3 },
+      "keyChance": 25, "captureChance": 12
+    },
+    {
+      "id": "crypt-halls", "name": "Залы склепа", "emoji": "⚰️",
+      "minLevel": 18, "waves": 4, "entryCost": 400, "currency": "gold",
+      "levelRange": [18, 26], "mobs": ["skeleton", "zombie", "wraith"], "boss": "wraith",
+      "gold": [180, 300], "xp": [140, 200],
+      "itemCount": [1, 2], "rarityWeights": { "common": 10, "uncommon": 25, "rare": 35, "epic": 22, "legendary": 8 },
+      "keyChance": 40, "captureChance": 15
+    },
+    {
+      "id": "abyss-gate", "name": "Врата бездны", "emoji": "🌌",
+      "minLevel": 32, "waves": 5, "entryCost": 2, "currency": "keys",
+      "levelRange": [32, 45], "mobs": ["golem", "wraith", "demon"], "boss": "demon",
+      "gold": [400, 700], "xp": [300, 450],
+      "itemCount": [2, 3], "rarityWeights": { "common": 0, "uncommon": 15, "rare": 30, "epic": 35, "legendary": 20 },
+      "keyChance": 60, "captureChance": 20
+    }
+  ]
+}

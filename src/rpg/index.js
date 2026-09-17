@@ -13,6 +13,9 @@ const players = require('./players');
 const hunt = require('./hunt');
 const inventory = require('./inventory');
 const chests = require('./chests');
+const dungeons = require('./dungeons');
+const pvp = require('./pvp');
+const pets = require('./pets');
 const view = require('./view');
 
 const PREFIX = 'rpg:';
@@ -29,6 +32,18 @@ function mainMenuRow(state) {
     new ButtonBuilder().setCustomId(PREFIX + 'chests').setLabel('🎁 Сундуки').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(PREFIX + 'top').setLabel('🏆 Топ').setStyle(ButtonStyle.Secondary),
   );
+}
+
+function mainMenuRow2() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'dungeons').setLabel('🐉 Данжи').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(PREFIX + 'pvp-menu').setLabel('🗡 PvP').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(PREFIX + 'pets').setLabel('🐾 Питомцы').setStyle(ButtonStyle.Success),
+  );
+}
+
+function fullMenuComponents() {
+  return [mainMenuRow(), mainMenuRow2()];
 }
 
 async function showMainMenu(interaction, profile, edit = false) {
@@ -269,13 +284,19 @@ async function showTop(interaction, profile, guild) {
 
 function commandData() {
   return [
-    new SlashCommandBuilder().setName('rpg').setDescription('Меню RPG: профиль, охота, сундуки, топ').toJSON(),
+    new SlashCommandBuilder().setName('rpg').setDescription('Меню RPG: профиль, охота, сундуки, данжи, топ').toJSON(),
     new SlashCommandBuilder()
       .setName('hunt')
       .setDescription('Быстрая охота в выбранной зоне')
       .addStringOption(option => option.setName('zone').setDescription('Зона (см. /rpg → Охота)').setRequired(false))
       .toJSON(),
     new SlashCommandBuilder().setName('profile').setDescription('Показать свой RPG-профиль').toJSON(),
+    new SlashCommandBuilder().setName('dungeon').setDescription('Меню данжей: волны мобов + босс').toJSON(),
+    new SlashCommandBuilder()
+      .setName('pvp')
+      .setDescription('Вызвать игрока на дуэль (PvP с рейтингом)')
+      .addUserOption(option => option.setName('opponent').setDescription('Противник').setRequired(true))
+      .toJSON(),
   ];
 }
 
@@ -291,7 +312,7 @@ async function handleCommand(interaction, bot) {
   if (interaction.commandName === 'rpg') {
     menuState.set(profile.userId, { view: 'menu' });
     const embed = view.profileEmbed(profile);
-    await interaction.editReply({ embeds: [embed], components: [mainMenuRow()] }).catch(() => {});
+    await interaction.editReply({ embeds: [embed], components: fullMenuComponents() }).catch(() => {});
     return;
   }
 
@@ -316,6 +337,45 @@ async function handleCommand(interaction, bot) {
     }
     return;
   }
+  if (interaction.commandName === 'dungeon') {
+    await interaction.editReply({ content: 'Выбери данж через кнопки ниже 👇' }).catch(() => {});
+    // Показываем меню данжей: reply уже есть, эмулируем через отдельное ephemeral-сообщение.
+    const dungeonInteraction = {
+      user: interaction.user,
+      member: interaction.member,
+      guildId: interaction.guildId,
+      customId: PREFIX + 'dungeons',
+      update: async (payload) => {
+        await interaction.followUp({ ...payload, ephemeral: true }).catch(() => {});
+      },
+      reply: async (payload) => {
+        await interaction.followUp({ ...payload, ephemeral: true }).catch(() => {});
+      },
+    };
+    await showDungeons(dungeonInteraction, profile);
+    return;
+  }
+
+  if (interaction.commandName === 'pvp') {
+    const opponent = interaction.options.getUser('opponent', true);
+    if (opponent.id === interaction.user.id) {
+      await interaction.editReply({ content: '❌ С собой драться нечестно. Используй /rpg → 🗡 PvP → спарринг.' }).catch(() => {});
+      return;
+    }
+    if (opponent.bot) {
+      await interaction.editReply({ content: '❌ Боты не дерутся, у них нет прокачки.' }).catch(() => {});
+      return;
+    }
+
+    const defenderProfile = await players.getProfile({
+      id: opponent.id,
+      username: opponent.username,
+      displayName: interaction.options.getMember('opponent')?.displayName || opponent.username,
+    }, interaction.guildId);
+
+    await pvpDuel(interaction, profile, opponent, defenderProfile);
+    return;
+  }
 }
 
 async function doHuntForCommand(interaction, profile, zoneId) {
@@ -332,7 +392,187 @@ async function doHuntForCommand(interaction, profile, zoneId) {
   await interaction.editReply({ embeds: [view.battleResultEmbed(result, profile)] }).catch(() => {});
 }
 
+// ===== Данжи =====
+
+async function showDungeons(interaction, profile) {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(PREFIX + 'dungeon')
+    .setPlaceholder('Выбери данж для зачистки')
+    .addOptions((require('./data').dungeons.dungeons || []).map(d => ({
+      label: d.name,
+      description: `ур.${d.minLevel}+ • волн ${d.waves}+босс • ${d.currency === 'gold' ? d.entryCost + '🪙' : d.entryCost + '🗝'}`,
+      value: d.id,
+      emoji: d.emoji,
+    })));
+  const rows = [
+    new ActionRowBuilder().addComponents(select),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+    ),
+  ];
+  const embed = view.dungeonsListEmbed(profile);
+  if (dungeons.isOnCooldown(profile)) {
+    embed.setFooter({ text: `⏳ Перезарядка данжей: ещё ${dungeons.cooldownLeft(profile)} с` });
+  }
+  await interaction.update({ embeds: [embed], components: rows }).catch(() => {});
+}
+
+async function runDungeon(interaction, profile, dungeonId) {
+  const dungeon = dungeons.dungeonById(dungeonId);
+  if (!dungeon) return interaction.reply({ content: '❌ Данж не найден.', ephemeral: true }).catch(() => {});
+
+  if (profile.level < (dungeon.minLevel || 1)) {
+    return interaction.reply({ content: `❌ Нужен уровень ${dungeon.minLevel}.`, ephemeral: true }).catch(() => {});
+  }
+  if (dungeons.isOnCooldown(profile)) {
+    return interaction.reply({ content: `⏳ Данжи на перезарядке, подожди ${dungeons.cooldownLeft(profile)} с.`, ephemeral: true }).catch(() => {});
+  }
+
+  const result = dungeons.run(profile, dungeonId);
+  if (!result.ok) {
+    const messages = {
+      no_gold: `Не хватает монет на вход: нужно ${result.cost} 🪙`,
+      no_keys: `Не хватает ключей на вход: нужно ${result.cost} 🗝`,
+      gen: 'Ошибка генерации данжа.',
+    };
+    console.error(`RPG dungeon failed: reason=${result.reason}, dungeon=${dungeonId}`);
+    return interaction.reply({ content: `❌ ${messages[result.reason] || 'Ошибка данжа, попробуй ещё раз.'}`, ephemeral: true }).catch(() => {});
+  }
+
+  await players.saveProfile(profile);
+  const again = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + `dungeon-run:${dungeonId}`).setLabel('🔁 Ещё раз').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(PREFIX + 'dungeons').setLabel('🐉 К данжам').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  );
+  await interaction.update({ embeds: [view.dungeonResultEmbed(result, profile)], components: [again] }).catch(() => {});
+}
+
+// ===== PvP =====
+
+async function showPvpMenu(interaction, profile) {
+  const pcfg = require('./data').stats.pvp || {};
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('🗡 PvP Арена')
+    .setDescription(
+      `Вызывай игроков на дуэль командой \`/pvp @игрок\` — бой ваших билдов с логом.\n` +
+      `Победа даёт монеты и очки рейтинга (Эло), поражение — немного утешительных.\n\n` +
+      `Твой рейтинг: **${profile.rating || 1000}** (${profile.pvpWins || 0}П / ${profile.pvpLosses || 0}Пр)\n` +
+      `Минимальный уровень для PvP: ${pcfg.minLevel || 5}\n` +
+      `Или потренируйся в спарринге с копией себя — без рейтинга.`
+    );
+  const rows = [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'spar').setLabel('🥊 Спарринг с тенью себя').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  )];
+  await interaction.update({ embeds: [embed], components: rows }).catch(() => {});
+}
+
+async function spar(interaction, profile) {
+  if (pvp.isOnCooldown(profile)) {
+    return interaction.reply({ content: `⏳ Перезарядка PvP: ещё ${pvp.cooldownLeft(profile)} с.`, ephemeral: true }).catch(() => {});
+  }
+  if ((profile.level || 1) < 3) {
+    return interaction.reply({ content: '❌ Спарринг с 3 уровня.', ephemeral: true }).catch(() => {});
+  }
+  const shadow = { ...profile, name: `🥊 Тень ${profile.name}`, rating: profile.rating };
+  const result = pvp.duel(profile, shadow, { sparring: true });
+  await players.saveProfile(profile);
+  await interaction.update({ embeds: [view.pvpResultEmbed(result, profile, shadow)], components: [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'spar').setLabel('🥊 Ещё спарринг').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  )] }).catch(() => {});
+}
+
+async function pvpDuel(interaction, attacker, defenderUser, defenderProfile) {
+  const pcfg = require('./data').stats.pvp || {};
+  if ((attacker.level || 1) < (pcfg.minLevel || 5) || (defenderProfile.level || 1) < (pcfg.minLevel || 5)) {
+    return interaction.editReply({ content: `❌ PvP доступен с ${pcfg.minLevel || 5} уровня у обоих бойцов.` }).catch(() => {});
+  }
+  if (pvp.isOnCooldown(attacker)) {
+    return interaction.editReply({ content: `⏳ Перезарядка PvP: ещё ${pvp.cooldownLeft(attacker)} с.` }).catch(() => {});
+  }
+
+  const result = pvp.duel(attacker, defenderProfile);
+  await players.saveProfile(attacker);
+  await players.saveProfile(defenderProfile);
+  await interaction.editReply({
+    content: `<@${defenderUser.id}>, тебя вызвали на дуэль!`,
+    embeds: [view.pvpResultEmbed(result, attacker, defenderProfile)],
+  }).catch(() => {});
+}
+
+// ===== Питомцы =====
+
+async function showPets(interaction, profile) {
+  const rows = [];
+  if ((profile.pets || []).length) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(PREFIX + 'pet')
+      .setPlaceholder('Выбери питомца: сделать активным / отпустить')
+      .addOptions((profile.pets || []).slice(0, 25).map(p => ({
+        label: `${p.name} ур.${p.level}`,
+        description: p.uid === profile.activePetId ? 'Сейчас активен' : 'Нажми, чтобы управлять',
+        value: p.uid,
+        emoji: p.emoji,
+      })));
+    rows.push(new ActionRowBuilder().addComponents(select));
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  ));
+  await interaction.update({ embeds: [view.petsEmbed(profile)], components: rows }).catch(() => {});
+}
+
+async function showPet(interaction, profile, petUid) {
+  const pet = (profile.pets || []).find(p => p.uid === petUid);
+  if (!pet) return interaction.reply({ content: '❌ Питомец не найден.', ephemeral: true }).catch(() => {});
+  const isActive = pet.uid === profile.activePetId;
+  const price = pets.releasePrice(pet);
+  const rows = [new ActionRowBuilder().addComponents(
+    isActive
+      ? new ButtonBuilder().setCustomId(PREFIX + 'pet-unset').setLabel('🔽 Убрать из активных').setStyle(ButtonStyle.Secondary)
+      : new ButtonBuilder().setCustomId(PREFIX + `pet-set:${petUid}`).setLabel('✅ Сделать активным').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(PREFIX + `pet-release:${petUid}`).setLabel(`🎁 Отпустить (+${price}🪙)`).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(PREFIX + 'pets').setLabel('🐾 К питомцам').setStyle(ButtonStyle.Secondary),
+  )];
+  const embed = new EmbedBuilder()
+    .setColor(0x2ecc71)
+    .setTitle(`${pet.emoji} ${pet.name} (ур.${pet.level})${isActive ? ' — активен' : ''}`)
+    .setDescription(`Бонус активного питомца: **+${pets.bonusPct(pet).toFixed(1)}%** к HP/атаке/защите/скорости.`)
+    .setTimestamp();
+  await interaction.reply({ embeds: [embed], components: rows, ephemeral: true }).catch(() => {});
+}
+
+async function petAction(interaction, profile, action, petUid) {
+  let message = '';
+  if (action === 'set') {
+    const pet = (profile.pets || []).find(p => p.uid === petUid);
+    if (pet) { profile.activePetId = pet.uid; message = `🐾 ${pet.name} теперь твой активный питомец!`; }
+    else message = '❌ Питомец не найден.';
+  } else if (action === 'unset') {
+    profile.activePetId = null;
+    message = '🔽 Активный питомец убран.';
+  } else if (action === 'release') {
+    const pet = (profile.pets || []).find(p => p.uid === petUid);
+    if (!pet) message = '❌ Питомец не найден.';
+    else {
+      const wasActive = profile.activePetId === petUid;
+      profile.pets = profile.pets.filter(p => p.uid !== petUid);
+      if (wasActive) profile.activePetId = null;
+      const price = pets.releasePrice(pet);
+      profile.gold += price;
+      message = `🎁 Отпустил ${pet.name}. Получил ${price} 🪙.`;
+    }
+  }
+  await players.saveProfile(profile);
+  await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
+}
+
 // ===== Кнопки =====
+
+
 
 // Значение селект-меню (у select'ов выбор лежит в interaction.values, не в customId).
 function selectValue(interaction) {
@@ -359,7 +599,7 @@ async function handleComponent(interaction) {
     }
     case 'profile':
       menuState.set(profile.userId, { view: 'profile' });
-      await interaction.update({ embeds: [view.profileEmbed(profile)], components: [mainMenuRow()] }).catch(() => {});
+      await interaction.update({ embeds: [view.profileEmbed(profile)], components: fullMenuComponents() }).catch(() => {});
       return;
     case 'bag': {
       const page = Number.isInteger(parseInt(arg1, 10)) ? parseInt(arg1, 10) : 0;
@@ -398,6 +638,32 @@ async function handleComponent(interaction) {
       return showChests(interaction, profile);
     case 'open':
       return openChest(interaction, profile, arg1);
+    case 'dungeons':
+      return showDungeons(interaction, profile);
+    case 'dungeon': {
+      const dungeonId = arg1 || selectValue(interaction);
+      if (!dungeonId) return showDungeons(interaction, profile);
+      return runDungeon(interaction, profile, dungeonId);
+    }
+    case 'dungeon-run':
+      return runDungeon(interaction, profile, arg1);
+    case 'pvp-menu':
+      return showPvpMenu(interaction, profile);
+    case 'spar':
+      return spar(interaction, profile);
+    case 'pets':
+      return showPets(interaction, profile);
+    case 'pet': {
+      const petUid = arg1 || selectValue(interaction);
+      if (!petUid) return showPets(interaction, profile);
+      return showPet(interaction, profile, petUid);
+    }
+    case 'pet-set':
+      return petAction(interaction, profile, 'set', arg1);
+    case 'pet-release':
+      return petAction(interaction, profile, 'release', arg1);
+    case 'pet-unset':
+      return petAction(interaction, profile, 'unset', null);
     case 'top':
       return showTop(interaction, profile);
     default:
@@ -413,6 +679,16 @@ class RpgGame {
   async init() {
     players.init(this.config);
     console.log('🎲 RPG module ready');
+  }
+
+  // Награда за время в войсе (вызывается из checkpointVoiceSessions).
+  async awardVoiceTime(userId, seconds) {
+    try {
+      const voice = require('./voice');
+      await voice.award(userId, seconds);
+    } catch (err) {
+      console.error('RPG voice award error:', err?.message || err);
+    }
   }
 
   async handleCommand(interaction) {
