@@ -45,7 +45,7 @@ class StateStore {
       try {
         await this.loadFromSupabase();
         this.enabled = true;
-        console.log('✅ Supabase storage is enabled');
+        console.log(`✅ Supabase storage is enabled (table=${this.config.SUPABASE_TABLE}, row=${this.config.SUPABASE_ROW_ID})`);
         return;
       } catch (err) {
         console.error('⚠️ Supabase init/load failed, using local fallback only:', err.message || err);

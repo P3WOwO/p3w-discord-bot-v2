@@ -52,6 +52,14 @@ function escapeRegExp(value) {
   return String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 
+function formatImageError(err) {
+  const raw = String(err?.message || err);
+  if (raw.includes('429') && /quota/i.test(raw)) {
+    return '🖼 Лимит генерации картинок на ключе Gemini исчерпан (429). На бесплатном тарифе он очень маленький и сбрасывается примерно раз в сутки. Варианты: попробовать позже или подключить биллинг / другой ключ (GEMINI_API_KEY).';
+  }
+  return `❌ Ошибка генерации: ${clampText(raw, 1800)}`;
+}
+
 function buildRandomStatus() {
   return `${pickRandom(STATUS_VERBS)} ${pickRandom(STATUS_NOUNS)}`;
 }
@@ -267,7 +275,8 @@ class DiscordBot {
   }
 
   async buildTopEmbed(guild) {
-    const items = Object.entries(this.stateStore.getVoiceTimes())
+    const allEntries = Object.entries(this.stateStore.getVoiceTimes());
+    const items = allEntries
       .filter(([key]) => key.startsWith(`${guild.id}:`))
       .map(([key, seconds]) => ({ key, seconds: Number(seconds || 0) }))
       .sort((a, b) => b.seconds - a.seconds)
@@ -281,10 +290,14 @@ class DiscordBot {
       lines.push(`**${index + 1}.** ${name} — ${formatTopTime(item.seconds)}`);
     }
 
+    const emptyDescription = allEntries.length
+      ? `На этом сервере записей нет (всего в базе: ${allEntries.length})`
+      : 'База пустая — бот не загрузил данные из Supabase, глянь логи Render (строка с Supabase)';
+
     return new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle('🏆 Топ по войсу')
-      .setDescription(lines.join('\n') || 'Пока пусто')
+      .setDescription(lines.join('\n') || emptyDescription)
       .setTimestamp();
   }
 
@@ -462,7 +475,7 @@ class DiscordBot {
       });
     } catch (err) {
       console.error('Image generation error:', err);
-      await status.edit(`❌ Ошибка генерации: ${clampText(String(err.message || err), 1800)}`).catch(() => {});
+      await status.edit(formatImageError(err)).catch(() => {});
     }
   }
 
@@ -529,7 +542,7 @@ class DiscordBot {
         });
       } catch (err) {
         console.error('Slash image error:', err);
-        return interaction.editReply({ content: `❌ Ошибка генерации: ${clampText(String(err.message || err), 1800)}` });
+        return interaction.editReply({ content: formatImageError(err) });
       }
     }
 
