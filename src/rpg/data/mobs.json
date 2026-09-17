@@ -12,7 +12,12 @@
     { "id": "bandit", "name": "Разбойник", "emoji": "🗡️", "stats": { "hp": [40, 55], "atk": [9, 13], "def": [2, 3], "spd": [8, 11] }, "xp": [22, 30], "gold": [18, 30], "zones": ["forest", "sewer", "mountains"] },
     { "id": "golem", "name": "Голем", "emoji": "🗿", "stats": { "hp": [60, 85], "atk": [8, 12], "def": [5, 8], "spd": [3, 5] }, "xp": [28, 38], "gold": [20, 34], "zones": ["mountains", "abyss"] },
     { "id": "wraith", "name": "Призрак", "emoji": "👻", "stats": { "hp": [38, 55], "atk": [10, 14], "def": [1, 3], "spd": [10, 14] }, "xp": [26, 36], "gold": [18, 30], "zones": ["crypt", "abyss"] },
-    { "id": "demon", "name": "Демон", "emoji": "😈", "stats": { "hp": [55, 80], "atk": [12, 16], "def": [3, 5], "spd": [8, 11] }, "xp": [34, 46], "gold": [26, 42], "zones": ["abyss"] }
+    { "id": "demon", "name": "Демон", "emoji": "😈", "stats": { "hp": [55, 80], "atk": [12, 16], "def": [3, 5], "spd": [8, 11] }, "xp": [34, 46], "gold": [26, 42], "zones": ["abyss", "volcano"] },
+    { "id": "scorpion", "name": "Скорпион", "emoji": "🦂", "stats": { "hp": [34, 48], "atk": [9, 12], "def": [3, 4], "spd": [7, 10] }, "xp": [20, 28], "gold": [16, 26], "zones": ["desert"] },
+    { "id": "orc", "name": "Орк", "emoji": "🪓", "stats": { "hp": [42, 60], "atk": [10, 14], "def": [2, 4], "spd": [6, 9] }, "xp": [24, 34], "gold": [20, 32], "zones": ["desert", "mountains", "forest"] },
+    { "id": "harpy", "name": "Гарпия", "emoji": "🦅", "stats": { "hp": [30, 44], "atk": [11, 15], "def": [1, 3], "spd": [12, 16] }, "xp": [24, 34], "gold": [18, 30], "zones": ["desert", "mountains"] },
+    { "id": "minotaur", "name": "Минотавр", "emoji": "🐂", "stats": { "hp": [70, 95], "atk": [13, 18], "def": [4, 6], "spd": [6, 8] }, "xp": [40, 52], "gold": [32, 50], "zones": ["desert", "volcano"] },
+    { "id": "ashendragon", "name": "Пепельный дракон", "emoji": "🐉", "stats": { "hp": [80, 110], "atk": [15, 20], "def": [5, 7], "spd": [9, 12] }, "xp": [50, 66], "gold": [40, 60], "zones": ["volcano", "abyss"] }
   ],
   "zones": [
     { "id": "meadow", "name": "Луг", "emoji": "🌿", "minLevel": 1, "maxLevel": 6, "rewardMult": 1.0, "mobs": ["slime", "rat", "goblin"] },
@@ -20,7 +25,9 @@
     { "id": "sewer", "name": "Канализация", "emoji": "🕳️", "minLevel": 12, "maxLevel": 25, "rewardMult": 1.7, "mobs": ["rat", "zombie", "bandit"] },
     { "id": "crypt", "name": "Склеп", "emoji": "⚰️", "minLevel": 20, "maxLevel": 35, "rewardMult": 2.2, "mobs": ["skeleton", "zombie", "wraith"] },
     { "id": "mountains", "name": "Горы", "emoji": "🏔️", "minLevel": 30, "maxLevel": 45, "rewardMult": 3.0, "mobs": ["wolf", "skeleton", "golem", "bandit"] },
-    { "id": "abyss", "name": "Бездна", "emoji": "🌌", "minLevel": 40, "maxLevel": 60, "rewardMult": 4.5, "mobs": ["golem", "wraith", "demon"] }
+    { "id": "abyss", "name": "Бездна", "emoji": "🌌", "minLevel": 40, "maxLevel": 60, "rewardMult": 4.5, "mobs": ["golem", "wraith", "demon"] },
+    { "id": "desert", "name": "Пустошь", "emoji": "🏜️", "minLevel": 22, "maxLevel": 34, "rewardMult": 2.4, "mobs": ["scorpion", "orc", "harpy", "bandit"] },
+    { "id": "volcano", "name": "Вулкан", "emoji": "🌋", "minLevel": 48, "maxLevel": 70, "rewardMult": 6.0, "mobs": ["minotaur", "ashendragon", "demon", "golem"] }
   ],
   "modifiers": [
     { "id": "elite", "name": "Элитный", "emoji": "💠", "weight": 18, "statMult": 1.5, "lootMult": 1.6, "goldMult": 1.5 },

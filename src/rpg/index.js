@@ -40,6 +40,7 @@ function mainMenuRow2() {
     new ButtonBuilder().setCustomId(PREFIX + 'dungeons').setLabel('🐉 Данжи').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(PREFIX + 'pvp-menu').setLabel('🗡 PvP').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(PREFIX + 'pets').setLabel('🐾 Питомцы').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(PREFIX + 'casino').setLabel('🎰 Казино').setStyle(ButtonStyle.Secondary),
   );
 }
 
@@ -293,6 +294,7 @@ function commandData() {
       .toJSON(),
     new SlashCommandBuilder().setName('profile').setDescription('Показать свой RPG-профиль').toJSON(),
     new SlashCommandBuilder().setName('dungeon').setDescription('Меню данжей: волны мобов + босс').toJSON(),
+    new SlashCommandBuilder().setName('casino').setDescription('Казино: монетка, кубики, слоты — играем на монеты').toJSON(),
     new SlashCommandBuilder()
       .setName('pvp')
       .setDescription('Вызвать игрока на дуэль (PvP с рейтингом)')
@@ -445,6 +447,23 @@ async function handleCommand(interaction, bot) {
   }
   if (interaction.commandName === 'give') {
     return handleGive(interaction, bot);
+  }
+
+  if (interaction.commandName === 'casino') {
+    const casinoInteraction = {
+      user: interaction.user,
+      member: interaction.member,
+      guildId: interaction.guildId,
+      customId: PREFIX + 'casino',
+      update: async (payload) => {
+        await interaction.followUp({ ...payload, ephemeral: true }).catch(() => {});
+      },
+      reply: async (payload) => {
+        await interaction.followUp({ ...payload, ephemeral: true }).catch(() => {});
+      },
+    };
+    await showCasino(casinoInteraction, profile);
+    return;
   }
 
   if (interaction.commandName === 'dungeon') {
@@ -680,6 +699,101 @@ async function petAction(interaction, profile, action, petUid) {
   await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
 }
 
+// ===== Казино =====
+
+function casinoBet(interaction, profile) {
+  const state = menuState.get(profile.userId) || {};
+  const limits = casinoLimits();
+  const requested = parseInt(selectValue(interaction) || '', 10);
+  if (Number.isInteger(requested)) state.casinoBet = requested;
+  menuState.set(profile.userId, state);
+  return Math.max(limits.minBet, Math.min(limits.maxBet, state.casinoBet || 100));
+}
+
+function casinoLimits() {
+  const c = require('./data').casino;
+  return { minBet: c.minBet || 10, maxBet: c.maxBet || 10000, presets: c.betPresets || [10, 100, 500, 1000, 2500] };
+}
+
+async function showCasino(interaction, profile) {
+  const state = menuState.get(profile.userId) || {};
+  const bet = state.casinoBet || 100;
+  const { presets } = casinoLimits();
+
+  const gameButtons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'casino-play:coinflip').setLabel('🪙 Монетка ×1.95').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(PREFIX + 'casino-play:dice').setLabel('🎲 Кубики ×1.9').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(PREFIX + 'casino-play:slots').setLabel('🎰 Слоты (до ×25)').setStyle(ButtonStyle.Danger),
+  );
+  const betButtons = new ActionRowBuilder().addComponents(
+    presets.map(p => new ButtonBuilder()
+      .setCustomId(PREFIX + `casino-bet:${p}`)
+      .setLabel(p === bet ? `✅ ${p}` : String(p))
+      .setStyle(p === bet ? ButtonStyle.Success : ButtonStyle.Secondary)),
+  );
+  const nav = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  );
+
+  const lastLine = state.casinoResult ? `Последняя игра: **${state.casinoResult}**\n\n` : '';
+  const embed = new EmbedBuilder()
+    .setColor(0xe91e63)
+    .setTitle('🎰 Казино P3W')
+    .setDescription(`${lastLine}Ставка: **${bet} 🪙** | Баланс: **${profile.gold} 🪙**\nВыбери игру. Казино всегда в плюсе, но кто не рискует — тот не пьёт шампанское.`)
+    .setFooter({ text: 'Слоты: три одинаковых = до ×25, пара = ×1.5 | Кубики: ничья возвращает ставку' });
+
+  await interaction.update({ embeds: [embed], components: [gameButtons, betButtons, nav] }).catch(() => {});
+}
+
+async function playCasinoGame(interaction, profile, gameId) {
+  const state = menuState.get(profile.userId) || {};
+  const bet = Math.max(10, Math.min(state.casinoBet || 100, profile.gold));
+
+  if (profile.gold < bet) {
+    return interaction.reply({ content: `❌ Не хватает монет: ставка ${bet} 🪙, у тебя ${profile.gold} 🪙.`, ephemeral: true }).catch(() => {});
+  }
+
+  const result = require('./casino').play(gameId, bet);
+  if (!result) return interaction.reply({ content: '❌ Такой игры нет.', ephemeral: true }).catch(() => {});
+
+  profile.gold = Math.max(0, profile.gold - bet + result.payout);
+  state.casinoResult = `${result.detail} (${result.win ? `+${result.payout - bet}` : result.push ? 'возврат' : `-${bet}`} 🪙)`;
+  menuState.set(profile.userId, state);
+  await players.saveProfile(profile);
+
+  await interaction.update({ embeds: [casinoEmbedWithResult(profile, state)], components: casinoComponents(profile, state) }).catch(() => {});
+}
+
+function casinoEmbedWithResult(profile, state) {
+  const bet = state.casinoBet || 100;
+  const lastLine = state.casinoResult ? `Последняя игра: **${state.casinoResult}**\n\n` : '';
+  return new EmbedBuilder()
+    .setColor(0xe91e63)
+    .setTitle('🎰 Казино P3W')
+    .setDescription(`${lastLine}Ставка: **${bet} 🪙** | Баланс: **${profile.gold} 🪙**\nВыбери игру. Казино всегда в плюсе, но кто не рискует — тот не пьёт шампанское.`)
+    .setFooter({ text: 'Слоты: три одинаковых = до ×25, пара = ×1.5 | Кубики: ничья возвращает ставку' });
+}
+
+function casinoComponents(profile, state) {
+  const bet = state.casinoBet || 100;
+  const { presets } = casinoLimits();
+  const gameButtons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'casino-play:coinflip').setLabel('🪙 Монетка ×1.95').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(PREFIX + 'casino-play:dice').setLabel('🎲 Кубики ×1.9').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(PREFIX + 'casino-play:slots').setLabel('🎰 Слоты (до ×25)').setStyle(ButtonStyle.Danger),
+  );
+  const betButtons = new ActionRowBuilder().addComponents(
+    presets.map(p => new ButtonBuilder()
+      .setCustomId(PREFIX + `casino-bet:${p}`)
+      .setLabel(p === bet ? `✅ ${p}` : String(p))
+      .setStyle(p === bet ? ButtonStyle.Success : ButtonStyle.Secondary)),
+  );
+  const nav = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  );
+  return [gameButtons, betButtons, nav];
+}
+
 // ===== Кнопки =====
 
 
@@ -763,6 +877,14 @@ async function handleComponent(interaction) {
       return spar(interaction, profile);
     case 'pets':
       return showPets(interaction, profile);
+    case 'casino':
+      return showCasino(interaction, profile);
+    case 'casino-bet': {
+      casinoBet(interaction, profile);
+      return showCasino(interaction, profile);
+    }
+    case 'casino-play':
+      return playCasinoGame(interaction, profile, arg1);
     case 'pet': {
       const petUid = arg1 || selectValue(interaction);
       if (!petUid) return showPets(interaction, profile);

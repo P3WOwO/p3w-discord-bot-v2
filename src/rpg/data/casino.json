@@ -1,0 +1,9 @@
+{
+  "minBet": 10,
+  "maxBet": 10000,
+  "betPresets": [10, 100, 500, 1000, 2500],
+  "coinflipMultiplier": 1.95,
+  "diceMultiplier": 1.9,
+  "slotsTwoMultiplier": 1.5,
+  "slotsTriple": { "💎": 25, "7️⃣": 15, "🔔": 8, "🍇": 6, "🍋": 5, "🍒": 4 }
+}

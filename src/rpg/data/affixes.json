@@ -15,7 +15,14 @@
     { "id": "wise", "name": "Мудрый", "bonus": { "xpBonus": [8, 12] } },
     { "id": "sharp", "name": "Острый", "bonus": { "pierce": [5, 10] } },
     { "id": "deadly", "name": "Смертоносный", "bonus": { "critDmg": [10, 20] } },
-    { "id": "spiky", "name": "Колючий", "bonus": { "counterChance": [4, 7] } }
+    { "id": "spiky", "name": "Колючий", "bonus": { "counterChance": [4, 7] } },
+    { "id": "poisoned", "name": "Ядовитый", "bonus": { "pierce": [4, 8], "atk": [1, 2] } },
+    { "id": "steely", "name": "Стальной", "bonus": { "def": [2, 4], "block": [2, 3] } },
+    { "id": "ancient", "name": "Древний", "bonus": { "hp": [10, 20], "def": [1, 3] } },
+    { "id": "icy", "name": "Ледяной", "bonus": { "stunChance": [2, 4], "spd": [-1, 0] } },
+    { "id": "demonic", "name": "Демонический", "bonus": { "atk": [2, 3], "critDmg": [8, 12] } },
+    { "id": "holy", "name": "Святой", "bonus": { "regen": [2, 3], "hp": [8, 14] } },
+    { "id": "swift", "name": "Стремительный", "bonus": { "spd": [2, 4], "dodge": [1, 3] } }
   ],
   "suffixes": [
     { "id": "wolf", "name": "волка", "bonus": { "atk": [1, 3] } },
@@ -33,6 +40,13 @@
     { "id": "life", "name": "жизни", "bonus": { "regen": [1, 3] } },
     { "id": "echo", "name": "эха", "bonus": { "reflect": [2, 5] } },
     { "id": "chaos", "name": "хаоса", "bonus": { "critDmg": [8, 15] } },
-    { "id": "ice", "name": "льда", "bonus": { "stunChance": [2, 4] } }
+    { "id": "ice", "name": "льда", "bonus": { "stunChance": [2, 4] } },
+    { "id": "berserker", "name": "берсерка", "bonus": { "atk": [2, 4], "def": [-2, -1] } },
+    { "id": "kings", "name": "королей", "bonus": { "goldFind": [8, 14], "luck": [1, 3] } },
+    { "id": "wind", "name": "ветра", "bonus": { "spd": [1, 2], "dodge": [1, 3] } },
+    { "id": "torment", "name": "мучений", "bonus": { "reflect": [3, 6] } },
+    { "id": "priest", "name": "жреца", "bonus": { "regen": [1, 3], "hp": [5, 10] } },
+    { "id": "warrior", "name": "воина", "bonus": { "atk": [1, 2], "def": [1, 2] } },
+    { "id": "nightmare", "name": "кошмара", "bonus": { "critChance": [2, 3], "critDmg": [5, 10] } }
   ]
 }

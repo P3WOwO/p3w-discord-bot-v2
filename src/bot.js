@@ -34,6 +34,8 @@ const {
 } = require('./ai');
 const { RpgGame, commandData: rpgCommands } = require('./rpg');
 
+const RPG_COMMAND_NAMES = new Set(rpgCommands().map(c => c.name));
+
 function stripMention(text, botId) {
   return String(text || '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
 }
@@ -508,8 +510,8 @@ class DiscordBot {
   }
 
   async handleInteraction(interaction) {
-    // RPG: slash-команды и кнопки со своим префиксом.
-    if (interaction.isChatInputCommand() && interaction.commandName === 'rpg') {
+    // RPG: все свои slash-команды (rpg/hunt/profile/dungeon/pvp/give) и кнопки rpg:*
+    if (interaction.isChatInputCommand() && RPG_COMMAND_NAMES.has(interaction.commandName)) {
       return this.rpg.handleCommand(interaction);
     }
     if ((interaction.isButton() || interaction.isAnySelectMenu()) && String(interaction.customId || '').startsWith('rpg:')) {
