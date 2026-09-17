@@ -1,0 +1,20 @@
+{
+  "baseStats": { "hp": 120, "atk": 12, "def": 6, "spd": 10 },
+  "levelStats": { "hp": 14, "atk": 1.4, "def": 0.8, "spd": 0.35 },
+  "levelCurve": { "baseXp": 80, "growth": 1.3, "maxLevel": 50 },
+  "critBase": 5,
+  "combat": { "maxRounds": 30, "mitigationK": 50, "variance": 0.1 },
+  "cooldowns": { "hunt": 40 },
+  "inventoryCap": 60,
+  "sellPricePerScore": 2,
+  "startingGold": 200,
+  "upgrade": {
+    "maxLevel": 15,
+    "baseCost": 60,
+    "costGrowth": 1.5,
+    "successBase": 0.92,
+    "successDecay": 0.04,
+    "successFloor": 0.35,
+    "statBonusPerLevel": 0.08
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "chests": [
+    { "id": "wooden", "name": "Деревянный сундук", "emoji": "📦", "cost": 200, "currency": "gold", "levelRange": [1, 6], "rarityWeights": { "common": 55, "uncommon": 30, "rare": 12, "epic": 3, "legendary": 0 } },
+    { "id": "iron", "name": "Железный сундук", "emoji": "🧰", "cost": 700, "currency": "gold", "levelRange": [6, 14], "rarityWeights": { "common": 30, "uncommon": 38, "rare": 22, "epic": 8, "legendary": 2 } },
+    { "id": "royal", "name": "Королевский сундук", "emoji": "👑", "cost": 2500, "currency": "gold", "levelRange": [14, 26], "rarityWeights": { "common": 10, "uncommon": 25, "rare": 35, "epic": 22, "legendary": 8 } },
+    { "id": "void", "name": "Сундук бездны", "emoji": "🌌", "cost": 3, "currency": "keys", "levelRange": [22, 40], "rarityWeights": { "common": 0, "uncommon": 12, "rare": 30, "epic": 35, "legendary": 23 } }
+  ]
+}

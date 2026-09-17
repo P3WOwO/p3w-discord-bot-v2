@@ -265,7 +265,7 @@ class DiscordBot {
         .setDescription('Очистить чат-память бота в этом канале')
         .setDefaultMemberPermissions(adminOnly)
         .toJSON(),
-      ...rpgCommands,
+      ...rpgCommands(),
     ];
 
     const rest = new REST({ version: '10' }).setToken(this.config.TOKEN);

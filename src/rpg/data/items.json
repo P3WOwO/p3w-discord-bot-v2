@@ -1,0 +1,59 @@
+{
+  "slots": ["weapon", "helm", "armor", "boots", "ring", "amulet"],
+  "slotNames": {
+    "weapon": "⚔️ Оружие",
+    "helm": "⛑ Шлем",
+    "armor": "🛡 Броня",
+    "boots": "👟 Обувь",
+    "ring": "💍 Кольцо",
+    "amulet": "📿 Амулет"
+  },
+  "genders": {
+    "sword": "m",
+    "axe": "m",
+    "dagger": "m",
+    "spear": "m",
+    "cap": "f",
+    "helm": "m",
+    "crown": "n",
+    "armor": "f",
+    "robe": "f",
+    "plate": "f",
+    "boots": "pl",
+    "sandals": "pl",
+    "ring": "m",
+    "signet": "m",
+    "amulet": "m",
+    "talisman": "m"
+  },
+  "bases": {
+    "weapon": [
+      { "id": "sword", "name": "Меч", "stats": { "atk": [3, 5], "spd": [0, 1] } },
+      { "id": "axe", "name": "Топор", "stats": { "atk": [4, 7], "spd": [-1, 0] } },
+      { "id": "dagger", "name": "Кинжал", "stats": { "atk": [2, 3], "spd": [1, 3] } },
+      { "id": "spear", "name": "Копьё", "stats": { "atk": [3, 6], "def": [0, 1] } }
+    ],
+    "helm": [
+      { "id": "cap", "name": "Шапка", "stats": { "hp": [12, 20], "def": [0, 1] } },
+      { "id": "helm", "name": "Шлем", "stats": { "hp": [10, 18], "def": [1, 2] } },
+      { "id": "crown", "name": "Корона", "stats": { "hp": [6, 10], "atk": [1, 2], "critChance": [1, 3] } }
+    ],
+    "armor": [
+      { "id": "armor", "name": "Броня", "stats": { "hp": [18, 30], "def": [2, 3] } },
+      { "id": "robe", "name": "Мантия", "stats": { "hp": [14, 22], "spd": [1, 2], "regen": [1, 2] } },
+      { "id": "plate", "name": "Кольчуга", "stats": { "hp": [22, 36], "def": [2, 4], "spd": [-1, 0] } }
+    ],
+    "boots": [
+      { "id": "boots", "name": "Сапоги", "stats": { "spd": [2, 4], "hp": [6, 10] } },
+      { "id": "sandals", "name": "Сандалии", "stats": { "spd": [3, 5], "dodge": [2, 4] } }
+    ],
+    "ring": [
+      { "id": "ring", "name": "Перстень", "stats": { "critChance": [2, 4], "atk": [1, 2] } },
+      { "id": "signet", "name": "Печатка", "stats": { "hp": [8, 14], "lifesteal": [2, 4] } }
+    ],
+    "amulet": [
+      { "id": "amulet", "name": "Амулет", "stats": { "def": [1, 2], "goldFind": [5, 10] } },
+      { "id": "talisman", "name": "Талисман", "stats": { "xpBonus": [8, 15], "luck": [3, 6] } }
+    ]
+  }
+}

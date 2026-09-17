@@ -1,0 +1,38 @@
+{
+  "prefixes": [
+    { "id": "fiery", "name": "Огненный", "bonus": { "atk": [2, 4] } },
+    { "id": "iron", "name": "Железный", "bonus": { "def": [2, 3] } },
+    { "id": "giant", "name": "Исполинский", "bonus": { "hp": [15, 30] } },
+    { "id": "windy", "name": "Ветреный", "bonus": { "spd": [2, 3] } },
+    { "id": "cursed", "name": "Проклятый", "bonus": { "critChance": [3, 5], "hp": [-10, -5] } },
+    { "id": "royal", "name": "Королевский", "bonus": { "atk": [1, 2], "hp": [8, 12] } },
+    { "id": "vampiric", "name": "Вампирский", "bonus": { "lifesteal": [3, 5] } },
+    { "id": "ghostly", "name": "Призрачный", "bonus": { "dodge": [3, 5] } },
+    { "id": "thorny", "name": "Шипастый", "bonus": { "reflect": [3, 6] } },
+    { "id": "stunning", "name": "Оглушающий", "bonus": { "stunChance": [3, 5] } },
+    { "id": "lucky", "name": "Удачливый", "bonus": { "luck": [4, 8] } },
+    { "id": "rich", "name": "Богатый", "bonus": { "goldFind": [8, 15] } },
+    { "id": "wise", "name": "Мудрый", "bonus": { "xpBonus": [8, 12] } },
+    { "id": "sharp", "name": "Острый", "bonus": { "pierce": [5, 10] } },
+    { "id": "deadly", "name": "Смертоносный", "bonus": { "critDmg": [10, 20] } },
+    { "id": "spiky", "name": "Колючий", "bonus": { "counterChance": [4, 7] } }
+  ],
+  "suffixes": [
+    { "id": "wolf", "name": "волка", "bonus": { "atk": [1, 3] } },
+    { "id": "titan", "name": "титана", "bonus": { "hp": [10, 25] } },
+    { "id": "shadow", "name": "тени", "bonus": { "dodge": [2, 4] } },
+    { "id": "dragon", "name": "дракона", "bonus": { "atk": [2, 3], "critChance": [1, 2] } },
+    { "id": "knight", "name": "рыцаря", "bonus": { "def": [1, 3], "block": [2, 4] } },
+    { "id": "mage", "name": "мага", "bonus": { "critChance": [2, 4] } },
+    { "id": "blood", "name": "крови", "bonus": { "lifesteal": [2, 4] } },
+    { "id": "storm", "name": "бури", "bonus": { "spd": [1, 3] } },
+    { "id": "greed", "name": "жадности", "bonus": { "goldFind": [6, 12] } },
+    { "id": "fate", "name": "судьбы", "bonus": { "luck": [3, 6] } },
+    { "id": "hunter", "name": "охотника", "bonus": { "xpBonus": [5, 10] } },
+    { "id": "guardian", "name": "хранителя", "bonus": { "block": [3, 6] } },
+    { "id": "life", "name": "жизни", "bonus": { "regen": [1, 3] } },
+    { "id": "echo", "name": "эха", "bonus": { "reflect": [2, 5] } },
+    { "id": "chaos", "name": "хаоса", "bonus": { "critDmg": [8, 15] } },
+    { "id": "ice", "name": "льда", "bonus": { "stunChance": [2, 4] } }
+  ]
+}

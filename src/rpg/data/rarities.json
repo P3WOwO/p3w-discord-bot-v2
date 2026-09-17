@@ -1,0 +1,42 @@
+{
+  "common": {
+    "emoji": "⚪",
+    "name": "Обычный",
+    "color": 10062982,
+    "mult": 1.0,
+    "affixes": [0, 0],
+    "weight": 52
+  },
+  "uncommon": {
+    "emoji": "🟢",
+    "name": "Необычный",
+    "color": 4854528,
+    "mult": 1.15,
+    "affixes": [1, 2],
+    "weight": 26
+  },
+  "rare": {
+    "emoji": "🔵",
+    "name": "Редкий",
+    "color": 6325626,
+    "mult": 1.35,
+    "affixes": [2, 3],
+    "weight": 14
+  },
+  "epic": {
+    "emoji": "🟣",
+    "name": "Эпический",
+    "color": 12617020,
+    "mult": 1.65,
+    "affixes": [3, 4],
+    "weight": 6
+  },
+  "legendary": {
+    "emoji": "🟠",
+    "name": "Легендарный",
+    "color": 16505316,
+    "mult": 2.1,
+    "affixes": [4, 5],
+    "weight": 2
+  }
+}
