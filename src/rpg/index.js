@@ -322,25 +322,28 @@ function commandData() {
 // ===== Админ-выдача =====
 
 async function handleGive(interaction, bot) {
-  // Права: только админы + только домашний сервер (если задан GUILD_ID).
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    return interaction.editReply({ content: '❌ Только для админов.' }).catch(() => {});
-  }
-  if (bot?.config?.GUILD_ID && interaction.guildId !== bot.config.GUILD_ID) {
-    return interaction.editReply({ content: '❌ Команда работает только на домашнем сервере.' }).catch(() => {});
-  }
+  try {
+    // Права: только админы + только домашний сервер (если задан GUILD_ID).
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      return interaction.editReply({ content: '❌ Только для админов.' }).catch(() => {});
+    }
+    if (bot?.config?.GUILD_ID && interaction.guildId !== bot.config.GUILD_ID) {
+      return interaction.editReply({ content: '❌ Команда работает только на домашнем сервере.' }).catch(() => {});
+    }
 
-  const target = interaction.options.getUser('user', true);
-  const type = interaction.options.getString('type', true);
-  const amount = interaction.options.getInteger('amount', true);
-  if (amount === 0) return interaction.editReply({ content: '❌ amount = 0 — и что я должен сделать?' }).catch(() => {});
-  if (Math.abs(amount) > 1_000_000) return interaction.editReply({ content: '❌ Слишком жирно, максимум ±1 000 000.' }).catch(() => {});
+    const target = interaction.options.getUser('user', true);
+    const type = interaction.options.getString('type', true);
+    const amount = interaction.options.getInteger('amount', true);
+    if (amount === 0) return interaction.editReply({ content: '❌ amount = 0 — и что я должен сделать?' }).catch(() => {});
+    if (Math.abs(amount) > 1_000_000) return interaction.editReply({ content: '❌ Слишком жирно, максимум ±1 000 000.' }).catch(() => {});
 
-  const targetProfile = await players.getProfile({
-    id: target.id,
-    username: target.username,
-    displayName: interaction.options.getMember('user')?.displayName || target.username,
-  }, interaction.guildId);
+    console.log(`🎲 /give: ${interaction.user.username} → ${target.username}, ${type} ${amount}`);
+
+    const targetProfile = await players.getProfile({
+      id: target.id,
+      username: target.username,
+      displayName: interaction.options.getMember('user')?.displayName || target.username,
+    }, interaction.guildId);
 
   const before = { gold: targetProfile.gold, keys: targetProfile.keys, level: targetProfile.level, rating: targetProfile.rating };
   const names = { coins: '🪙 монеты', keys: '🗝 ключи', xp: '📗 опыт', levels: '⬆️ уровни', rating: '🗡 рейтинг' };
@@ -397,6 +400,10 @@ async function handleGive(interaction, bot) {
     .setTimestamp();
 
   await interaction.editReply({ embeds: [embed] }).catch(() => {});
+  } catch (err) {
+    console.error('RPG /give error:', err);
+    await interaction.editReply({ content: `❌ /give сломался: ${String(err?.message || err).slice(0, 300)}` }).catch(() => {});
+  }
 }
 
 async function handleCommand(interaction, bot) {
