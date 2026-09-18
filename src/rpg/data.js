@@ -22,6 +22,7 @@ const chests = loadJson('chests.json', { chests: [] });
 const dungeons = loadJson('dungeons.json', { dungeons: [], cooldownMinutes: 3 });
 const pets = loadJson('pets.json', {});
 const casino = loadJson('casino.json', { minBet: 10, maxBet: 10000 });
+const event = loadJson('event.json', {});
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -59,6 +60,7 @@ module.exports = {
   dungeons,
   pets,
   casino,
+  event,
   randInt,
   pick,
   clamp,

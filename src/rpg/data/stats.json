@@ -1,11 +1,31 @@
 {
-  "baseStats": { "hp": 120, "atk": 12, "def": 6, "spd": 10 },
-  "levelStats": { "hp": 14, "atk": 1.4, "def": 0.8, "spd": 0.35 },
-  "levelCurve": { "baseXp": 80, "growth": 1.3, "maxLevel": 50 },
+  "baseStats": {
+    "hp": 120,
+    "atk": 12,
+    "def": 6,
+    "spd": 10
+  },
+  "levelStats": {
+    "hp": 14,
+    "atk": 1.4,
+    "def": 0.8,
+    "spd": 0.35
+  },
+  "levelCurve": {
+    "baseXp": 80,
+    "growth": 1.3,
+    "maxLevel": 50
+  },
   "critBase": 5,
-  "combat": { "maxRounds": 30, "mitigationK": 50, "variance": 0.1 },
-  "cooldowns": { "hunt": 40 },
-  "voice": { "coinsPerMinute": 1, "keyChancePerMinute": 1 },
+  "combat": {
+    "maxRounds": 30,
+    "mitigationK": 50,
+    "variance": 0.1
+  },
+  "voice": {
+    "coinsPerMinute": 1,
+    "keyChancePerMinute": 1
+  },
   "pvp": {
     "startRating": 1000,
     "minLevel": 5,
@@ -27,5 +47,11 @@
     "successDecay": 0.04,
     "successFloor": 0.35,
     "statBonusPerLevel": 0.08
+  },
+  "energy": {
+    "max": 100,
+    "huntCost": 10,
+    "dungeonCost": 20,
+    "regenMinutesFull": 30
   }
 }

@@ -4,13 +4,12 @@ const { simulateBattle } = require('./combat');
 const players = require('./players');
 
 function isOnCooldown(profile) {
-  const cd = (cfg.pvp?.cooldown || 120) * 1000;
-  return Date.now() - (profile.lastPvp || 0) < cd;
+  return false;
+  return false;
 }
 
 function cooldownLeft(profile) {
-  const cd = (cfg.pvp?.cooldown || 120) * 1000;
-  return Math.max(0, Math.ceil(((profile.lastPvp || 0) + cd - Date.now()) / 1000));
+  return 0;
 }
 
 function expectedScore(ra, rb) {

@@ -62,11 +62,10 @@ function generateWaveMob(archetypeId, level, rewardMult = 1) {
 }
 
 // Босс данжа: заданный архетип, максимальный уровень данжа, статы ×буст.
-function generateBoss(archetypeId, level) {
+function generateBoss(archetypeId, level, bossMult = 1.7) {
   const archetype = (mobs.archetypes || []).find(a => a.id === archetypeId) || (mobs.archetypes || [])[0];
   if (!archetype) return null;
 
-  const bossMult = 1.7;
   const statMult = (1 + (level - 1) * 0.13) * bossMult;
   const stats = {};
   for (const [stat, range] of Object.entries(archetype.stats || {})) {

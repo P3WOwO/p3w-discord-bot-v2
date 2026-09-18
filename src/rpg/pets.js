@@ -1,6 +1,23 @@
 // Питомцы: ловля мобов, активный питомец даёт % к статам.
 const { pets: cfg, mobs: mobData } = require('./data');
 
+function squadMax() {
+  return cfg.squadMax || 2;
+}
+
+function createEventPet(level, shieldCfg) {
+  return {
+    uid: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    archetypeId: 'event-drake',
+    name: 'Красный дракончик',
+    emoji: '🐲',
+    level: level || 1,
+    modifierId: null,
+    proc: { shieldChance: shieldCfg.chance, shieldMin: shieldCfg.min, shieldMax: shieldCfg.max, shieldCap: shieldCfg.cap || 50 },
+    capturedAt: new Date().toISOString(),
+  };
+}
+
 function bonusPct(pet) {
   return Math.min(cfg.bonusCap || 15, (cfg.bonusBase || 2) + (pet?.level || 1) * (cfg.bonusPerLevel || 0.15));
 }
@@ -38,4 +55,4 @@ function releasePrice(pet) {
   return Math.max(10, Math.round((cfg.releasePricePerLevel || 15) * (pet?.level || 1)));
 }
 
-module.exports = { bonusPct, getActivePet, tryCapture, releasePrice };
+module.exports = { bonusPct, getActivePet, tryCapture, releasePrice, createEventPet, squadMax };

@@ -74,9 +74,12 @@ function profileEmbed(profile) {
       { name: `🪙 Монеты: ${profile.gold}`, value: `🗝 Ключи: ${profile.keys || 0}`, inline: true },
       { name: 'Score', value: String(profile.score || players.calcScore(profile)), inline: true },
       { name: 'Экипировка', value: equipmentLine(profile), inline: false },
-      { name: '🐾 Питомец', value: petsLine(profile), inline: true },
+      { name: '🐿 Отряд', value: petsLine(profile), inline: false },
+      { name: '⚡ Энергия', value: `${players.getEnergy(profile)}/${(cfg.energy && cfg.energy.max) || 100}`, inline: true },
+      { name: '💎 Кристаллы', value: String(profile.eventCurrency || 0), inline: true },
       { name: '🗡 PvP', value: `Рейтинг: ${profile.rating || 1000} (${profile.pvpWins || 0}П / ${profile.pvpLosses || 0}Пр)`, inline: true },
     )
+    .setFooter({ text: 'RPG v1.2' })
     .setTimestamp();
 }
 

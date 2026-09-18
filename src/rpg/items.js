@@ -6,13 +6,14 @@ const FLAT_KEYS = new Set(['hp', 'atk', 'def', 'spd']);
 const PERCENT_KEYS = new Set([
   'critChance', 'critDmg', 'dodge', 'lifesteal', 'block', 'counterChance',
   'stunChance', 'reflect', 'pierce', 'goldFind', 'xpBonus', 'luck', 'regen',
+  'atkPct', 'spdPct',
 ]);
 
 const SCORE_WEIGHTS = {
   hp: 0.5, atk: 4, def: 3, spd: 2, regen: 6,
   critChance: 8, critDmg: 3, dodge: 8, lifesteal: 6, block: 6,
   counterChance: 5, stunChance: 10, reflect: 4, pierce: 5,
-  goldFind: 1, xpBonus: 1, luck: 2,
+  goldFind: 1, xpBonus: 1, luck: 2, atkPct: 12, spdPct: 10,
 };
 
 function levelMult(level) {

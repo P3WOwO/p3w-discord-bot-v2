@@ -19,6 +19,9 @@ function toCombatant(s, name) {
     pierce: Math.min(60, s.pierce || 0),
     regen: s.regen || 0,
   };
+  c.shield = 0;
+  c.shieldCap = s.shieldCap || 0;
+  c.procs = s.procs || null;
   c.hp = c.maxHp;
   c.stun = 0;
   return c;
@@ -45,17 +48,28 @@ function strike(att, def, log, variance) {
     line += '🛡';
   }
   dmg = Math.max(1, Math.round(dmg));
-  def.hp -= dmg;
 
-  let extra = '';
+  // Щит: урон сначала в щит, остаток в HP.
+  let shieldAbsorbed = 0;
+  if (def.shield > 0) {
+    shieldAbsorbed = Math.min(def.shield, dmg);
+    def.shield -= shieldAbsorbed;
+    dmg -= shieldAbsorbed;
+  }
+
+  let extra = shieldAbsorbed ? ` | щит -${shieldAbsorbed}` : '';
   if (att.lifesteal > 0 && att.hp < att.maxHp) {
     const heal = Math.round(dmg * att.lifesteal / 100);
     att.hp = Math.min(att.maxHp, att.hp + heal);
     extra += ` | вампиризм +${heal}❤`;
   }
-  log.push(`${line || '⚔️'} ${att.name} → ${def.name}: -${dmg}${line.includes('💥') ? ' КРИТ' : ''}${extra}`.trim());
+  if (dmg > 0) {
+    log.push(`${line || '⚔️'} ${att.name} → ${def.name}: -${dmg}${line.includes('💥') ? ' КРИТ' : ''}${extra}`.trim());
+  } else {
+    log.push(`🔵 Щит ${def.name} поглотил весь удар (${shieldAbsorbed})`);
+  }
 
-  if (def.reflect > 0 && def.hp > 0) {
+  if (def.reflect > 0 && def.hp > 0 && dmg > 0) {
     const reflected = Math.max(1, Math.round(dmg * def.reflect / 100));
     att.hp -= reflected;
     log.push(`🪞 ${def.name} отражает ${reflected} урона`);
@@ -64,11 +78,29 @@ function strike(att, def, log, variance) {
     def.stun += 1;
     log.push(`🌀 ${def.name} оглушён и пропустит ход!`);
   }
+
+  handleProcs(def, log);
+}
+
+function handleProcs(def, log) {
+  if (!def.procs || def.hp <= 0) return;
+  const p = def.procs;
+  if (p.shieldChance && def.shieldCap > 0 && def.shield < def.shieldCap && Math.random() * 100 < p.shieldChance) {
+    const v = p.shieldMin + Math.floor(Math.random() * (p.shieldMax - p.shieldMin + 1));
+    def.shield = Math.min(def.shieldCap, def.shield + v);
+    log.push(`🐿🛡 ${def.name} ставит щит ${v} (запас ${def.shield}/${def.shieldCap})`);
+  }
+  if (p.healChance && Math.random() * 100 < p.healChance && def.hp < def.maxHp) {
+    const heal = Math.max(1, Math.round(def.maxHp * p.healPct / 100));
+    def.hp = Math.min(def.maxHp, def.hp + heal);
+    log.push(`💚 ${def.name} исцеляется на ${heal}`);
+  }
 }
 
 function simulateBattle(statsA, statsB, opts = {}) {
   const A = toCombatant(statsA, opts.nameA || 'Игрок');
   const B = toCombatant(statsB, opts.nameB || 'Монстр');
+  if (opts.playerStartHp) A.hp = Math.max(1, Math.min(A.maxHp, Math.round(opts.playerStartHp)));
   const log = [];
   const maxRounds = opts.maxRounds || (cfg.combat?.maxRounds || 30);
   const variance = cfg.combat?.variance || 0.1;

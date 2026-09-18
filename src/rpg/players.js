@@ -32,7 +32,10 @@ function createProfile(user) {
     equipment: emptyEquipment(),
     inventory: [],
     pets: [],
+    activePets: [],
     activePetId: null,
+    energy: (cfg.energy && cfg.energy.max) || 100,
+    energyTs: Date.now(),
     rating: cfg.pvp?.startRating || 1000,
     pvpWins: 0,
     pvpLosses: 0,
@@ -109,6 +112,13 @@ async function getProfile(user, guildId) {
   profile.pvpLosses = profile.pvpLosses || 0;
   profile.lastDungeon = profile.lastDungeon || 0;
   profile.lastPvp = profile.lastPvp || 0;
+  profile.energy = (typeof profile.energy === 'number') ? profile.energy : ((cfg.energy && cfg.energy.max) || 100);
+  profile.energyTs = profile.energyTs || Date.now();
+  profile.activePets = Array.isArray(profile.activePets) ? profile.activePets : [];
+  if (!profile.activePets.length && profile.activePetId) {
+    const oldPet = (profile.pets || []).find(p => p.uid === profile.activePetId);
+    if (oldPet) profile.activePets = [oldPet.uid];
+  }
   cache.set(user.id, profile);
   return profile;
 }
@@ -194,20 +204,80 @@ function totalStats(profile) {
   }
   for (const key of ['hp', 'atk', 'def', 'spd']) s[key] = Math.round(s[key]);
 
-  // Активный питомец: % ко всем главным статам.
-  const pet = getActivePet(profile);
-  if (pet) {
-    const pct = petUtils.bonusPct(pet);
-    for (const key of ['hp', 'atk', 'def', 'spd']) {
-      s[key] = Math.round(s[key] * (1 + pct / 100));
-    }
-    s.petBonus = pct;
+  // Отряд: до 2 питомцев, бонусы суммируются (кап 20).
+  let petPct = 0;
+  for (const uid of (profile.activePets || []).slice(0, petsSquadMax())) {
+    const pet = (profile.pets || []).find(p => p.uid === uid);
+    if (pet) petPct += petUtils.bonusPct(pet);
   }
+  if (petPct > 0) {
+    petPct = Math.min(20, petPct);
+    for (const key of ['hp', 'atk', 'def', 'spd']) {
+      s[key] = Math.round(s[key] * (1 + petPct / 100));
+    }
+    s.petBonus = petPct;
+  }
+
+  // Проценты атаки/скорости (аксессуары).
+  if (s.atkPct) s.atk = Math.round(s.atk * (1 + s.atkPct / 100));
+  if (s.spdPct) s.spd = Math.round(s.spd * (1 + s.spdPct / 100));
+
+  // Процы «когда вас атакуют».
+  s.procs = aggregateProcs(profile);
   return s;
 }
 
+function petsSquadMax() {
+  return petsCfg.squadMax || 2;
+}
+
+function aggregateProcs(profile) {
+  const procs = { shieldChance: 0, shieldMin: 0, shieldMax: 0, shieldCap: 0, healChance: 0, healPct: 0 };
+  for (const slot of itemBases.slots || []) {
+    const item = profile.equipment && profile.equipment[slot];
+    if (item && item.proc && item.proc.healChance) {
+      procs.healChance = Math.min(25, procs.healChance + item.proc.healChance);
+      procs.healPct = Math.max(procs.healPct, item.proc.healPct || 0);
+    }
+  }
+  for (const uid of (profile.activePets || []).slice(0, petsSquadMax())) {
+    const pet = (profile.pets || []).find(p => p.uid === uid);
+    if (pet && pet.proc && pet.proc.shieldChance) {
+      procs.shieldChance = pet.proc.shieldChance;
+      procs.shieldMin = pet.proc.shieldMin || 20;
+      procs.shieldMax = pet.proc.shieldMax || 30;
+      procs.shieldCap = pet.proc.shieldCap || 50;
+    }
+  }
+  return procs;
+}
+
+function getEnergy(profile) {
+  const max = (cfg.energy && cfg.energy.max) || 100;
+  const regenMs = ((cfg.energy && cfg.energy.regenMinutesFull) || 30) * 60 * 1000 / max;
+  const now = Date.now();
+  if (profile.energy >= max) {
+    profile.energyTs = now;
+    return max;
+  }
+  const gained = Math.floor((now - (profile.energyTs || now)) / regenMs);
+  if (gained <= 0) return Math.floor(profile.energy);
+  profile.energy = Math.min(max, profile.energy + gained);
+  profile.energyTs = now - ((now - (profile.energyTs || now)) % regenMs);
+  return profile.energy;
+}
+
+function spendEnergy(profile, amount) {
+  getEnergy(profile);
+  if ((profile.energy || 0) < amount) return false;
+  profile.energy -= amount;
+  profile.energyTs = Date.now();
+  return true;
+}
+
 function getActivePet(profile) {
-  return (profile.pets || []).find(p => p.uid === profile.activePetId) || null;
+  const uid = (profile.activePets || [])[0] || null;
+  return (profile.pets || []).find(p => p.uid === uid) || null;
 }
 
 function getCached(userId) {
@@ -262,6 +332,8 @@ module.exports = {
   emptyEquipment,
   getActivePet,
   getCached,
+  getEnergy,
+  spendEnergy,
 };
 
 

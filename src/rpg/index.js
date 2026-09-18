@@ -24,6 +24,8 @@ const PAGE_SIZE = 8;
 
 // Состояние меню в памяти: userId -> { view, page }
 const menuState = new Map();
+const pendingDuels = new Map();
+const pendingParties = new Map();
 
 function mainMenuRow(state) {
   return new ActionRowBuilder().addComponents(
@@ -41,6 +43,7 @@ function mainMenuRow2() {
     new ButtonBuilder().setCustomId(PREFIX + 'pvp-menu').setLabel('🗡 PvP').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(PREFIX + 'pets').setLabel('🐾 Питомцы').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(PREFIX + 'casino').setLabel('🎰 Казино').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(PREFIX + 'event').setLabel('🎉 Ивент').setStyle(ButtonStyle.Danger),
   );
 }
 
@@ -108,20 +111,16 @@ async function showHunt(interaction, profile) {
   );
 
   const embed = view.zonesListEmbed(profile);
-  if (hunt.isOnCooldown(profile)) {
-    embed.setFooter({ text: `⏳ Перезарядка охоты: ещё ${hunt.cooldownLeft(profile)} с (можно тыкать — бой всё равно не начнётся)` });
-  }
+  embed.setFooter({ text: `⚡ Энергия: ${players.getEnergy(profile)}/${(cfg.energy && cfg.energy.max) || 100} (охота -${(cfg.energy && cfg.energy.huntCost) || 10})` });
   await interaction.update({ embeds: [embed], components: [row, nav] }).catch(() => {});
 }
 
 async function doHunt(interaction, profile, zoneId) {
-  if (hunt.isOnCooldown(profile)) {
-    const left = hunt.cooldownLeft(profile);
-    return interaction.reply({ content: `⏳ Охота на перезарядке, подожди ${left} с.`, ephemeral: true }).catch(() => {});
-  }
-
   const result = hunt.hunt(profile, zoneId);
   if (!result.ok) {
+    if (result.reason === 'no_energy') {
+      return interaction.reply({ content: `⚡ Не хватает энергии: нужно ${result.need}, осталось ${result.energy}. Энергия восстанавливается сама (~30 мин до полного).`, ephemeral: true }).catch(() => {});
+    }
     console.error(`RPG hunt failed: reason=${result.reason}, zone=${zoneId}, playerLevel=${profile.level}`);
     return interaction.reply({ content: '❌ Ошибка охоты, попробуй ещё раз.', ephemeral: true }).catch(() => {});
   }
@@ -237,6 +236,19 @@ async function showItem(interaction, profile, uid) {
   const upgradeCost = items.upgradeCost(item, cfg.upgrade || {});
   const chance = Math.round(items.upgradeSuccessChance(item, cfg.upgrade || {}) * 100);
 
+  let compareField = null;
+  const equippedOther = profile.equipment && profile.equipment[item.slot];
+  if (equippedOther && equippedOther.uid !== item.uid) {
+    const a = items.effectiveItemStats(item);
+    const b = items.effectiveItemStats(equippedOther);
+    const diffs = [];
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      const delta = Math.round(((a[k] || 0) - (b[k] || 0)) * 10) / 10;
+      if (delta) diffs.push(`${view.STAT_NAMES[k] || k} ${delta > 0 ? '+' : ''}${delta}`);
+    }
+    compareField = { name: '⚖️ Заменит предмет', value: `${view.itemShort(equippedOther)}\n${diffs.length ? 'Разница: ' + diffs.join(', ') : 'Равноценно'}` };
+  }
+
   const rows = [new ActionRowBuilder().addComponents(
     isEquipped
       ? new ButtonBuilder().setCustomId(PREFIX + `item:${uid}:unequip`).setLabel('🔽 Снять').setStyle(ButtonStyle.Secondary)
@@ -253,6 +265,7 @@ async function showItem(interaction, profile, uid) {
     .addFields(
       { name: 'Уровень предмета', value: String(item.level), inline: true },
       { name: 'Score', value: String(item.score), inline: true },
+      ...(compareField ? [compareField] : []),
     )
     .setTimestamp();
 
@@ -295,6 +308,14 @@ function commandData() {
     new SlashCommandBuilder().setName('profile').setDescription('Показать свой RPG-профиль').toJSON(),
     new SlashCommandBuilder().setName('dungeon').setDescription('Меню данжей: волны мобов + босс').toJSON(),
     new SlashCommandBuilder().setName('casino').setDescription('Казино: монетка, кубики, слоты — играем на монеты').toJSON(),
+    new SlashCommandBuilder()
+      .setName('dungeonparty')
+      .setDescription('Пати-данж: зачистка с друзьями (до 3 игроков)')
+      .addStringOption(option => option.setName('dungeon').setDescription('Какой данж').setRequired(true)
+        .addChoices(...(require('./data').dungeons.dungeons || []).map(d => ({ name: d.name, value: d.id }))))
+      .addUserOption(option => option.setName('member1').setDescription('Напарник 1').setRequired(true))
+      .addUserOption(option => option.setName('member2').setDescription('Напарник 2').setRequired(false))
+      .toJSON(),
     new SlashCommandBuilder()
       .setName('pvp')
       .setDescription('Вызвать игрока на дуэль (PvP с рейтингом)')
@@ -347,8 +368,8 @@ async function handleGive(interaction, bot) {
       displayName: interaction.options.getMember('user')?.displayName || target.username,
     }, interaction.guildId);
 
-  const before = { gold: targetProfile.gold, keys: targetProfile.keys, level: targetProfile.level, rating: targetProfile.rating };
-  const names = { coins: '🪙 монеты', keys: '🗝 ключи', xp: '📗 опыт', levels: '⬆️ уровни', rating: '🗡 рейтинг' };
+  const before = { gold: targetProfile.gold, keys: targetProfile.keys, level: targetProfile.level, rating: targetProfile.rating, energy: targetProfile.energy || 0, crystals: targetProfile.eventCurrency || 0 };
+  const names = { coins: '🪹 монеты', keys: '🗝 ключи', xp: '📗 опыт', levels: '⬆️ уровни', rating: '🗡 рейтинг', energy: '⚡ энергия', crystals: '💎 кристаллы' };
 
   let levelUps = 0;
 
@@ -380,6 +401,11 @@ async function handleGive(interaction, bot) {
     }
   } else if (type === 'rating') {
     targetProfile.rating = Math.max(100, (targetProfile.rating || 1000) + amount);
+  } else if (type === 'energy') {
+    const eMax = (cfg.energy && cfg.energy.max) || 100;
+    targetProfile.energy = Math.max(0, Math.min(eMax, (targetProfile.energy || 0) + amount));
+  } else if (type === 'crystals') {
+    targetProfile.eventCurrency = Math.max(0, (targetProfile.eventCurrency || 0) + amount);
   } else {
     return interaction.editReply({ content: '❌ Неизвестный тип.' }).catch(() => {});
   }
@@ -392,6 +418,8 @@ async function handleGive(interaction, bot) {
   if (type === 'xp') changes.push(`📗 +${amount} XP${levelUps ? ` (уровней поднято: ${levelUps}, теперь ${targetProfile.level})` : ''}`);
   if (type === 'levels') changes.push(`⬆️ ${before.level} → ${targetProfile.level}`);
   if (type === 'rating') changes.push(`🗡 ${before.rating} → ${targetProfile.rating}`);
+  if (type === 'energy') changes.push(`⚡ ${before.energy} → ${targetProfile.energy}`);
+  if (type === 'crystals') changes.push(`💎 ${before.crystals} → ${targetProfile.eventCurrency || 0}`);
 
   const sign = amount > 0 ? 'выдал' : 'забрал';
   const embed = new EmbedBuilder()
@@ -488,21 +516,52 @@ async function handleCommand(interaction, bot) {
   if (interaction.commandName === 'pvp') {
     const opponent = interaction.options.getUser('opponent', true);
     if (opponent.id === interaction.user.id) {
-      await interaction.editReply({ content: '❌ С собой драться нечестно. Используй /rpg → 🗡 PvP → спарринг.' }).catch(() => {});
+      await interaction.editReply({ content: '❌ С собой драться нечестно. Спарринг: /rpg → 🗡 PvP.' }).catch(() => {});
       return;
     }
     if (opponent.bot) {
-      await interaction.editReply({ content: '❌ Боты не дерутся, у них нет прокачки.' }).catch(() => {});
+      await interaction.editReply({ content: '❌ Боты не дерутся.' }).catch(() => {});
       return;
     }
+    pendingDuels.set(opponent.id, { attackerId: interaction.user.id, guildId: interaction.guildId });
+    await interaction.editReply({ content: '✅ Запрос отправлен.' }).catch(() => {});
+    await interaction.followUp({
+      content: `🗡 <@${interaction.user.id}> вызывает <@${opponent.id}> на дуэль!`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(PREFIX + `pvp-accept:${interaction.user.id}`).setLabel('⚔️ Принять').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(PREFIX + `pvp-decline:${interaction.user.id}`).setLabel('❌ Отклонить').setStyle(ButtonStyle.Danger),
+      )],
+    }).catch(() => {});
+    return;
+  }
 
-    const defenderProfile = await players.getProfile({
-      id: opponent.id,
-      username: opponent.username,
-      displayName: interaction.options.getMember('opponent')?.displayName || opponent.username,
-    }, interaction.guildId);
-
-    await pvpDuel(interaction, profile, opponent, defenderProfile);
+  if (interaction.commandName === 'dungeonparty') {
+    const dungeonId = interaction.options.getString('dungeon', true);
+    const dungeon = dungeons.dungeonById(dungeonId);
+    if (!dungeon) return interaction.editReply({ content: '❌ Данж не найден.' }).catch(() => {});
+    const invitees = [];
+    for (const optName of ['member1', 'member2']) {
+      const u = interaction.options.getUser(optName);
+      if (u && !u.bot && u.id !== interaction.user.id) invitees.push(u);
+    }
+    if (!invitees.length) return interaction.editReply({ content: '❌ Пригласи хотя бы одного игрока (не бота).' }).catch(() => {});
+    if ((profile.level || 1) < (dungeon.minLevel || 1)) return interaction.editReply({ content: `❌ Нужен уровень ${dungeon.minLevel}.` }).catch(() => {});
+    for (const u of invitees) {
+      const up = await players.getProfile({ id: u.id, username: u.username, displayName: u.username }, interaction.guildId);
+      if ((up.level || 1) < (dungeon.minLevel || 1)) return interaction.editReply({ content: `❌ ${up.name} слишком низкого уровня (нужно ${dungeon.minLevel}).` }).catch(() => {});
+    }
+    pendingParties.set(interaction.user.id, { leaderId: interaction.user.id, dungeonId, guildId: interaction.guildId, members: [profile], pending: invitees.map(u => u.id) });
+    await interaction.editReply({ content: '✅ Приглашения отправлены.' }).catch(() => {});
+    const mentions = invitees.map(u => `<@${u.id}>`).join(' ');
+    await interaction.followUp({
+      content: `🐉 **Пати-данж: ${dungeon.name}**
+Лидер: <@${interaction.user.id}>. Приглашены: ${mentions}
+Вход: ${dungeon.currency === 'gold' ? dungeon.entryCost + '🦙' : dungeon.entryCost + '🗝'} + ${(cfg.energy && cfg.energy.dungeonCost) || 20}⚡ каждому. Подтверждайте участие!`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(PREFIX + `dp-accept:${interaction.user.id}`).setLabel('✅ Иду').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(PREFIX + `dp-decline:${interaction.user.id}`).setLabel('❌ Не иду').setStyle(ButtonStyle.Danger),
+      )],
+    }).catch(() => {});
     return;
   }
 }
@@ -553,16 +612,13 @@ async function runDungeon(interaction, profile, dungeonId) {
   if (profile.level < (dungeon.minLevel || 1)) {
     return interaction.reply({ content: `❌ Нужен уровень ${dungeon.minLevel}.`, ephemeral: true }).catch(() => {});
   }
-  if (dungeons.isOnCooldown(profile)) {
-    return interaction.reply({ content: `⏳ Данжи на перезарядке, подожди ${dungeons.cooldownLeft(profile)} с.`, ephemeral: true }).catch(() => {});
-  }
-
   const result = dungeons.run(profile, dungeonId);
   if (!result.ok) {
     const messages = {
       no_gold: `Не хватает монет на вход: нужно ${result.cost} 🪙`,
       no_keys: `Не хватает ключей на вход: нужно ${result.cost} 🗝`,
       gen: 'Ошибка генерации данжа.',
+      no_energy: `⚡ Не хватает энергии (нужно 20). Осталось: ${result.energy}.`,
     };
     console.error(`RPG dungeon failed: reason=${result.reason}, dungeon=${dungeonId}`);
     return interaction.reply({ content: `❌ ${messages[result.reason] || 'Ошибка данжа, попробуй ещё раз.'}`, ephemeral: true }).catch(() => {});
@@ -657,13 +713,14 @@ async function showPets(interaction, profile) {
 async function showPet(interaction, profile, petUid) {
   const pet = (profile.pets || []).find(p => p.uid === petUid);
   if (!pet) return interaction.reply({ content: '❌ Питомец не найден.', ephemeral: true }).catch(() => {});
-  const isActive = pet.uid === profile.activePetId;
+  const inSquad = (profile.activePets || []).includes(petUid);
+  const squadFull = (profile.activePets || []).length >= pets.squadMax();
   const price = pets.releasePrice(pet);
   const rows = [new ActionRowBuilder().addComponents(
-    isActive
-      ? new ButtonBuilder().setCustomId(PREFIX + 'pet-unset').setLabel('🔽 Убрать из активных').setStyle(ButtonStyle.Secondary)
-      : new ButtonBuilder().setCustomId(PREFIX + `pet-set:${petUid}`).setLabel('✅ Сделать активным').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(PREFIX + `pet-release:${petUid}`).setLabel(`🎁 Отпустить (+${price}🪙)`).setStyle(ButtonStyle.Danger),
+    inSquad
+      ? new ButtonBuilder().setCustomId(PREFIX + `pet-unsquad:${petUid}`).setLabel('➖ Убрать из отряда').setStyle(ButtonStyle.Secondary)
+      : new ButtonBuilder().setCustomId(PREFIX + `pet-set:${petUid}`).setLabel(squadFull ? '🐿 Отряд полон (2)' : '➕ В отряд').setStyle(squadFull ? ButtonStyle.Secondary : ButtonStyle.Success).setDisabled(squadFull),
+    new ButtonBuilder().setCustomId(PREFIX + `pet-release:${petUid}`).setLabel(`🎁 Отпустить (+${price}🪹)`).setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(PREFIX + 'pets').setLabel('🐾 К питомцам').setStyle(ButtonStyle.Secondary),
   )];
   const embed = new EmbedBuilder()
@@ -678,21 +735,27 @@ async function petAction(interaction, profile, action, petUid) {
   let message = '';
   if (action === 'set') {
     const pet = (profile.pets || []).find(p => p.uid === petUid);
-    if (pet) { profile.activePetId = pet.uid; message = `🐾 ${pet.name} теперь твой активный питомец!`; }
-    else message = '❌ Питомец не найден.';
-  } else if (action === 'unset') {
-    profile.activePetId = null;
-    message = '🔽 Активный питомец убран.';
+    if (!pet) message = '❌ Питомец не найден.';
+    else if ((profile.activePets || []).length >= pets.squadMax()) message = '❌ Отряд полон (максимум 2). Убери кого-то сначала.';
+    else if ((profile.activePets || []).includes(petUid)) message = '🐾 Уже в отряде.';
+    else {
+      profile.activePets = profile.activePets || [];
+      profile.activePets.push(petUid);
+      message = `🐾 ${pet.name} вступил в отряд!`;
+    }
+  } else if (action === 'unsquad') {
+    profile.activePets = (profile.activePets || []).filter(uid => uid !== petUid);
+    message = '➖ Питомец покинул отряд.';
   } else if (action === 'release') {
     const pet = (profile.pets || []).find(p => p.uid === petUid);
     if (!pet) message = '❌ Питомец не найден.';
     else {
-      const wasActive = profile.activePetId === petUid;
       profile.pets = profile.pets.filter(p => p.uid !== petUid);
-      if (wasActive) profile.activePetId = null;
+      profile.activePets = (profile.activePets || []).filter(uid => uid !== petUid);
+      profile.activePetId = null;
       const price = pets.releasePrice(pet);
       profile.gold += price;
-      message = `🎁 Отпустил ${pet.name}. Получил ${price} 🪙.`;
+      message = `🎁 Отпустил ${pet.name}. Получил ${price} 🪹.`;
     }
   }
   await players.saveProfile(profile);
@@ -701,12 +764,14 @@ async function petAction(interaction, profile, action, petUid) {
 
 // ===== Казино =====
 
-function casinoBet(interaction, profile) {
+function casinoBet(interaction, profile, arg) {
   const state = menuState.get(profile.userId) || {};
   const limits = casinoLimits();
-  const requested = parseInt(selectValue(interaction) || '', 10);
-  if (Number.isInteger(requested)) state.casinoBet = requested;
-  menuState.set(profile.userId, state);
+  const requested = parseInt(arg || selectValue(interaction) || '', 10);
+  if (Number.isInteger(requested)) {
+    state.casinoBet = Math.max(limits.minBet, Math.min(limits.maxBet, requested));
+    menuState.set(profile.userId, state);
+  }
   return Math.max(limits.minBet, Math.min(limits.maxBet, state.casinoBet || 100));
 }
 
@@ -794,6 +859,161 @@ function casinoComponents(profile, state) {
   return [gameButtons, betButtons, nav];
 }
 
+﻿function eventActiveNow() {
+  const ev = require('./data').event;
+  return Boolean(ev && ev.active && ev.endsAt && Date.now() < new Date(ev.endsAt).getTime());
+}
+
+async function showEvent(interaction, profile) {
+  const ev = require('./data').event;
+  const active = eventActiveNow();
+  const daysLeft = ev.endsAt ? Math.max(0, Math.ceil((new Date(ev.endsAt).getTime() - Date.now()) / 86400000)) : 0;
+  const embed = new EmbedBuilder()
+    .setColor(0xe74c3c)
+    .setTitle('🎉 Ивент: Красные кристаллы')
+    .setDescription(active
+      ? `Ивент идёт! Осталось **${daysLeft} дн.**\n\n💎 Кристаллы падают с мобов на охоте и за зачистку данжей.\nТрать их на ивент-сундуки: уникальный дроп — хил-снаряжение, аксессуары и питомец-щитовик!`
+      : 'Ивент завершён. Жди следующего!')
+    .addFields(
+      { name: '💎 Твои кристаллы', value: String(profile.eventCurrency || 0), inline: true },
+      { name: '🎁 Малый сундук', value: '500 💎 — в основном обычный лут, чуть-чуть уникального', inline: true },
+      { name: '🎁 Большой сундук', value: '1500 💎 — топовые шансы на редкое', inline: true },
+    );
+  const rows = [new ActionRowBuilder().addComponents(
+    ...(active ? [
+      new ButtonBuilder().setCustomId(PREFIX + 'event-chest:event-small').setLabel('🎁 Малый (500💎)').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(PREFIX + 'event-chest:event-big').setLabel('🎁 Большой (1500💎)').setStyle(ButtonStyle.Danger),
+    ] : []),
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  )];
+  await interaction.update({ embeds: [embed], components: rows }).catch(() => {});
+}
+
+async function openEventChest(interaction, profile, chestId) {
+  const ev = require('./data').event;
+  if (!eventActiveNow()) return interaction.reply({ content: '❌ Ивент завершён.', ephemeral: true }).catch(() => {});
+  const chest = (ev.chests || []).find(ch => ch.id === chestId);
+  if (!chest) return interaction.reply({ content: '❌ Сундук не найден.', ephemeral: true }).catch(() => {});
+  if ((profile.eventCurrency || 0) < chest.cost) {
+    return interaction.reply({ content: `❌ Не хватает кристаллов: нужно ${chest.cost} 💎, у тебя ${profile.eventCurrency || 0}. Кристаллы падают с мобов и данжей.`, ephemeral: true }).catch(() => {});
+  }
+  profile.eventCurrency -= chest.cost;
+
+  const entries = Object.entries(chest.weights).map(([k, w]) => ({ k, w }));
+  const total = entries.reduce((s, e) => s + e.w, 0);
+  let roll = Math.random() * total;
+  let kind = entries[entries.length - 1][0];
+  for (const e of entries) { roll -= e.w; if (roll <= 0) { kind = e.k; break; } }
+
+  const rarityId = items.rollRarityFromWeights(chest.itemRarities);
+  const rIdx = ['common', 'uncommon', 'rare', 'epic', 'legendary'].indexOf(rarityId);
+  const level = chest.levelRange[0] + Math.floor(Math.random() * (chest.levelRange[1] - chest.levelRange[0] + 1));
+
+  let title = '';
+  let lines = [];
+  if (kind === 'pet') {
+    const pet = pets.createEventPet(level, ev.petShield);
+    profile.pets = profile.pets || [];
+    profile.pets.push(pet);
+    title = '🐲 Питомец-щитовик!';
+    lines = [`${pet.emoji} **${pet.name}** (ур.${pet.level})`, `Пока в отряде: при получении урона ${pet.proc.shieldChance}% шанс щита ${pet.proc.shieldMin}-${pet.proc.shieldMax} (кап ${pet.proc.shieldCap}).`, 'Поставь в отряд: 🐾 Питомцы.'];
+  } else if (kind === 'accessory') {
+    const item = items.generateItem(level, { rarityId, slot: 'accessory' });
+    item.stats = { atkPct: 2 + rIdx, spdPct: 2 + rIdx, lifesteal: 10 + rIdx * 2 };
+    const gender = (require('./data').itemBases.genders || {})[item.baseId] || 'm';
+    item.name = `${items.declineAdjective('Ивентовый', gender)} ${item.name}`;
+    item.score = items.itemScore(item);
+    const added = players.addItem(profile, item);
+    title = '💠 Ивентовый аксессуар!';
+    lines = [view.itemShort(item), `Бонус: +${item.stats.atkPct}% атаки, +${item.stats.spdPct}% скорости, +${item.stats.lifesteal}% вампиризма`];
+    if (added.sold) title += ' (сумка полна — продан)';
+  } else if (kind === 'heal') {
+    const item = items.generateItem(level, { rarityId });
+    item.proc = { healChance: ev.healProcBase + rIdx * ev.healProcPerRarity, healPct: ev.healPctBase + rIdx * ev.healPctPerRarity };
+    const gender = (require('./data').itemBases.genders || {})[item.baseId] || 'm';
+    item.name = `${items.declineAdjective('Целебный', gender)} ${item.name}`;
+    item.score = items.itemScore(item);
+    const added = players.addItem(profile, item);
+    title = '💚 Хил-снаряжение!';
+    lines = [view.itemShort(item), `При получении урона: ${item.proc.healChance}% шанс отхилить ${item.proc.healPct}% HP.`];
+    if (added.sold) title += ' (сумка полна — продан)';
+  } else {
+    const item = items.generateItem(level, { rarityId });
+    const added = players.addItem(profile, item);
+    title = '📦 Предмет из ивент-сундука';
+    lines = [view.itemShort(item)];
+    if (added.sold) title += ' (сумка полна — продан)';
+  }
+
+  await players.saveProfile(profile);
+  const embed = new EmbedBuilder().setColor(0xe74c3c).setTitle(`🎉 ${title}`).setDescription(lines.join('\n')).setTimestamp();
+  await interaction.update({ embeds: [embed], components: [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(PREFIX + 'event').setLabel('🎉 К ивенту').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(PREFIX + 'menu').setLabel('🏠 Меню').setStyle(ButtonStyle.Primary),
+  )] }).catch(() => {});
+}
+
+async function pvpAccept(interaction, attackerId) {
+  const pending = pendingDuels.get(interaction.user.id);
+  if (!pending || pending.attackerId !== attackerId) {
+    return interaction.reply({ content: '❌ Этот запрос устарел.', ephemeral: true }).catch(() => {});
+  }
+  pendingDuels.delete(interaction.user.id);
+  const attacker = await players.getProfile({ id: attackerId, username: 'player' }, interaction.guildId);
+  const defender = await players.getProfile(interaction.user, interaction.guildId);
+  const pcfg = (require('./data').stats.pvp || {});
+  if ((attacker.level || 1) < (pcfg.minLevel || 5) || (defender.level || 1) < (pcfg.minLevel || 5)) {
+    return interaction.update({ content: `❌ PvP доступен с ${pcfg.minLevel || 5} уровня у обоих.`, components: [] }).catch(() => {});
+  }
+  const result = pvp.duel(attacker, defender);
+  await players.saveProfile(attacker);
+  await players.saveProfile(defender);
+  await interaction.update({ content: '', embeds: [view.pvpResultEmbed(result, attacker, defender)], components: [] }).catch(() => {});
+}
+
+async function pvpDecline(interaction) {
+  pendingDuels.delete(interaction.user.id);
+  await interaction.update({ content: `❌ <@${interaction.user.id}> отклонил вызов.`, components: [] }).catch(() => {});
+}
+
+async function dpAccept(interaction, leaderId) {
+  const party = pendingParties.get(leaderId);
+  if (!party) return interaction.reply({ content: '❌ Пати не найдено (истекло или уже стартовало).', ephemeral: true }).catch(() => {});
+  if (!party.pending.includes(interaction.user.id)) {
+    return interaction.reply({ content: '❌ Тебя не приглашали в это пати.', ephemeral: true }).catch(() => {});
+  }
+  party.pending = party.pending.filter(id => id !== interaction.user.id);
+  const memberProfile = await players.getProfile(interaction.user, interaction.guildId);
+  party.members.push(memberProfile);
+
+  if (party.pending.length > 0) {
+    return interaction.update({ content: `🐉 Пати: ${party.members.map(m => m.name).join(', ')}. Ждём: ${party.pending.map(id => `<@${id}>`).join(', ')}`, components: interaction.message.components }).catch(() => {});
+  }
+  pendingParties.delete(leaderId);
+  await interaction.update({ content: '🐉 Пати в сборе, пошли в данж... ⚔️', components: [] }).catch(() => {});
+
+  const result = dungeons.runParty(party.members, party.dungeonId);
+  if (!result.ok) {
+    const who = result.member ? result.member.name : '';
+    const msgs = { level: `${who}: не хватает уровня (нужен ${result.need})`, no_gold: `${who}: не хватает монет на вход (${result.cost} 🪙)`, no_keys: `${who}: не хватает ключей (${result.cost} 🗝)`, no_energy: `${who}: не хватает энергии` };
+    return interaction.followUp({ content: `❌ Данж отменён: ${msgs[result.reason] || 'ошибка'}` }).catch(() => {});
+  }
+  for (const m of party.members) await players.saveProfile(m);
+
+  const embed = new EmbedBuilder()
+    .setColor(result.win ? 0x57f287 : 0xed4245)
+    .setTitle(`🐉 ${result.win ? 'Данж зачищен пати!' : 'Пати пало...'}`)
+    .setDescription(result.log.join('\n').slice(0, 1020))
+    .addFields({ name: 'Награды', value: result.rewards.map(r => `**${r.profile.name}**: 🪙 +${r.gold}, 📗 +${r.xp}${r.item ? `, 🎁 ${view.itemShort(r.item)}` : ''}${r.crystals ? `, 💎 +${r.crystals}` : ''}`).join('\n') });
+  await interaction.followUp({ embeds: [embed] }).catch(() => {});
+}
+
+async function dpDecline(interaction, leaderId) {
+  pendingParties.delete(leaderId);
+  await interaction.update({ content: `❌ <@${interaction.user.id}> отказался — пати распущено.`, components: [] }).catch(() => {});
+}
+
+
 // ===== Кнопки =====
 
 
@@ -853,9 +1073,6 @@ async function handleComponent(interaction) {
       // rpg:zone — селект-меню выбора зоны.
       const zoneId = arg1 || selectValue(interaction);
       if (!zoneId) return showHunt(interaction, profile);
-      if (hunt.isOnCooldown(profile)) {
-        return interaction.reply({ content: `⏳ Перезарядка: ещё ${hunt.cooldownLeft(profile)} с.`, ephemeral: true }).catch(() => {});
-      }
       return doHunt(interaction, profile, zoneId);
     }
     case 'chests':
@@ -880,7 +1097,7 @@ async function handleComponent(interaction) {
     case 'casino':
       return showCasino(interaction, profile);
     case 'casino-bet': {
-      casinoBet(interaction, profile);
+      casinoBet(interaction, profile, arg1);
       return showCasino(interaction, profile);
     }
     case 'casino-play':
@@ -896,6 +1113,18 @@ async function handleComponent(interaction) {
       return petAction(interaction, profile, 'release', arg1);
     case 'pet-unset':
       return petAction(interaction, profile, 'unset', null);
+    case 'event':
+      return showEvent(interaction, profile);
+    case 'event-chest':
+      return openEventChest(interaction, profile, arg1);
+    case 'pvp-accept':
+      return pvpAccept(interaction, arg1);
+    case 'pvp-decline':
+      return pvpDecline(interaction);
+    case 'dp-accept':
+      return dpAccept(interaction, arg1);
+    case 'dp-decline':
+      return dpDecline(interaction, arg1);
     case 'top':
       return showTop(interaction, profile);
     default:
