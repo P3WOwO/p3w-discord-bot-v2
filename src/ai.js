@@ -1,6 +1,11 @@
 const { SYSTEM_PROMPT, CHAT_TEMPERATURE, CHAT_MAX_OUTPUT_TOKENS } = require('./constants');
 
 const API_BASE = 'https://generativelanguage.googleapis.com';
+const REQUEST_TIMEOUT_MS = 45 * 1000;
+
+function timeoutSignal(ms = REQUEST_TIMEOUT_MS) {
+  return AbortSignal.timeout(ms);
+}
 const IMAGEN_PATTERN = /^imagen-/i;
 
 function sleep(ms) {
@@ -13,7 +18,7 @@ function isRetryableStatus(status) {
 
 function isRetryableMessage(message) {
   const lower = String(message || '').toLowerCase();
-  return ['429', '500', '503', '504', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout'].some(token => lower.includes(token));
+  return ['429', '500', '503', '504', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout', 'aborted', 'fetch failed'].some(token => lower.includes(token));
 }
 
 async function askGemini({
@@ -24,6 +29,7 @@ async function askGemini({
   temperature = CHAT_TEMPERATURE,
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
+  systemInstruction = '',
 }) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
 
@@ -33,12 +39,16 @@ async function askGemini({
     try {
       const res = await fetch(url, {
         method: 'POST',
+        signal: timeoutSignal(),
         headers: {
           'Content-Type': 'application/json',
           'x-goog-api-key': apiKey,
         },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
+          ...(systemInstruction ? { systemInstruction: { parts: [{ text: systemInstruction }] } } : {}),
+          contents: Array.isArray(prompt)
+            ? prompt
+            : [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig: {
             temperature,
             maxOutputTokens,
@@ -59,7 +69,9 @@ async function askGemini({
 
       const data = await res.json();
       const text = data?.candidates?.[0]?.content?.parts?.map(p => p?.text).filter(Boolean).join('').trim();
-      return text || 'Пустой ответ.';
+      if (text) return text;
+      const blocked = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason;
+      return blocked && blocked !== 'STOP' ? 'Не могу ответить на это.' : 'Пустой ответ.';
     } catch (err) {
       const message = String(err?.message || err);
       if (attempt < retries && isRetryableMessage(message)) {
@@ -79,6 +91,7 @@ async function askGeminiWithFallback({
   temperature = CHAT_TEMPERATURE,
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
+  systemInstruction = '',
 }) {
   const modelList = (Array.isArray(models) ? models : [models]).filter(Boolean);
   let lastError = null;
@@ -93,6 +106,7 @@ async function askGeminiWithFallback({
         temperature,
         maxOutputTokens,
         generationConfig,
+        systemInstruction,
       });
     } catch (err) {
       lastError = err;
@@ -148,6 +162,7 @@ async function generateImageGemini({ apiKey, model, prompt, aspectRatio, retries
       try {
         const res = await fetch(url, {
           method: 'POST',
+          signal: timeoutSignal(90 * 1000),
           headers: {
             'Content-Type': 'application/json',
             'x-goog-api-key': apiKey,
@@ -195,6 +210,7 @@ async function generateImageImagen({ apiKey, model, prompt, aspectRatio, retries
     try {
       const res = await fetch(url, {
         method: 'POST',
+        signal: timeoutSignal(90 * 1000),
         headers: {
           'Content-Type': 'application/json',
           'x-goog-api-key': apiKey,
@@ -267,18 +283,32 @@ async function generateImageWithFallback({ apiKey, models, prompt, aspectRatio =
 
 // ===== Промпты чата =====
 
-function buildChatPrompt({ basePrompt = '', chatContext = '', userName = '', channelName = '', text = '' }) {
+// Строит системную инструкцию (персона + доп. стиль + выжимка + сведения о канале).
+function buildSystemInstruction({ basePrompt = '', summary = '', channelName = '' }) {
   return [
     SYSTEM_PROMPT,
-    '',
     basePrompt ? `Дополнительный стиль общения:\n${basePrompt}` : '',
-    '',
-    chatContext ? `Контекст чата:\n${chatContext}` : 'Контекст чата: пусто',
-    '',
-    `Пользователь: ${userName || 'unknown'}`,
-    channelName ? `Канал: ${channelName}` : '',
-    `Сообщение: ${text}`,
-  ].filter(Boolean).join('\n');
+    summary ? `Суть прошлых разговоров в этом канале (кратко): ${summary}` : '',
+    channelName ? `Текущий канал: #${channelName}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+// История канала -> contents Gemini (чередование user/model, подряд идущие реплики склеиваем).
+function buildContents({ turns = [], userName = '', text = '' }) {
+  const contents = [];
+  const push = (role, line) => {
+    const last = contents[contents.length - 1];
+    if (last && last.role === role) last.parts[0].text += `\n${line}`;
+    else contents.push({ role, parts: [{ text: line }] });
+  };
+  for (const turn of turns) {
+    if (turn.role === 'assistant') push('model', turn.text);
+    else push('user', `${turn.name || 'Пользователь'}: ${turn.text}`);
+  }
+  push('user', `${userName || 'Пользователь'}: ${text}`);
+  // Gemini требует, чтобы диалог начинался с user.
+  while (contents.length && contents[0].role !== 'user') contents.shift();
+  return contents;
 }
 
 // Промпт авто-выжимки старых сообщений (дешёвый вызов раз в N сообщений).
@@ -297,7 +327,8 @@ function buildSummaryPrompt({ existingSummary = '', oldMessages = '' }) {
 module.exports = {
   askGemini,
   askGeminiWithFallback,
-  buildChatPrompt,
+  buildSystemInstruction,
+  buildContents,
   buildSummaryPrompt,
   buildImagePrompt,
   generateImageWithFallback,

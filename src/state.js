@@ -156,7 +156,18 @@ class StateStore {
     };
   }
 
-  async save() {
+  // Сохранения идут строго по очереди и схлопываются: не больше одного запроса в полёте + один ожидающий.
+  save() {
+    if (this.savePending) return this.savePending;
+    const run = async () => {
+      try { await this._saveNow(); } finally { this.savePending = null; }
+    };
+    this.savePending = (this.saveRunning || Promise.resolve()).then(run);
+    this.saveRunning = this.savePending.catch(() => {});
+    return this.savePending;
+  }
+
+  async _saveNow() {
     if (!this.enabled) {
       this.saveLocalFallback();
       return;

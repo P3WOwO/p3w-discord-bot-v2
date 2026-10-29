@@ -24,17 +24,16 @@ const {
   STATUS_NOUNS,
 } = require('./constants');
 
-const { pickRandom, formatTime, formatShortTime, formatTopTime, clampText, normalizeText } = require('./utils');
+const { pickRandom, formatTime, formatTopTime, clampText, normalizeText, escapeRegExp, splitMessage } = require('./utils');
 const {
   askGemini,
   askGeminiWithFallback,
-  buildChatPrompt,
+  buildSystemInstruction,
+  buildContents,
   buildSummaryPrompt,
   generateImageWithFallback,
 } = require('./ai');
-const { RpgGame, commandData: rpgCommands } = require('./rpg');
-
-const RPG_COMMAND_NAMES = new Set(rpgCommands().map(c => c.name));
+const { Moderation, commandData: modCommands } = require('./moderation');
 
 function stripMention(text, botId) {
   return String(text || '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
@@ -51,10 +50,6 @@ function normalizeAspectRatio(value) {
   return allowed.has(q) ? q : '16:9';
 }
 
-function escapeRegExp(value) {
-  return String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-}
-
 function formatImageError(err) {
   const raw = String(err?.message || err);
   if (raw.includes('429') && /quota/i.test(raw)) {
@@ -69,7 +64,7 @@ function buildRandomStatus() {
 
 const { buildChatContext, buildSummarySource } = require('./context');
 
-const ADMIN_COMMANDS = new Set(['msg', 'clear', 'jtm', 'forget']);
+const ADMIN_COMMANDS = new Set(['msg', 'jtm', 'forget']);
 
 class DiscordBot {
   constructor(config, stateStore) {
@@ -90,7 +85,24 @@ class DiscordBot {
     this.timers = [];
     this.statusPair = null;
     this.httpServer = null;
-    this.rpg = new RpgGame(this.config);
+    this.mod = new Moderation();
+    this.cooldowns = new Map(); // `${kind}:${userId}` -> timestamp
+    this.busyChannels = new Set();
+  }
+
+  // Возвращает 0, если можно, иначе сколько секунд ждать.
+  checkCooldown(kind, userId, ms) {
+    const key = `${kind}:${userId}`;
+    const now = Date.now();
+    const until = this.cooldowns.get(key) || 0;
+    if (until > now) return Math.ceil((until - now) / 1000);
+    this.cooldowns.set(key, now + ms);
+    return 0;
+  }
+
+  sweepCooldowns() {
+    const now = Date.now();
+    for (const [key, until] of this.cooldowns) if (until <= now) this.cooldowns.delete(key);
   }
 
   isHomeGuild(guildId) {
@@ -161,26 +173,18 @@ class DiscordBot {
   async checkpointVoiceSessions(force = false) {
     const now = Date.now();
     let changed = false;
-    const awarded = [];
 
     for (const [key, startedAt] of this.activeSessions.entries()) {
       const elapsed = Math.floor((now - startedAt) / 1000);
       if (elapsed > 0 && (force || elapsed >= 60)) {
         const [guildId, userId] = key.split(':');
         this.stateStore.addVoiceSeconds(guildId, userId, elapsed);
-        // RPG: монеты за время в войсе (только для активных игроков с профилем в кэше).
-        awarded.push({ userId, seconds: elapsed });
         this.activeSessions.set(key, now);
         changed = true;
       }
     }
 
     if (changed || force) {
-      if (awarded.length) {
-        for (const { userId, seconds } of awarded) {
-          void this.rpg.awardVoiceTime(userId, seconds);
-        }
-      }
       return this.stateStore.save();
     }
     return Promise.resolve();
@@ -260,12 +264,6 @@ class DiscordBot {
         .addStringOption(option => option.setName('message').setDescription('Текст').setRequired(true))
         .toJSON(),
       new SlashCommandBuilder()
-        .setName('clear')
-        .setDescription('Удалить последние сообщения')
-        .setDefaultMemberPermissions(adminOnly)
-        .addIntegerOption(option => option.setName('amount').setDescription('Сколько удалить').setRequired(true).setMinValue(1).setMaxValue(100))
-        .toJSON(),
-      new SlashCommandBuilder()
         .setName('jtm')
         .setDescription('Зайти в твой войс')
         .setDefaultMemberPermissions(adminOnly)
@@ -275,7 +273,7 @@ class DiscordBot {
         .setDescription('Очистить чат-память бота в этом канале')
         .setDefaultMemberPermissions(adminOnly)
         .toJSON(),
-      ...rpgCommands(),
+      ...modCommands(),
     ];
 
     const rest = new REST({ version: '10' }).setToken(this.config.TOKEN);
@@ -334,33 +332,31 @@ class DiscordBot {
   // ===== Чат с ИИ =====
 
   async generateChatReply({ channel, userName, text }) {
-    const channelId = channel.id;
     const channelName = channel?.name || '';
-    const ctx = this.stateStore.getChannelContext(channelId);
+    const ctx = this.stateStore.getChannelContext(channel.id);
 
-    let chatContext = buildChatContext(ctx);
-
-    // Страховка: если в памяти ещё пусто, берём свежие сообщения из Discord.
-    if (!chatContext) {
-      const recent = await this.getRecentMessages(channel, 10);
-      chatContext = recent.map(turn => `${turn.role === 'assistant' ? 'Бот' : turn.name}: ${turn.text}`).join('\n');
+    // Страховка: если память канала пуста, берём свежие сообщения из Discord.
+    let turns = ctx.turns;
+    if (!turns.length) {
+      turns = (await this.getRecentMessages(channel, 10)).map(t => ({ role: t.role, name: t.name, text: clampText(t.text, 500) }));
     }
-
-    const prompt = buildChatPrompt({
-      basePrompt: this.config.BASE_PROMPT,
-      chatContext,
-      userName,
-      channelName,
-      text,
-    });
 
     const answer = await askGeminiWithFallback({
       apiKey: this.config.GEMINI_API_KEY,
       models: this.config.GEMINI_CHAT_MODELS,
-      prompt,
+      systemInstruction: buildSystemInstruction({ basePrompt: this.config.BASE_PROMPT, summary: ctx.summary, channelName }),
+      prompt: buildContents({ turns, userName, text }),
     });
 
     return { answer, channelName };
+  }
+
+  // Общая часть для текстовых и slash-запросов: ответ + запись в память + выжимка.
+  async rememberExchange(channel, userName, text, answer) {
+    this.stateStore.appendChannelTurn(channel.id, { role: 'user', name: userName, text });
+    this.stateStore.appendChannelTurn(channel.id, { role: 'assistant', name: this.client.user?.username || 'Bot', text: answer });
+    await this.maybeSummarizeChannel(channel.id, channel?.name || '');
+    await this.stateStore.save();
   }
 
   // Авто-выжимка старых сообщений: дешёвый вызов Gemini раз в N сообщений.
@@ -398,29 +394,21 @@ class DiscordBot {
       return message.reply('⚠️ Gemini пока не подключён.');
     }
 
+    const wait = this.checkCooldown('ai', message.author.id, this.config.AI_USER_COOLDOWN_MS);
+    if (wait) return message.react('⏳').catch(() => {});
+
     const userName = message.member?.displayName || message.author.username;
-    const status = await message.reply('💭 Думаю...');
+    const status = await message.reply({ content: '💭 Думаю...', allowedMentions: { repliedUser: false } });
     await message.channel.sendTyping().catch(() => {});
 
     try {
-      const { answer } = await this.generateChatReply({
-        channel: message.channel,
-        userName,
-        text,
-      });
-
-      const finalAnswer = clampText(String(answer || ''), 1900);
-      await status.edit(finalAnswer).catch(() => {});
-
-      this.stateStore.appendChannelTurn(message.channel.id, { role: 'user', name: userName, text });
-      this.stateStore.appendChannelTurn(message.channel.id, {
-        role: 'assistant',
-        name: this.client.user?.username || 'Bot',
-        text: finalAnswer,
-      });
-
-      await this.maybeSummarizeChannel(message.channel.id, message.channel?.name || '');
-      await this.stateStore.save();
+      const { answer } = await this.generateChatReply({ channel: message.channel, userName, text });
+      const parts = splitMessage(String(answer || ''), 1900);
+      await status.edit({ content: parts[0] || '…', allowedMentions: { parse: [] } }).catch(() => {});
+      for (const extra of parts.slice(1, 3)) {
+        await message.channel.send({ content: extra, allowedMentions: { parse: [] } }).catch(() => {});
+      }
+      await this.rememberExchange(message.channel, userName, text, clampText(parts.join('\n'), 1900));
     } catch (err) {
       console.error('Gemini error:', err);
       await status.edit('❌ Gemini сейчас перегружен или ответ не прошёл.').catch(() => {});
@@ -431,29 +419,20 @@ class DiscordBot {
     if (!this.config.GEMINI_API_KEY) {
       return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
     }
+    const wait = this.checkCooldown('ai', interaction.user.id, this.config.AI_USER_COOLDOWN_MS);
+    if (wait) return interaction.reply({ content: `⏳ Подожди ${wait}с.`, ephemeral: true });
 
     await interaction.deferReply();
     const userName = interaction.member?.displayName || interaction.user.username;
 
     try {
-      const { answer } = await this.generateChatReply({
-        channel: interaction.channel,
-        userName,
-        text,
-      });
-
-      const finalAnswer = clampText(String(answer || ''), 1900);
-      await interaction.editReply({ content: finalAnswer });
-
-      this.stateStore.appendChannelTurn(interaction.channel.id, { role: 'user', name: userName, text });
-      this.stateStore.appendChannelTurn(interaction.channel.id, {
-        role: 'assistant',
-        name: this.client.user?.username || 'Bot',
-        text: finalAnswer,
-      });
-
-      await this.maybeSummarizeChannel(interaction.channel.id, interaction.channel?.name || '');
-      await this.stateStore.save();
+      const { answer } = await this.generateChatReply({ channel: interaction.channel, userName, text });
+      const parts = splitMessage(String(answer || ''), 1900);
+      await interaction.editReply({ content: parts[0] || '…', allowedMentions: { parse: [] } });
+      for (const extra of parts.slice(1, 3)) {
+        await interaction.followUp({ content: extra, allowedMentions: { parse: [] } }).catch(() => {});
+      }
+      await this.rememberExchange(interaction.channel, userName, text, clampText(parts.join('\n'), 1900));
     } catch (err) {
       console.error('Gemini slash error:', err);
       await interaction.editReply({ content: '❌ Gemini сейчас перегружен или ответ не прошёл.' });
@@ -467,6 +446,8 @@ class DiscordBot {
 
     const prompt = String(text || '').trim();
     if (!prompt) return message.reply('Напиши, что именно рисовать.');
+    const wait = this.checkCooldown('image', message.author.id, this.config.IMAGE_USER_COOLDOWN_MS);
+    if (wait) return message.reply({ content: `⏳ Картинки не чаще раза в ${Math.round(this.config.IMAGE_USER_COOLDOWN_MS / 1000)}с, подожди ${wait}с.`, allowedMentions: { repliedUser: false } });
 
     const status = await message.reply('🖼 Генерирую изображение...');
     await message.channel.sendTyping().catch(() => {});
@@ -510,12 +491,15 @@ class DiscordBot {
   }
 
   async handleInteraction(interaction) {
-    // RPG: все свои slash-команды (rpg/hunt/profile/dungeon/pvp/give) и кнопки rpg:*
-    if (interaction.isChatInputCommand() && RPG_COMMAND_NAMES.has(interaction.commandName)) {
-      return this.rpg.handleCommand(interaction);
-    }
-    if ((interaction.isButton() || interaction.isAnySelectMenu()) && String(interaction.customId || '').startsWith('rpg:')) {
-      return this.rpg.handleComponent(interaction);
+    // Модерация: /clear
+    if (interaction.isChatInputCommand() && this.mod.handles(interaction.commandName)) {
+      if (!interaction.guildId) {
+        return interaction.reply({ content: '❌ Эта команда работает только на сервере.', ephemeral: true }).catch(() => {});
+      }
+      if (!this.isHomeGuild(interaction.guildId)) {
+        return interaction.reply({ content: HOME_GUILD_ONLY_REPLY, ephemeral: true }).catch(() => {});
+      }
+      return this.mod.handleCommand(interaction);
     }
 
     if (!interaction.isChatInputCommand()) return;
@@ -547,6 +531,8 @@ class DiscordBot {
       if (!this.config.GEMINI_API_KEY) {
         return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
       }
+      const wait = this.checkCooldown('image', interaction.user.id, this.config.IMAGE_USER_COOLDOWN_MS);
+      if (wait) return interaction.reply({ content: `⏳ Подожди ${wait}с.`, ephemeral: true });
       await interaction.deferReply();
       await interaction.editReply('🖼 Генерирую изображение...');
       try {
@@ -592,14 +578,6 @@ class DiscordBot {
         console.error('msg error:', err);
         return interaction.editReply({ content: '❌ Не удалось отправить сообщение. Проверь права бота в канале.' });
       }
-    }
-
-    if (interaction.commandName === 'clear') {
-      await interaction.deferReply({ ephemeral: true });
-      const amount = interaction.options.getInteger('amount', true);
-      const deleted = await interaction.channel.bulkDelete(amount, true).catch(() => null);
-      const count = deleted ? (typeof deleted === 'number' ? deleted : deleted.size) : 0;
-      return interaction.editReply({ content: `🧹 Удалено сообщений: ${count}.` });
     }
 
     if (interaction.commandName === 'forget') {
@@ -676,7 +654,7 @@ class DiscordBot {
 
       if (cmd === 'help' || cmd === 'h') {
         return message.reply({
-          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash-команды: /ping, /say, /image, /time, /user, /top, /life, /msg, /clear, /forget, /jtm`,
+          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash: /ping /say /image /time /user /top /life, админ: /clear /msg /forget /jtm`,
           allowedMentions: { repliedUser: false },
         });
       }
@@ -697,7 +675,6 @@ class DiscordBot {
       console.log(`✅ Logged in as ${this.client.user.tag}`);
       await this.registerCommands().catch(err => console.error('Command registration error:', err));
       if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; slash commands will be registered globally.');
-      await this.rpg.init().catch(err => console.error('RPG init error:', err));
       await this.refreshPresence();
       await this.restoreCurrentVoiceSessions();
 
@@ -706,6 +683,7 @@ class DiscordBot {
       this.addTimer(STATUS_ROTATE_MS, () => this.rotateStatus(), 'Status rotate error');
       // Периодически подтверждаем presence той же парой (Discord иногда сбрасывает).
       this.addTimer(PRESENCE_REFRESH_MS, () => this.refreshPresence(), 'Presence refresh error');
+      this.addTimer(5 * 60 * 1000, () => { this.sweepCooldowns(); }, 'Sweep error');
     });
 
     this.client.on('messageCreate', async message => {

@@ -48,11 +48,25 @@ function normalizeText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+// Режет длинный ответ на куски <= max, стараясь рвать по переносам/пробелам.
+function splitMessage(text, max = 1900) {
+  const out = [];
+  let rest = String(text || '').trim();
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf('\n', max);
+    if (cut < max * 0.5) cut = rest.lastIndexOf(' ', max);
+    if (cut < max * 0.5) cut = max;
+    out.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
 module.exports = {
-  pickRandom,
-  formatTime,
-  formatShortTime,
-  formatTopTime,
-  clampText,
-  normalizeText,
-};
+  pickRandom, formatTime, formatShortTime, formatTopTime,
+  clampText, normalizeText, escapeRegExp, splitMessage };
