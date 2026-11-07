@@ -859,7 +859,7 @@ class DiscordBot {
 
       if (cmd === 'help' || cmd === 'h') {
         return message.reply({
-          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash: /ping /say /image /time /user /top /life, админ: /clear /msg /forget /jtm`,
+          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash: /ping /say /image /time /user /top /life /news, админ: /clear /msg /forget /jtm /news`,
           allowedMentions: { repliedUser: false },
         });
       }
