@@ -662,8 +662,8 @@ class DiscordBot {
 
     // Some @discordjs/voice versions default selfMute to true.
     // A music bot must send audio, so explicitly clear self-mute before playback.
-    voice.setSelfMute(false);
-    if (voice.selfMute) {
+    const unmuteRequested = voice.setSelfMute(false);
+    if (!unmuteRequested && voice.selfMute) {
       throw Object.assign(new Error('P3W could not clear its self-mute state'), {
         code: 'VOICE_SELF_UNMUTE_FAILED',
       });
