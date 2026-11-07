@@ -104,6 +104,12 @@ function formatMusicError(err) {
   if (/RATE_LIMITED/i.test(code)) {
     return '❌ Источник временно ограничил запросы. Попробуй немного позже.';
   }
+  if (code === 'VOICE_SERVER_MUTED') {
+    return '🔇 P3W заглушён модератором на уровне сервера. Нажмите правой кнопкой по P3W в списке участников войса и снимите «Отключить микрофон» (Server Mute), затем повторите /play.';
+  }
+  if (code === 'VOICE_SELF_UNMUTE_FAILED') {
+    return '🔇 Не удалось снять самозаглушение P3W. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
+  }
   if (/VOICE_ALREADY_CREATED|VOICE_CHANNEL_DIFFERENT|QUEUE_EXIST/i.test(code)) {
     return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
   }
@@ -651,6 +657,29 @@ class DiscordBot {
   }
 
 
+  async ensureMusicVoice(channel) {
+    const voice = await this.music.voices.join(channel);
+
+    // Some @discordjs/voice versions default selfMute to true.
+    // A music bot must send audio, so explicitly clear self-mute before playback.
+    voice.setSelfMute(false);
+    if (voice.selfMute) {
+      throw Object.assign(new Error('P3W could not clear its self-mute state'), {
+        code: 'VOICE_SELF_UNMUTE_FAILED',
+      });
+    }
+
+    // A server mute is different from self-mute and cannot be cleared by the bot itself.
+    const botMember = channel.guild.members.me;
+    if (botMember?.voice?.serverMute) {
+      throw Object.assign(new Error('P3W is server-muted by a moderator'), {
+        code: 'VOICE_SERVER_MUTED',
+      });
+    }
+
+    return voice;
+  }
+
   async resolveSpotifyViaSoundCloud(query, member) {
     const spotifyPlugin = this.music.plugins.find(plugin => plugin.constructor?.name === 'SpotifyPlugin');
     const soundCloudPlugin = this.music.plugins.find(plugin => plugin.constructor?.name === 'SoundCloudPlugin');
@@ -772,6 +801,8 @@ class DiscordBot {
         || await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       await interaction.deferReply();
       try {
+        // Establish and verify an unmuted voice session before asking DisTube to play.
+        await this.ensureMusicVoice(memberVoice);
         const spotifyFallback = await this.resolveSpotifyViaSoundCloud(query, requester || undefined);
         const playInput = spotifyFallback?.input || query;
 
@@ -1180,7 +1211,7 @@ class DiscordBot {
       }
       await interaction.deferReply();
       try {
-        await this.music.voices.join(voiceChannel);
+        await this.ensureMusicVoice(voiceChannel);
         return interaction.editReply({ content: `✅ Зашёл в ${voiceChannel}.` });
       } catch (err) {
         console.error('jtm error:', err);
@@ -1314,6 +1345,21 @@ class DiscordBot {
 
     this.client.on('voiceStateUpdate', (oldState, newState) => {
       if (!oldState.guild || (this.config.GUILD_ID && oldState.guild.id !== this.config.GUILD_ID)) return;
+
+      // If Discord reports our own bot as self-muted, clear it while it is in voice.
+      // A server mute is moderator-controlled and is reported without trying to bypass it.
+      if (newState.id === this.client.user?.id) {
+        if (newState.serverMute && newState.channelId) {
+          console.error('P3W is server-muted in voice; a moderator must unmute the bot.');
+        } else if (newState.selfMute && newState.channelId) {
+          const voice = this.music.voices.get(newState.guild.id);
+          if (voice) {
+            voice.setSelfMute(false);
+            console.warn('P3W self-mute detected; requested self-unmute.');
+          }
+        }
+        return;
+      }
       if (oldState.member?.user?.bot) return;
 
       const userId = oldState.id;
