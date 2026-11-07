@@ -106,7 +106,6 @@ function buildGameNewsEmbed(raw) {
     });
   }
   if (fields.length) embed.addFields(fields);
-  if (item.imageUrl) embed.setImage(item.imageUrl);
   embed.setFooter({ text: 'P3W  •  Игровые новости' });
   return embed;
 }
@@ -138,8 +137,22 @@ function buildGameNewsComponents(raw) {
 
 function buildGameNewsMessage(raw) {
   const item = validateGameNewsPayload(raw);
+  const embeds = [];
+
+  // Separate wide artwork embed keeps the image above the information card,
+  // similar to a promo banner followed by a structured news card.
+  if (item.imageUrl) {
+    embeds.push(
+      new EmbedBuilder()
+        .setColor(getEmbedColor(item))
+        .setImage(item.imageUrl)
+    );
+  }
+
+  embeds.push(buildGameNewsEmbed({ ...raw, image_url: null }));
+
   return {
-    embeds: [buildGameNewsEmbed(item)],
+    embeds,
     components: buildGameNewsComponents(item),
     allowedMentions: { parse: [] },
   };
