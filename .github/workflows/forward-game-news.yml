@@ -1,0 +1,64 @@
+name: Forward game news to P3W
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "game-news/queue/*.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3w-game-news-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Forward new game news files
+        env:
+          P3W_API_URL: ${{ secrets.P3W_API_URL }}
+          GAME_NEWS_API_KEY: ${{ secrets.GAME_NEWS_API_KEY }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${P3W_API_URL}" || -z "${GAME_NEWS_API_KEY}" ]]; then
+            echo "::error::Add P3W_API_URL and GAME_NEWS_API_KEY in GitHub repository Actions secrets."
+            exit 1
+          fi
+
+          P3W_API_URL="${P3W_API_URL%/}"
+          if [[ ! "${P3W_API_URL}" =~ ^https:// ]]; then
+            echo "::error::P3W_API_URL must be the public HTTPS URL of the Render service."
+            exit 1
+          fi
+
+          changed_files="$(git diff --name-only "${BEFORE_SHA}" "${AFTER_SHA}" -- 'game-news/queue/*.json')"
+          if [[ -z "${changed_files}" ]]; then
+            echo "No new game news files in this push."
+            exit 0
+          fi
+
+          while IFS= read -r file; do
+            [[ -n "${file}" ]] || continue
+            [[ -f "${file}" ]] || continue
+            echo "Forwarding ${file} to P3W..."
+            curl --fail-with-body --silent --show-error \
+              --connect-timeout 10 --max-time 45 \
+              -X POST "${P3W_API_URL}/api/game-news" \
+              -H "Authorization: Bearer ${GAME_NEWS_API_KEY}" \
+              -H "Content-Type: application/json" \
+              --data-binary "@${file}"
+            echo
+          done <<< "${changed_files}"
