@@ -61,21 +61,26 @@ function formatImageError(err) {
 }
 
 function describeMusicError(err, depth = 0) {
-  if (!err || depth > 4) return undefined;
+  if (!err || depth > 5) return undefined;
   const result = {
     name: err.name,
     code: err.code,
     message: String(err.message || err),
   };
-  if (err.cause && depth < 4) result.cause = describeMusicError(err.cause, depth + 1);
-  if (err.originalError && depth < 4) result.originalError = describeMusicError(err.originalError, depth + 1);
+
+  if (err.cause && depth < 5) result.cause = describeMusicError(err.cause, depth + 1);
+  if (err.originalError && depth < 5) result.originalError = describeMusicError(err.originalError, depth + 1);
+  if (Array.isArray(err.errors) && depth < 5) {
+    result.errors = err.errors.slice(0, 8).map(item => describeMusicError(item, depth + 1));
+  }
   if (Array.isArray(err.attempts)) {
-    result.attempts = err.attempts.slice(0, 8).map(item => ({
+    result.attempts = err.attempts.slice(0, 12).map(item => ({
       client: item.client,
       step: item.step,
       code: item.code,
       reason: item.reason,
       signedIn: item.signedIn,
+      cause: item.cause ? String(item.cause).slice(0, 800) : undefined,
     }));
   }
   if (depth === 0 && err.stack) result.stack = String(err.stack).slice(0, 5000);
@@ -646,6 +651,95 @@ class DiscordBot {
   }
 
 
+  async resolveSpotifyViaSoundCloud(query, member) {
+    const spotifyPlugin = this.music.plugins.find(plugin => plugin.constructor?.name === 'SpotifyPlugin');
+    const soundCloudPlugin = this.music.plugins.find(plugin => plugin.constructor?.name === 'SoundCloudPlugin');
+    if (!spotifyPlugin || !soundCloudPlugin) return null;
+
+    let isSpotifyUrl = false;
+    try {
+      isSpotifyUrl = await spotifyPlugin.validate(query);
+    } catch (err) {
+      console.warn('Spotify URL validation failed:', err?.message || err);
+    }
+    if (!isSpotifyUrl) return null;
+
+    const spotifyItem = await spotifyPlugin.resolve(query, { member });
+    const spotifySongs = Array.isArray(spotifyItem.songs)
+      ? spotifyItem.songs.slice(0, 30)
+      : [spotifyItem];
+    const matchedSongs = [];
+    const missedSongs = [];
+
+    // Spotify provides metadata, not audio. Search SoundCloud first so a Spotify
+    // link does not depend on YouTube's player solver when a matching SC track exists.
+    for (const spotifySong of spotifySongs) {
+      const searchQuery = [spotifySong.name, spotifySong.uploader?.name]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      if (!searchQuery) {
+        missedSongs.push(spotifySong.name || 'unknown');
+        continue;
+      }
+
+      try {
+        const candidates = await soundCloudPlugin.search(searchQuery, undefined, 5, { member });
+        const targetDuration = Number(spotifySong.duration || 0);
+        const ranked = candidates
+          .filter(candidate => candidate && candidate.url)
+          .map(candidate => ({
+            candidate,
+            difference: targetDuration > 0 && candidate.duration > 0
+              ? Math.abs(candidate.duration - targetDuration)
+              : Number.POSITIVE_INFINITY,
+          }))
+          .filter(item => targetDuration <= 0 || item.difference <= 5)
+          .sort((a, b) => a.difference - b.difference);
+
+        if (ranked.length) {
+          matchedSongs.push(ranked[0].candidate);
+        } else {
+          missedSongs.push(spotifySong.name || searchQuery);
+        }
+      } catch (err) {
+        console.warn('Spotify -> SoundCloud lookup failed:', {
+          query: searchQuery,
+          error: describeMusicError(err),
+        });
+        missedSongs.push(spotifySong.name || searchQuery);
+      }
+    }
+
+    if (!matchedSongs.length) {
+      console.warn('Spotify -> SoundCloud fallback found no duration-matched tracks', {
+        query,
+        requestedTracks: spotifySongs.length,
+      });
+      return null;
+    }
+
+    if (matchedSongs.length === 1) {
+      return {
+        input: matchedSongs[0],
+        matched: 1,
+        requested: spotifySongs.length,
+      };
+    }
+
+    const playlist = await this.music.createCustomPlaylist(matchedSongs, {
+      member,
+      name: spotifyItem.name || 'Spotify playlist (SoundCloud matches)',
+      source: 'spotify-soundcloud',
+      url: query,
+    });
+    return {
+      input: playlist,
+      matched: matchedSongs.length,
+      requested: spotifySongs.length,
+    };
+  }
+
   async handleMusicCommand(interaction) {
     const action = interaction.commandName;
     const guildId = interaction.guildId;
@@ -678,11 +772,20 @@ class DiscordBot {
         || await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       await interaction.deferReply();
       try {
-        await this.music.play(memberVoice, query, {
+        const spotifyFallback = await this.resolveSpotifyViaSoundCloud(query, requester || undefined);
+        const playInput = spotifyFallback?.input || query;
+
+        await this.music.play(memberVoice, playInput, {
           textChannel: interaction.channel,
           member: requester || undefined,
         });
-        return interaction.editReply({ content: '✅ Запрос добавлен. Сообщу сюда, когда трек начнёт играть.' });
+
+        const fallbackNote = spotifyFallback
+          ? `\n🔁 Spotify → SoundCloud: ${spotifyFallback.matched}/${spotifyFallback.requested} совпадений по длительности`
+          : '';
+        return interaction.editReply({
+          content: `✅ Запрос добавлен. Сообщу сюда, когда трек начнёт играть.${fallbackNote}`,
+        });
       } catch (err) {
         console.error('Music play command error:', JSON.stringify({
           guildId,
