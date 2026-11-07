@@ -8,7 +8,7 @@
     "dev": "node index.js"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.12.0 <25"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
