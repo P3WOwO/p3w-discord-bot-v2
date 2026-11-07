@@ -107,6 +107,9 @@ function formatMusicError(err) {
   if (code === 'VOICE_SERVER_MUTED') {
     return '🔇 P3W заглушён модератором на уровне сервера. Нажмите правой кнопкой по P3W в списке участников войса и снимите «Отключить микрофон» (Server Mute), затем повторите /play.';
   }
+  if (code === 'VOICE_SELF_UNDEAF_FAILED') {
+    return '🎧 Не удалось отключить режим deafened у P3W. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
+  }
   if (code === 'VOICE_SELF_UNMUTE_FAILED') {
     return '🔇 Не удалось снять самозаглушение P3W. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
   }
@@ -662,6 +665,14 @@ class DiscordBot {
 
     // Some @discordjs/voice versions default selfMute to true.
     // A music bot must send audio, so explicitly clear self-mute before playback.
+    // DisTube defaults selfDeaf to true; music bots should join undeafened.
+    const undeafenRequested = voice.setSelfDeaf(false);
+    if (!undeafenRequested && voice.selfDeaf) {
+      throw Object.assign(new Error('P3W could not clear its self-deaf state'), {
+        code: 'VOICE_SELF_UNDEAF_FAILED',
+      });
+    }
+
     const unmuteRequested = voice.setSelfMute(false);
     if (!unmuteRequested && voice.selfMute) {
       throw Object.assign(new Error('P3W could not clear its self-mute state'), {
@@ -1351,6 +1362,12 @@ class DiscordBot {
       if (newState.id === this.client.user?.id) {
         if (newState.serverMute && newState.channelId) {
           console.error('P3W is server-muted in voice; a moderator must unmute the bot.');
+        } else if (newState.selfDeaf && newState.channelId) {
+          const voice = this.music.voices.get(newState.guild.id);
+          if (voice) {
+            voice.setSelfDeaf(false);
+            console.warn('P3W self-deaf detected; requested self-undeafen.');
+          }
         } else if (newState.selfMute && newState.channelId) {
           const voice = this.music.voices.get(newState.guild.id);
           if (voice) {
