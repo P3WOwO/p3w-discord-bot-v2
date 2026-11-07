@@ -667,7 +667,7 @@ class DiscordBot {
       }
 
       const query = interaction.options.getString('query', true).trim();
-      if (/^https?:\/\/(?:www\.)?music\.yandex\./i.test(query)
+      if (/^https?:\/\/(?:(?:www|m)\.)?music\.yandex\./i.test(query)
         && (!this.config.YANDEX_MUSIC_OAUTH_TOKEN || !this.config.YANDEX_MUSIC_UID)) {
         return interaction.reply({
           content: 'ℹ️ Поддержка Яндекс Музыки уже добавлена, но не подключён аккаунт. В Render добавь секреты YANDEX_MUSIC_OAUTH_TOKEN и YANDEX_MUSIC_UID (из одного аккаунта), затем перезапусти бота.',
