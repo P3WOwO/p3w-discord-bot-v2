@@ -74,6 +74,7 @@ Endpoint: `POST /api/game-news`
 Для работы добавь два repository Actions secrets:
 
 - `GAME_NEWS_API_KEY` — тот же секрет, что задан в Environment Render у сервиса P3W.
+- `GAME_NEWS_CHANNEL_ID` — резервный ID канала для новостей, если сохранённая настройка недоступна после перезапуска. Команда `/news channel` сохраняет выбранный канал и переопределяет резервный.
 - `P3W_API_URL` — публичный HTTPS URL сервиса Render без завершающего слеша.
 
 Публикации создаются непосредственно в `main` в `game-news/queue/`; Pull Request для каждой новости не нужен. Внешний автор должен иметь доступ к GitHub connector и право записи в репозиторий.
