@@ -60,12 +60,38 @@ function formatImageError(err) {
   return `❌ Ошибка генерации: ${clampText(raw, 1800)}`;
 }
 
+function describeMusicError(err, depth = 0) {
+  if (!err || depth > 4) return undefined;
+  const result = {
+    name: err.name,
+    code: err.code,
+    message: String(err.message || err),
+  };
+  if (err.cause && depth < 4) result.cause = describeMusicError(err.cause, depth + 1);
+  if (err.originalError && depth < 4) result.originalError = describeMusicError(err.originalError, depth + 1);
+  if (Array.isArray(err.attempts)) {
+    result.attempts = err.attempts.slice(0, 8).map(item => ({
+      client: item.client,
+      step: item.step,
+      code: item.code,
+      reason: item.reason,
+      signedIn: item.signedIn,
+    }));
+  }
+  if (depth === 0 && err.stack) result.stack = String(err.stack).slice(0, 5000);
+  return result;
+}
+
 function formatMusicError(err) {
   const raw = String(err?.message || err || 'unknown_error');
   const code = String(err?.code || raw);
+  const cause = String(err?.cause?.message || err?.originalError?.message || '');
 
   if (/NO_RESULT|NOT_FOUND/i.test(code)) {
     return '❌ Не удалось найти трек. Проверь ссылку или попробуй другое название.';
+  }
+  if (/BOT_CHECK|SIGN_IN|LOGIN_REQUIRED/i.test(`${code} ${raw} ${cause}`)) {
+    return '❌ YouTube требует подтверждение, что запросы идут не от бота. Для этого можно подключить отдельный YT_COOKIE через секрет Render.';
   }
   if (/AGE_RESTRICTED|UNAVAILABLE/i.test(code)) {
     return '❌ Этот трек недоступен: возможно, он приватный, ограничен по региону или требует входа в аккаунт.';
@@ -76,7 +102,8 @@ function formatMusicError(err) {
   if (/VOICE_ALREADY_CREATED|VOICE_CHANNEL_DIFFERENT|QUEUE_EXIST/i.test(code)) {
     return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
   }
-  return `❌ Не удалось запустить музыку: ${clampText(raw, 350)}`;
+  const detail = cause && cause !== raw ? ` · ${cause}` : '';
+  return `❌ Не удалось запустить музыку: ${clampText(raw + detail, 350)}`;
 }
 
 function buildRandomStatus() {
@@ -107,7 +134,7 @@ class DiscordBot {
     this.statusPair = null;
     this.httpServer = null;
     this.mod = new Moderation();
-    this.music = createMusic(this.client);
+    this.music = createMusic(this.client, this.config);
     this.music.on('playSong', (queue, song) => {
       const title = clampText(String(song.name || song.url || 'Без названия'), 180);
       const link = song.url ? `\n${song.url}` : '';
@@ -117,7 +144,12 @@ class DiscordBot {
       }).catch(err => console.error('Music announcement error:', err));
     });
     this.music.on('error', (error, queue, song) => {
-      console.error('Music playback error:', { song: song?.name, error });
+      console.error('Music playback error:', JSON.stringify({
+        guildId: queue?.id,
+        song: song?.name,
+        source: song?.plugin?.constructor?.name || song?.source,
+        error: describeMusicError(error),
+      }, null, 2));
       queue?.textChannel?.send({
         content: formatMusicError(error),
         allowedMentions: { parse: [] },
@@ -635,6 +667,13 @@ class DiscordBot {
       }
 
       const query = interaction.options.getString('query', true).trim();
+      if (/^https?:\\/\\/(?:www\\.)?music\\.yandex\\./i.test(query)
+        && (!this.config.YANDEX_MUSIC_OAUTH_TOKEN || !this.config.YANDEX_MUSIC_UID)) {
+        return interaction.reply({
+          content: 'ℹ️ Поддержка Яндекс Музыки уже добавлена, но не подключён аккаунт. В Render добавь секреты YANDEX_MUSIC_OAUTH_TOKEN и YANDEX_MUSIC_UID (из одного аккаунта), затем перезапусти бота.',
+          ephemeral: true,
+        });
+      }
       const requester = interaction.guild.members.cache.get(interaction.user.id)
         || await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       await interaction.deferReply();
@@ -645,7 +684,11 @@ class DiscordBot {
         });
         return interaction.editReply({ content: '✅ Запрос добавлен. Сообщу сюда, когда трек начнёт играть.' });
       } catch (err) {
-        console.error('Music play command error:', err);
+        console.error('Music play command error:', JSON.stringify({
+          guildId,
+          query,
+          error: describeMusicError(err),
+        }, null, 2));
         return interaction.editReply({ content: formatMusicError(err) });
       }
     }

@@ -41,6 +41,16 @@ module.exports = {
   AI_USER_COOLDOWN_MS: num(process.env.AI_USER_COOLDOWN_MS, 4000),
   IMAGE_USER_COOLDOWN_MS: num(process.env.IMAGE_USER_COOLDOWN_MS, 20000),
 
+  // YouTube: необязательный Cookie header, только через секрет Render.
+  YT_COOKIE: cleanEnv(process.env.YT_COOKIE),
+
+  // Яндекс Музыка: оба значения должны принадлежать одному аккаунту.
+  YANDEX_MUSIC_OAUTH_TOKEN: cleanEnv(process.env.YANDEX_MUSIC_OAUTH_TOKEN),
+  YANDEX_MUSIC_UID: (() => {
+    const uid = Number(cleanEnv(process.env.YANDEX_MUSIC_UID));
+    return Number.isSafeInteger(uid) && uid > 0 ? uid : 0;
+  })(),
+
   // Хранилище
   SUPABASE_URL: cleanEnv(process.env.SUPABASE_URL),
   SUPABASE_SERVICE_ROLE_KEY: cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY),
