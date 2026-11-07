@@ -13,6 +13,7 @@ const {
 } = require('discord.js');
 const { joinVoiceChannel, getVoiceConnection } = require('@discordjs/voice');
 const http = require('http');
+const crypto = require('crypto');
 
 const {
   CHECKPOINT_MS,
@@ -34,6 +35,7 @@ const {
   generateImageWithFallback,
 } = require('./ai');
 const { Moderation, commandData: modCommands } = require('./moderation');
+const { buildGameNewsEmbed, validateGameNewsPayload } = require('./game-news');
 
 function stripMention(text, botId) {
   return String(text || '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
@@ -64,7 +66,7 @@ function buildRandomStatus() {
 
 const { buildChatContext, buildSummarySource } = require('./context');
 
-const ADMIN_COMMANDS = new Set(['msg', 'jtm', 'forget']);
+const ADMIN_COMMANDS = new Set(['msg', 'jtm', 'forget', 'news']);
 
 class DiscordBot {
   constructor(config, stateStore) {
@@ -272,6 +274,28 @@ class DiscordBot {
         .setName('forget')
         .setDescription('Очистить чат-память бота в этом канале')
         .setDefaultMemberPermissions(adminOnly)
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('news')
+        .setDescription('Настроить игровые новости P3W')
+        .setDefaultMemberPermissions(adminOnly)
+        .addSubcommand(subcommand => subcommand
+          .setName('channel')
+          .setDescription('Выбрать канал для игровых новостей')
+          .addChannelOption(option => option
+            .setName('target')
+            .setDescription('Канал, куда публиковать новости')
+            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+            .setRequired(true)))
+        .addSubcommand(subcommand => subcommand
+          .setName('status')
+          .setDescription('Показать текущую настройку'))
+        .addSubcommand(subcommand => subcommand
+          .setName('test')
+          .setDescription('Отправить тестовое уведомление'))
+        .addSubcommand(subcommand => subcommand
+          .setName('disable')
+          .setDescription('Отключить игровые новости'))
         .toJSON(),
       ...modCommands(),
     ];
@@ -490,6 +514,183 @@ class DiscordBot {
     return interaction.reply({ embeds: [embed] });
   }
 
+
+  async handleNewsCommand(interaction) {
+    const guildId = interaction.guildId;
+    const action = interaction.options.getSubcommand();
+    const settings = this.stateStore.getGameNewsSettings(guildId);
+
+    if (action === 'channel') {
+      const channel = interaction.options.getChannel('target', true);
+      if (channel.guildId !== guildId) {
+        return interaction.reply({ content: '❌ Можно выбрать только канал этого сервера.', ephemeral: true });
+      }
+
+      const permissions = channel.permissionsFor(this.client.user);
+      const required = [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.EmbedLinks,
+      ];
+      if (!permissions?.has(required)) {
+        return interaction.reply({
+          content: '❌ У P3W нет прав просматривать канал, отправлять сообщения или встраивать ссылки.',
+          ephemeral: true,
+        });
+      }
+
+      this.stateStore.setGameNewsChannel(guildId, channel.id);
+      await this.stateStore.save();
+      return interaction.reply({
+        content: '✅ Игровые новости будут публиковаться в ' + channel + '. Настройка сохранена.',
+        ephemeral: true,
+      });
+    }
+
+    if (action === 'status') {
+      if (!settings.channelId) {
+        return interaction.reply({ content: 'ℹ️ Канал для игровых новостей ещё не выбран. Используй /news channel.', ephemeral: true });
+      }
+      const channel = await interaction.guild.channels.fetch(settings.channelId).catch(() => null);
+      const destination = channel ? String(channel) : 'канал удалён или недоступен (' + settings.channelId + ')';
+      return interaction.reply({
+        content: '**Игровые новости:** ' + (settings.enabled ? 'включены' : 'отключены') + '\n**Канал:** ' + destination,
+        ephemeral: true,
+      });
+    }
+
+    if (action === 'disable') {
+      this.stateStore.disableGameNews(guildId);
+      await this.stateStore.save();
+      return interaction.reply({ content: '⏸️ Публикация игровых новостей отключена. Канал сохранён — включить снова можно через /news channel.', ephemeral: true });
+    }
+
+    if (action === 'test') {
+      if (!settings.enabled || !settings.channelId) {
+        return interaction.reply({ content: '❌ Сначала выбери канал через /news channel.', ephemeral: true });
+      }
+      const channel = await interaction.guild.channels.fetch(settings.channelId).catch(() => null);
+      if (!channel || typeof channel.send !== 'function') {
+        return interaction.reply({ content: '❌ Сохранённый канал недоступен. Выбери его заново через /news channel.', ephemeral: true });
+      }
+      try {
+        const embed = buildGameNewsEmbed({
+          title: 'Тестовое уведомление P3W',
+          description: 'Настройка работает. Здесь будут появляться игровые скидки и бесплатные раздачи.',
+          url: 'https://store.steampowered.com/',
+          source: 'P3W · Проверка',
+        });
+        await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+        return interaction.reply({ content: '✅ Тестовое сообщение отправлено в ' + channel + '.', ephemeral: true });
+      } catch (err) {
+        console.error('Game news test failed:', err);
+        return interaction.reply({ content: '❌ Не удалось отправить тест. Проверь права P3W в выбранном канале.', ephemeral: true });
+      }
+    }
+  }
+
+  async publishGameNews(guildId, rawPayload) {
+    const payload = validateGameNewsPayload(rawPayload);
+    const settings = this.stateStore.getGameNewsSettings(guildId);
+    if (!settings.enabled || !settings.channelId) {
+      throw Object.assign(new Error('Для этого сервера не выбран активный канал новостей.'), { statusCode: 409 });
+    }
+    if (this.stateStore.hasGameNewsSent(guildId, payload.id)) {
+      return { duplicate: true, message: 'Это уведомление уже отправлялось.' };
+    }
+
+    const guild = this.client.guilds.cache.get(guildId)
+      || await this.client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) throw Object.assign(new Error('Сервер не найден или бот не имеет к нему доступа.'), { statusCode: 404 });
+
+    const channel = await guild.channels.fetch(settings.channelId).catch(() => null);
+    if (!channel || typeof channel.send !== 'function') {
+      throw Object.assign(new Error('Выбранный канал недоступен. Настрой его заново командой /news channel.'), { statusCode: 404 });
+    }
+
+    const permissions = channel.permissionsFor(this.client.user);
+    const required = [
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+    ];
+    if (!permissions?.has(required)) {
+      throw Object.assign(new Error('У P3W недостаточно прав в выбранном канале.'), { statusCode: 403 });
+    }
+
+    const message = await channel.send({
+      embeds: [buildGameNewsEmbed(payload)],
+      allowedMentions: { parse: [] },
+    });
+    this.stateStore.markGameNewsSent(guildId, payload.id);
+    await this.stateStore.save();
+    return { sent: true, channel_id: channel.id, message_id: message.id };
+  }
+
+  async handleGameNewsRequest(req, res) {
+    const sendJson = (status, body) => {
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (req.method !== 'POST') {
+      return sendJson(405, { ok: false, error: 'method_not_allowed' });
+    }
+    if (!this.config.GAME_NEWS_API_KEY) {
+      return sendJson(503, { ok: false, error: 'game_news_api_not_configured' });
+    }
+
+    const auth = String(req.headers.authorization || '');
+    const provided = Buffer.from(auth.startsWith('Bearer ') ? auth.slice(7) : '');
+    const expected = Buffer.from(this.config.GAME_NEWS_API_KEY);
+    if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+      return sendJson(401, { ok: false, error: 'unauthorized' });
+    }
+
+    let raw;
+    try {
+      raw = await new Promise((resolve, reject) => {
+        let size = 0;
+        let tooLarge = false;
+        const chunks = [];
+        req.on('data', chunk => {
+          size += chunk.length;
+          if (size > 32768) {
+            tooLarge = true;
+            chunks.length = 0;
+          } else if (!tooLarge) {
+            chunks.push(chunk);
+          }
+        });
+        req.on('end', () => {
+          if (tooLarge) return reject(Object.assign(new Error('payload_too_large'), { statusCode: 413 }));
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+          } catch {
+            reject(Object.assign(new Error('invalid_json'), { statusCode: 400 }));
+          }
+        });
+        req.on('error', reject);
+      });
+    } catch (err) {
+      return sendJson(err.statusCode || 400, { ok: false, error: err.message || 'invalid_request' });
+    }
+
+    const guildId = String(raw?.guild_id || this.config.GUILD_ID || '').trim();
+    if (!guildId) return sendJson(400, { ok: false, error: 'guild_id_required' });
+
+    try {
+      const result = await this.publishGameNews(guildId, raw);
+      return sendJson(200, { ok: true, ...result });
+    } catch (err) {
+      console.error('Game news publish error:', err?.message || err);
+      return sendJson(err.statusCode || 500, {
+        ok: false,
+        error: err.statusCode ? err.message : 'publish_failed',
+      });
+    }
+  }
+
   async handleInteraction(interaction) {
     // Модерация: /clear
     if (interaction.isChatInputCommand() && this.mod.handles(interaction.commandName)) {
@@ -565,6 +766,10 @@ class DiscordBot {
 
     if (interaction.commandName === 'life') {
       return interaction.reply({ embeds: [this.buildLifeEmbed()] });
+    }
+
+    if (interaction.commandName === 'news') {
+      return this.handleNewsCommand(interaction);
     }
 
     if (interaction.commandName === 'msg') {
@@ -724,11 +929,21 @@ class DiscordBot {
     this.client.on('error', console.error);
     this.client.on('shardError', console.error);
 
-    this.httpServer = http.createServer((req, res) => {
-      const url = String(req.url || '/');
-      if (url === '/' || url === '/health' || url === '/healthz' || url === '/healt') {
+    this.httpServer = http.createServer(async (req, res) => {
+      const pathname = String(req.url || '/').split('?')[0];
+      if (pathname === '/' || pathname === '/health' || pathname === '/healthz' || pathname === '/healt') {
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('ok');
+        return;
+      }
+      if (pathname === '/api/game-news') {
+        await this.handleGameNewsRequest(req, res).catch(err => {
+          console.error('Game news HTTP error:', err?.message || err);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, error: 'internal_error' }));
+          }
+        });
         return;
       }
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
