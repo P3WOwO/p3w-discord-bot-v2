@@ -46,4 +46,7 @@ module.exports = {
   SUPABASE_SERVICE_ROLE_KEY: cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY),
   SUPABASE_TABLE: process.env.SUPABASE_TABLE || 'bot_state',
   SUPABASE_ROW_ID: process.env.SUPABASE_ROW_ID || 'main',
+
+  // Защищённый endpoint для внешнего сборщика игровых новостей
+  GAME_NEWS_API_KEY: cleanEnv(process.env.GAME_NEWS_API_KEY),
 };

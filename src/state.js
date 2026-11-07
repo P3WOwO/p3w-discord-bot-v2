@@ -32,7 +32,7 @@ class StateStore {
     this.state = {
       voiceTimes: {},
       lifeState: clone(DEFAULT_LIFE_STATE),
-      aiMemory: { channels: {} },
+      aiMemory: { channels: {}, gameNews: {} },
     };
   }
 
@@ -94,6 +94,12 @@ class StateStore {
     if (countTurns(localSnapshot.aiMemory) > countTurns(this.state.aiMemory)) {
       this.state.aiMemory = this.normalizeAiMemory(localSnapshot.aiMemory);
     }
+
+    // Сохраняем настройки игровых новостей и локальный dedupe-кэш при переподключении.
+    this.state.aiMemory.gameNews = {
+      ...(this.state.aiMemory.gameNews || {}),
+      ...(localSnapshot.aiMemory?.gameNews || {}),
+    };
   }
 
   startReconnectTimer() {
@@ -111,6 +117,7 @@ class StateStore {
 
   normalizeAiMemory(raw) {
     const channels = raw?.channels && typeof raw.channels === 'object' ? raw.channels : {};
+    const gameNews = raw?.gameNews && typeof raw.gameNews === 'object' ? raw.gameNews : {};
     return {
       channels: Object.fromEntries(
         Object.entries(channels).map(([channelId, channelMemory]) => [
@@ -118,6 +125,7 @@ class StateStore {
           normalizeChannelContext(channelMemory),
         ])
       ),
+      gameNews,
     };
   }
 
@@ -273,6 +281,37 @@ class StateStore {
     ctx.turnsSinceSummary = 0;
     ctx.lastUpdatedAt = new Date().toISOString();
     this.setChannelContext(channelId, ctx);
+  }
+
+  getGameNewsSettings(guildId) {
+    const memory = this.normalizeAiMemory(this.state.aiMemory);
+    this.state.aiMemory = memory;
+    if (!memory.gameNews[guildId]) {
+      memory.gameNews[guildId] = { channelId: null, enabled: false, sentIds: [] };
+    }
+    const settings = memory.gameNews[guildId];
+    if (!Array.isArray(settings.sentIds)) settings.sentIds = [];
+    return settings;
+  }
+
+  setGameNewsChannel(guildId, channelId) {
+    const settings = this.getGameNewsSettings(guildId);
+    settings.channelId = channelId;
+    settings.enabled = true;
+  }
+
+  disableGameNews(guildId) {
+    const settings = this.getGameNewsSettings(guildId);
+    settings.enabled = false;
+  }
+
+  hasGameNewsSent(guildId, id) {
+    return this.getGameNewsSettings(guildId).sentIds.includes(id);
+  }
+
+  markGameNewsSent(guildId, id) {
+    const settings = this.getGameNewsSettings(guildId);
+    settings.sentIds = [...settings.sentIds.filter(value => value !== id), id].slice(-500);
   }
 
   getSnapshot() {
