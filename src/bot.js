@@ -519,6 +519,9 @@ class DiscordBot {
     const guildId = interaction.guildId;
     const action = interaction.options.getSubcommand();
     const settings = this.stateStore.getGameNewsSettings(guildId);
+    const fallbackChannelId = this.config.GAME_NEWS_CHANNEL_ID || '';
+    const selectedChannelId = settings.channelId || fallbackChannelId;
+    const newsEnabled = settings.channelId ? settings.enabled : Boolean(fallbackChannelId);
 
     if (action === 'channel') {
       const channel = interaction.options.getChannel('target', true);
@@ -548,28 +551,29 @@ class DiscordBot {
     }
 
     if (action === 'status') {
-      if (!settings.channelId) {
+      if (!selectedChannelId) {
         return interaction.reply({ content: 'ℹ️ Канал для игровых новостей ещё не выбран. Используй /news channel.', ephemeral: true });
       }
-      const channel = await interaction.guild.channels.fetch(settings.channelId).catch(() => null);
-      const destination = channel ? String(channel) : 'канал удалён или недоступен (' + settings.channelId + ')';
+      const channel = await interaction.guild.channels.fetch(selectedChannelId).catch(() => null);
+      const destination = channel ? String(channel) : 'канал удалён или недоступен (' + selectedChannelId + ')';
       return interaction.reply({
-        content: '**Игровые новости:** ' + (settings.enabled ? 'включены' : 'отключены') + '\n**Канал:** ' + destination,
+        content: '**Игровые новости:** ' + (newsEnabled ? 'включены' : 'отключены') + '\n**Канал:** ' + destination,
         ephemeral: true,
       });
     }
 
     if (action === 'disable') {
+      if (!settings.channelId && fallbackChannelId) this.stateStore.setGameNewsChannel(guildId, fallbackChannelId);
       this.stateStore.disableGameNews(guildId);
       await this.stateStore.save();
       return interaction.reply({ content: '⏸️ Публикация игровых новостей отключена. Канал сохранён — включить снова можно через /news channel.', ephemeral: true });
     }
 
     if (action === 'test') {
-      if (!settings.enabled || !settings.channelId) {
+      if (!newsEnabled || !selectedChannelId) {
         return interaction.reply({ content: '❌ Сначала выбери канал через /news channel.', ephemeral: true });
       }
-      const channel = await interaction.guild.channels.fetch(settings.channelId).catch(() => null);
+      const channel = await interaction.guild.channels.fetch(selectedChannelId).catch(() => null);
       if (!channel || typeof channel.send !== 'function') {
         return interaction.reply({ content: '❌ Сохранённый канал недоступен. Выбери его заново через /news channel.', ephemeral: true });
       }
@@ -592,7 +596,9 @@ class DiscordBot {
   async publishGameNews(guildId, rawPayload) {
     const payload = validateGameNewsPayload(rawPayload);
     const settings = this.stateStore.getGameNewsSettings(guildId);
-    if (!settings.enabled || !settings.channelId) {
+    const selectedChannelId = settings.channelId || this.config.GAME_NEWS_CHANNEL_ID || '';
+    const newsEnabled = settings.channelId ? settings.enabled : Boolean(this.config.GAME_NEWS_CHANNEL_ID);
+    if (!newsEnabled || !selectedChannelId) {
       throw Object.assign(new Error('Для этого сервера не выбран активный канал новостей.'), { statusCode: 409 });
     }
     if (this.stateStore.hasGameNewsSent(guildId, payload.id)) {
@@ -603,7 +609,7 @@ class DiscordBot {
       || await this.client.guilds.fetch(guildId).catch(() => null);
     if (!guild) throw Object.assign(new Error('Сервер не найден или бот не имеет к нему доступа.'), { statusCode: 404 });
 
-    const channel = await guild.channels.fetch(settings.channelId).catch(() => null);
+    const channel = await guild.channels.fetch(selectedChannelId).catch(() => null);
     if (!channel || typeof channel.send !== 'function') {
       throw Object.assign(new Error('Выбранный канал недоступен. Настрой его заново командой /news channel.'), { statusCode: 404 });
     }
