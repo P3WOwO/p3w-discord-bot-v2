@@ -35,7 +35,7 @@ const {
   generateImageWithFallback,
 } = require('./ai');
 const { Moderation, commandData: modCommands } = require('./moderation');
-const { buildGameNewsEmbed, validateGameNewsPayload } = require('./game-news');
+const { buildGameNewsMessage, validateGameNewsPayload } = require('./game-news');
 
 function stripMention(text, botId) {
   return String(text || '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
@@ -574,13 +574,13 @@ class DiscordBot {
         return interaction.reply({ content: '❌ Сохранённый канал недоступен. Выбери его заново через /news channel.', ephemeral: true });
       }
       try {
-        const embed = buildGameNewsEmbed({
+        const newsMessage = buildGameNewsMessage({
           title: 'Тестовое уведомление P3W',
           description: 'Настройка работает. Здесь будут появляться игровые скидки и бесплатные раздачи.',
           url: 'https://store.steampowered.com/',
           source: 'P3W · Проверка',
         });
-        await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+        await channel.send(newsMessage);
         return interaction.reply({ content: '✅ Тестовое сообщение отправлено в ' + channel + '.', ephemeral: true });
       } catch (err) {
         console.error('Game news test failed:', err);
@@ -618,10 +618,7 @@ class DiscordBot {
       throw Object.assign(new Error('У P3W недостаточно прав в выбранном канале.'), { statusCode: 403 });
     }
 
-    const message = await channel.send({
-      embeds: [buildGameNewsEmbed(payload)],
-      allowedMentions: { parse: [] },
-    });
+    const message = await channel.send(buildGameNewsMessage(payload));
     this.stateStore.markGameNewsSent(guildId, payload.id);
     await this.stateStore.save();
     return { sent: true, channel_id: channel.id, message_id: message.id };
