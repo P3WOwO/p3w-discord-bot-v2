@@ -374,12 +374,38 @@ class DiscordBot {
     ];
 
     const rest = new REST({ version: '10' }).setToken(this.config.TOKEN);
+    let guildRegistered = 0;
+    let globalRegistered = 0;
 
+    // Guild commands become available immediately; global registration is synced too.
     if (this.config.GUILD_ID) {
-      await rest.put(Routes.applicationGuildCommands(this.config.CLIENT_ID, this.config.GUILD_ID), { body: commands });
+      const guildResult = await rest.put(
+        Routes.applicationGuildCommands(this.config.CLIENT_ID, this.config.GUILD_ID),
+        { body: commands },
+      );
+      guildRegistered = Array.isArray(guildResult) ? guildResult.length : commands.length;
+      console.log(`✅ Registered ${guildRegistered} guild slash commands for ${this.config.GUILD_ID}`);
+
+      try {
+        const globalResult = await rest.put(
+          Routes.applicationCommands(this.config.CLIENT_ID),
+          { body: commands },
+        );
+        globalRegistered = Array.isArray(globalResult) ? globalResult.length : commands.length;
+        console.log(`✅ Registered ${globalRegistered} global slash commands`);
+      } catch (err) {
+        console.error('Global slash command sync failed (guild sync succeeded):', err);
+      }
     } else {
-      await rest.put(Routes.applicationCommands(this.config.CLIENT_ID), { body: commands });
+      const globalResult = await rest.put(
+        Routes.applicationCommands(this.config.CLIENT_ID),
+        { body: commands },
+      );
+      globalRegistered = Array.isArray(globalResult) ? globalResult.length : commands.length;
+      console.log(`✅ Registered ${globalRegistered} global slash commands`);
     }
+
+    return { count: commands.length, guildRegistered, globalRegistered };
   }
 
   async buildTopEmbed(guild) {
@@ -1045,6 +1071,20 @@ class DiscordBot {
       const args = rawContent.slice(prefixUsed.length).trim().split(/\s+/);
       const cmd = (args.shift() || '').toLowerCase();
 
+      if (cmd === 'synccommands' || cmd === 'sync') {
+        if (!this.isHomeGuild(message.guild.id) || !message.member?.permissions?.has(PermissionFlagsBits.Administrator)) {
+          return message.reply('❌ Эта команда доступна только администратору основного сервера.');
+        }
+        const status = await message.reply('🔄 Принудительно обновляю slash-команды Discord...');
+        try {
+          const result = await this.registerCommands();
+          return status.edit(`✅ Синхронизация завершена: ${result.count} команд; сервер: ${result.guildRegistered}; глобально: ${result.globalRegistered}.`);
+        } catch (err) {
+          console.error('Manual slash command sync failed:', err);
+          return status.edit(`❌ Discord отклонил регистрацию: ${clampText(err?.message || err, 500)}`);
+        }
+      }
+
       if (cmd === 'ping') {
         return message.reply({ content: `🏓 Pong! \`${this.client.ws.ping}ms\``, allowedMentions: { repliedUser: false } });
       }
@@ -1082,8 +1122,18 @@ class DiscordBot {
   registerEventHandlers() {
     this.client.once(Events.ClientReady, async () => {
       console.log(`✅ Logged in as ${this.client.user.tag}`);
-      await this.registerCommands().catch(err => console.error('Command registration error:', err));
-      if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; slash commands will be registered globally.');
+      try {
+        const registration = await this.registerCommands();
+        console.log('✅ Slash command sync completed:', registration);
+      } catch (err) {
+        console.error('❌ Slash command registration failed:', {
+          message: err?.message,
+          code: err?.code,
+          status: err?.status,
+          rawError: err?.rawError,
+        });
+      }
+      if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; global commands may take time to appear.');
       await this.refreshPresence();
       await this.restoreCurrentVoiceSessions();
 
