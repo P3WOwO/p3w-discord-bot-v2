@@ -49,4 +49,6 @@ module.exports = {
 
   // Защищённый endpoint для внешнего сборщика игровых новостей
   GAME_NEWS_API_KEY: cleanEnv(process.env.GAME_NEWS_API_KEY),
+  // Резервный канал из последней подтверждённой публикации; /news channel может его переопределить.
+  GAME_NEWS_CHANNEL_ID: cleanEnv(process.env.GAME_NEWS_CHANNEL_ID) || '1568708487440244796',
 };
