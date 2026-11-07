@@ -16,7 +16,6 @@ function normalizeDescription(value) {
   return clean(value, 3500)
     .replace(/\\+r\\+n/gi, '\n')
     .replace(/\\+n/g, '\n')
-    .replace(/\\r\\n/g, '\n')
     .replace(/\r\n?/g, '\n')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -115,7 +114,7 @@ function buildGameNewsEmbed(raw) {
 function buildGameNewsComponents(raw) {
   const item = validateGameNewsPayload(raw);
   const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount);
-  const storeName = item.source.replace(/\\s*[·|—-].*$/, '').trim();
+  const storeName = item.source.trim();
   const actionLabel = isFree ? 'Забрать бесплатно' : `Открыть ${storeName}`.slice(0, 80);
 
   const buttons = [
