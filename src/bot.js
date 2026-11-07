@@ -11,7 +11,7 @@ const {
   AttachmentBuilder,
   Events,
 } = require('discord.js');
-const { joinVoiceChannel, getVoiceConnection } = require('@discordjs/voice');
+const { createMusic } = require('./music');
 const http = require('http');
 const crypto = require('crypto');
 
@@ -60,6 +60,25 @@ function formatImageError(err) {
   return `❌ Ошибка генерации: ${clampText(raw, 1800)}`;
 }
 
+function formatMusicError(err) {
+  const raw = String(err?.message || err || 'unknown_error');
+  const code = String(err?.code || raw);
+
+  if (/NO_RESULT|NOT_FOUND/i.test(code)) {
+    return '❌ Не удалось найти трек. Проверь ссылку или попробуй другое название.';
+  }
+  if (/AGE_RESTRICTED|UNAVAILABLE/i.test(code)) {
+    return '❌ Этот трек недоступен: возможно, он приватный, ограничен по региону или требует входа в аккаунт.';
+  }
+  if (/RATE_LIMITED/i.test(code)) {
+    return '❌ Источник временно ограничил запросы. Попробуй немного позже.';
+  }
+  if (/VOICE_ALREADY_CREATED|VOICE_CHANNEL_DIFFERENT|QUEUE_EXIST/i.test(code)) {
+    return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
+  }
+  return `❌ Не удалось запустить музыку: ${clampText(raw, 350)}`;
+}
+
 function buildRandomStatus() {
   return `${pickRandom(STATUS_VERBS)} ${pickRandom(STATUS_NOUNS)}`;
 }
@@ -88,7 +107,23 @@ class DiscordBot {
     this.statusPair = null;
     this.httpServer = null;
     this.mod = new Moderation();
-    this.cooldowns = new Map(); // `${kind}:${userId}` -> timestamp
+    this.music = createMusic(this.client);
+    this.music.on('playSong', (queue, song) => {
+      const title = clampText(String(song.name || song.url || 'Без названия'), 180);
+      const link = song.url ? `\n${song.url}` : '';
+      queue.textChannel?.send({
+        content: `🎵 Сейчас играет: **${title}**${link}`,
+        allowedMentions: { parse: [] },
+      }).catch(err => console.error('Music announcement error:', err));
+    });
+    this.music.on('error', (error, queue, song) => {
+      console.error('Music playback error:', { song: song?.name, error });
+      queue?.textChannel?.send({
+        content: formatMusicError(error),
+        allowedMentions: { parse: [] },
+      }).catch(err => console.error('Music error announcement failed:', err));
+    });
+    this.cooldowns = new Map(); // `\${kind}:\${userId}` -> timestamp
     this.busyChannels = new Set();
   }
 
@@ -239,6 +274,44 @@ class DiscordBot {
         .setDescription('Сгенерировать картинку через Gemini')
         .addStringOption(option => option.setName('text').setDescription('Что нарисовать').setRequired(true))
         .addStringOption(option => option.setName('ratio').setDescription('Соотношение сторон').setRequired(false))
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('play')
+        .setDescription('Включить музыку по ссылке или названию')
+        .addStringOption(option => option.setName('query').setDescription('YouTube, SoundCloud, Spotify или название трека').setRequired(true).setMaxLength(500))
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('skip')
+        .setDescription('Пропустить текущий трек')
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('pause')
+        .setDescription('Приостановить музыку')
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('resume')
+        .setDescription('Продолжить музыку')
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('stop')
+        .setDescription('Остановить музыку и очистить очередь')
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('queue')
+        .setDescription('Показать очередь музыки')
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('nowplaying')
+        .setDescription('Показать текущий трек')
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('volume')
+        .setDescription('Изменить громкость музыки')
+        .addIntegerOption(option => option.setName('percent').setDescription('Громкость от 1 до 100').setRequired(true).setMinValue(1).setMaxValue(100))
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('leave')
+        .setDescription('Остановить музыку и отключить P3W от войса')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('time')
@@ -515,6 +588,134 @@ class DiscordBot {
   }
 
 
+  async handleMusicCommand(interaction) {
+    const action = interaction.commandName;
+    const guildId = interaction.guildId;
+    const memberVoice = interaction.member?.voice?.channel;
+    let queue = this.music.getQueue(guildId);
+
+    if (action === 'play') {
+      if (!memberVoice) {
+        return interaction.reply({ content: '❌ Сначала зайди в голосовой канал.', ephemeral: true });
+      }
+
+      const permissions = memberVoice.permissionsFor(this.client.user);
+      if (!permissions?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
+        return interaction.reply({ content: '❌ У P3W нет прав подключаться и говорить в этом голосовом канале.', ephemeral: true });
+      }
+
+      if (queue && queue.voiceChannel?.id !== memberVoice.id) {
+        return interaction.reply({ content: '❌ P3W уже играет в другом голосовом канале. Используй /leave, чтобы переместить его.', ephemeral: true });
+      }
+
+      const query = interaction.options.getString('query', true).trim();
+      await interaction.deferReply();
+      try {
+        await this.music.play(memberVoice, query, {
+          textChannel: interaction.channel,
+          member: interaction.member,
+        });
+        return interaction.editReply({ content: '✅ Запрос добавлен. Сообщу сюда, когда трек начнёт играть.' });
+      } catch (err) {
+        console.error('Music play command error:', err);
+        return interaction.editReply({ content: formatMusicError(err) });
+      }
+    }
+
+    if (action === 'leave') {
+      const botVoiceChannel = interaction.guild.members.me?.voice?.channel;
+      if (!botVoiceChannel) {
+        this.music.voices.leave(guildId);
+        return interaction.reply({ content: 'ℹ️ P3W уже не подключён к голосовому каналу.', ephemeral: true });
+      }
+      if (!memberVoice || memberVoice.id !== botVoiceChannel.id) {
+        return interaction.reply({ content: '❌ Чтобы отключить P3W, зайди в тот же голосовой канал.', ephemeral: true });
+      }
+
+      await interaction.deferReply();
+      try {
+        queue = this.music.getQueue(guildId);
+        if (queue) await queue.stop();
+        this.music.voices.leave(guildId);
+        return interaction.editReply({ content: '👋 Отключился от голосового канала.' });
+      } catch (err) {
+        console.error('Music leave error:', err);
+        return interaction.editReply({ content: formatMusicError(err) });
+      }
+    }
+
+    if (!queue) {
+      return interaction.reply({ content: 'ℹ️ Сейчас ничего не играет. Запусти трек командой /play.', ephemeral: true });
+    }
+
+    if (!memberVoice || memberVoice.id !== queue.voiceChannel?.id) {
+      return interaction.reply({ content: '❌ Зайди в тот же голосовой канал, где сейчас находится P3W.', ephemeral: true });
+    }
+
+    if (action === 'queue') {
+      const songs = queue.songs.slice(0, 11);
+      const lines = songs.map((song, index) => {
+        const name = clampText(String(song.name || song.url || 'Без названия'), 110);
+        const duration = song.formattedDuration || 'LIVE';
+        return `${index === 0 ? '▶️ Сейчас' : `\${index}.`} ${name} — ${duration}`;
+      });
+      if (queue.songs.length > songs.length) {
+        lines.push(`… и ещё ${queue.songs.length - songs.length} трек(ов)`);
+      }
+      return interaction.reply({
+        content: `**🎶 Очередь P3W**\n${lines.join('\n')}\n\nГромкость: ${queue.volume}%`,
+        allowedMentions: { parse: [] },
+      });
+    }
+
+    if (action === 'nowplaying') {
+      const song = queue.songs[0];
+      if (!song) return interaction.reply({ content: 'ℹ️ Сейчас ничего не играет.', ephemeral: true });
+      const title = clampText(String(song.name || song.url || 'Без названия'), 180);
+      const position = song.isLive ? 'Прямой эфир' : `${queue.formattedCurrentTime} / ${song.formattedDuration}`;
+      return interaction.reply({
+        content: `🎵 **Сейчас играет:** ${title}\n⏱ ${position}${song.url ? `\n${song.url}` : ''}`,
+        allowedMentions: { parse: [] },
+      });
+    }
+
+    if (action === 'skip') {
+      if (queue.songs.length < 2 && !queue.autoplay) {
+        return interaction.reply({ content: 'ℹ️ В очереди нет следующего трека.', ephemeral: true });
+      }
+      try {
+        await queue.skip();
+        return interaction.reply({ content: '⏭️ Трек пропущен.' });
+      } catch (err) {
+        console.error('Music skip error:', err);
+        return interaction.reply({ content: formatMusicError(err), ephemeral: true });
+      }
+    }
+
+    if (action === 'pause') {
+      if (queue.paused) return interaction.reply({ content: '⏸️ Музыка уже на паузе.', ephemeral: true });
+      await queue.pause();
+      return interaction.reply({ content: '⏸️ Музыка поставлена на паузу.' });
+    }
+
+    if (action === 'resume') {
+      if (!queue.paused) return interaction.reply({ content: '▶️ Музыка уже играет.', ephemeral: true });
+      await queue.resume();
+      return interaction.reply({ content: '▶️ Продолжаю воспроизведение.' });
+    }
+
+    if (action === 'stop') {
+      await queue.stop();
+      return interaction.reply({ content: '⏹️ Воспроизведение остановлено, очередь очищена.' });
+    }
+
+    if (action === 'volume') {
+      const percent = interaction.options.getInteger('percent', true);
+      queue.setVolume(percent);
+      return interaction.reply({ content: `🔊 Громкость установлена на ${percent}%.` });
+    }
+  }
+
   async handleNewsCommand(interaction) {
     const guildId = interaction.guildId;
     const action = interaction.options.getSubcommand();
@@ -757,6 +958,10 @@ class DiscordBot {
       }
     }
 
+    if (['play', 'skip', 'pause', 'resume', 'stop', 'queue', 'nowplaying', 'volume', 'leave'].includes(interaction.commandName)) {
+      return this.handleMusicCommand(interaction);
+    }
+
     if (interaction.commandName === 'time' || interaction.commandName === 'user') {
       const target = interaction.options.getUser('user') || interaction.user;
       return this.handleVoiceTime(interaction, target);
@@ -801,13 +1006,7 @@ class DiscordBot {
       }
       await interaction.deferReply();
       try {
-        joinVoiceChannel({
-          channelId: voiceChannel.id,
-          guildId: interaction.guild.id,
-          adapterCreator: interaction.guild.voiceAdapterCreator,
-          selfDeaf: false,
-          selfMute: false,
-        });
+        await this.music.voices.join(voiceChannel);
         return interaction.editReply({ content: `✅ Зашёл в ${voiceChannel}.` });
       } catch (err) {
         console.error('jtm error:', err);
@@ -975,6 +1174,11 @@ class DiscordBot {
       this.timers.forEach(timer => clearInterval(timer));
       await this.checkpointVoiceSessions(true);
       await this.stateStore.save();
+      for (const guild of this.client.guilds.cache.values()) {
+        const queue = this.music.getQueue(guild.id);
+        if (queue) await queue.stop().catch(err => console.error('Music shutdown queue error:', err));
+        this.music.voices.leave(guild.id);
+      }
       if (this.httpServer) this.httpServer.close(() => {});
       if (this.client?.destroy) await this.client.destroy();
     } catch (e) {
