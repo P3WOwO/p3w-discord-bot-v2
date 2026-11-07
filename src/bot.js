@@ -609,11 +609,13 @@ class DiscordBot {
       }
 
       const query = interaction.options.getString('query', true).trim();
+      const requester = interaction.guild.members.cache.get(interaction.user.id)
+        || await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       await interaction.deferReply();
       try {
         await this.music.play(memberVoice, query, {
           textChannel: interaction.channel,
-          member: interaction.member,
+          member: requester || undefined,
         });
         return interaction.editReply({ content: '✅ Запрос добавлен. Сообщу сюда, когда трек начнёт играть.' });
       } catch (err) {
@@ -657,7 +659,7 @@ class DiscordBot {
       const lines = songs.map((song, index) => {
         const name = clampText(String(song.name || song.url || 'Без названия'), 110);
         const duration = song.formattedDuration || 'LIVE';
-        return `${index === 0 ? '▶️ Сейчас' : `\${index}.`} ${name} — ${duration}`;
+        return `${index === 0 ? '▶️ Сейчас' : `${index}.`} ${name} — ${duration}`;
       });
       if (queue.songs.length > songs.length) {
         lines.push(`… и ещё ${queue.songs.length - songs.length} трек(ов)`);
