@@ -65,6 +65,18 @@ Endpoint: `POST /api/game-news`
 
 Этот endpoint — приёмник готовых предложений. Сам ежедневный сбор скидок/раздач и их проверка подключаются отдельным сборщиком.
 
+
+### Автоматическая доставка из GitHub
+
+Файл `.github/workflows/forward-game-news.yml` отправляет JSON-файлы из `game-news/queue/*.json` в P3W после push в `main`.
+
+Для работы добавь два repository Actions secrets:
+
+- `GAME_NEWS_API_KEY` — тот же секрет, что задан в Environment Render у сервиса P3W.
+- `P3W_API_URL` — публичный HTTPS URL сервиса Render без завершающего слеша.
+
+Публикации создаются непосредственно в `main` в `game-news/queue/`; Pull Request для каждой новости не нужен. Внешний автор должен иметь доступ к GitHub connector и право записи в репозиторий.
+
 ## Запуск
 
 ```bash
