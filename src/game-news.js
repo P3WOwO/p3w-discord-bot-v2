@@ -14,7 +14,8 @@ function clean(value, maxLength) {
 // Convert those sequences to real line breaks before placing them in Discord.
 function normalizeDescription(value) {
   return clean(value, 3500)
-    .replace(/\\\\+n/g, '\n')
+    .replace(/\\+r\\+n/gi, '\n')
+    .replace(/\\+n/g, '\n')
     .replace(/\\r\\n/g, '\n')
     .replace(/\r\n?/g, '\n')
     .replace(/[ \t]+\n/g, '\n')
