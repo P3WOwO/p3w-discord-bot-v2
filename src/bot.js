@@ -662,7 +662,7 @@ class DiscordBot {
     const attachmentList = [...message.attachments.values()];
     const imageUploaded = attachmentList.some(attachment =>
       String(attachment.contentType || '').toLowerCase().startsWith('image/')
-      || /\\.(?:png|jpe?g|webp|gif)$/i.test(String(attachment.name || '')),
+      || /\.(?:png|jpe?g|webp|gif)$/i.test(String(attachment.name || '')),
     );
     const imageEmbed = message.embeds.some(embed => Boolean(embed.image?.url));
 
