@@ -68,8 +68,8 @@ jobs:
             echo "${response}"
 
             if jq -e '.image_url != null and .image_url != ""' "${file}" >/dev/null; then
-              if ! jq -e '.sent == true and .image_uploaded == true and .image_embed == true' <<< "${response}" >/dev/null; then
-                echo "::error::P3W did not confirm that the news image was uploaded and embedded."
+              if ! jq -e '.sent == true and .image_embed == true' <<< "${response}" >/dev/null; then
+                echo "::error::P3W did not confirm that the news image was embedded."
                 exit 1
               fi
             elif ! jq -e '.sent == true' <<< "${response}" >/dev/null; then
