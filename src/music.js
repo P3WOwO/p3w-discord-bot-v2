@@ -34,6 +34,7 @@ const { YouTubePlugin, YouTubeSong } = require('@distube/youtube');
 const { Quality, parseVideoId, parsePlaylistId } = require('@distube/ytdl-core');
 const { SpotifyPlugin } = require('@distube/spotify');
 const { SoundCloudPlugin } = require('@distube/soundcloud');
+const SoundCloudReadable = require('@zibot/scdl');
 const { YandexMusicPlugin } = require('distube-yandex-music-plugin');
 const {
   ActionRowBuilder,
@@ -560,7 +561,7 @@ class StreamBridge {
     const token = randomBytes(16).toString('hex');
     // Ошибка до подключения ffmpeg не должна ронять процесс.
     stream.on('error', err => {
-      console.warn(`YouTube stream error (${label || 'track'}):`, err?.code || '', err?.message || err);
+      console.warn(`Music bridge stream error (${label || 'track'}):`, err?.code || '', err?.message || err);
     });
     const timer = setTimeout(() => {
       this.pending.delete(token);
@@ -608,6 +609,39 @@ class StreamBridge {
     this.server = null;
     this.port = 0;
     this.starting = null;
+  }
+}
+
+// ───────────────────────────── SoundCloud AAC-HLS → Readable bridge ─────────────────────────────
+
+// @distube/soundcloud resolves and searches tracks, while this maintained stream client
+// assembles SoundCloud's AAC HLS init segment + media fragments into one readable stream.
+class P3WSoundCloudPlugin extends SoundCloudPlugin {
+  constructor(bridge) {
+    super();
+    this.bridge = bridge;
+    this.streamClient = new SoundCloudReadable();
+  }
+
+  async getStreamURL(songOrUrl) {
+    const trackUrl = typeof songOrUrl === 'string' ? songOrUrl : songOrUrl?.url;
+    if (!trackUrl || !/^https?:\/\/(?:www\.)?soundcloud\.com\//i.test(trackUrl)) {
+      throw Object.assign(new Error('SoundCloud track URL is missing or invalid'), {
+        code: 'SOUNDCLOUD_INVALID_TRACK_URL',
+      });
+    }
+
+    const stream = await this.streamClient.downloadTrack(trackUrl, { quality: 'high' });
+    if (!stream || typeof stream.pipe !== 'function') {
+      throw Object.assign(new Error('SoundCloud AAC-HLS client did not return a readable stream'), {
+        code: 'SOUNDCLOUD_STREAM_UNAVAILABLE',
+      });
+    }
+
+    stream.on('error', error => {
+      console.warn(`SoundCloud readable stream error (${songOrUrl?.name || trackUrl}):`, error?.message || error);
+    });
+    return this.bridge.register(stream, `SoundCloud · ${songOrUrl?.name || trackUrl}`);
   }
 }
 
@@ -946,7 +980,7 @@ class MusicModule {
     const cookie = this.config.YT_COOKIE;
 
     this.youtube = new P3WYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);
-    this.soundcloud = new SoundCloudPlugin();
+    this.soundcloud = new P3WSoundCloudPlugin(this.bridge);
     this.youtube.fallback = this.soundcloud;
 
     const plugins = [this.youtube, this.soundcloud, new SpotifyPlugin()];
@@ -1279,12 +1313,7 @@ class MusicModule {
       });
       const streamUrl = await this.soundcloud.getStreamURL(song);
       console.log(`[music-diag] SoundCloud resolved: ${song.name} · input=${safeStreamUrl(streamUrl)}`);
-      try {
-        const inputReport = await inspectSoundCloudHls(streamUrl);
-        console.log(`[music-diag] SoundCloud input inspection: ${JSON.stringify(inputReport)}`);
-      } catch (inspectError) {
-        console.warn('[music-diag] SoundCloud input inspection failed:', inspectError?.message || inspectError);
-      }
+      console.log('[music-diag] SoundCloud AAC-HLS is assembled by the stream client and handed to FFmpeg through the local bridge');
 
       ffmpeg = spawn(this.ffmpegPath, [
         '-hide_banner', '-loglevel', 'info', '-nostdin', '-rw_timeout', '15000000',
