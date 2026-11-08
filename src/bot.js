@@ -654,9 +654,33 @@ class DiscordBot {
     }
 
     const messageOptions = await buildGameNewsMessage(payload);
-    const message = await channel.send(messageOptions);
-    const imageUploaded = Boolean(message.attachments?.size);
+    const sentMessage = await channel.send(messageOptions);
+
+    // Fetch the persisted Discord message before confirming an image upload.
+    // This avoids trusting only the immediate create-message response.
+    const message = await sentMessage.fetch();
+    const attachmentList = [...message.attachments.values()];
+    const imageUploaded = attachmentList.some(attachment =>
+      String(attachment.contentType || '').toLowerCase().startsWith('image/')
+      || /\\.(?:png|jpe?g|webp|gif)$/i.test(String(attachment.name || '')),
+    );
     const imageEmbed = message.embeds.some(embed => Boolean(embed.image?.url));
+
+    console.info('Game news delivery verification:', JSON.stringify({
+      messageId: message.id,
+      requestedImage: Boolean(payload.imageUrl),
+      outgoingFileCount: messageOptions.files?.length || 0,
+      attachmentCount: attachmentList.length,
+      attachmentNames: attachmentList.map(attachment => attachment.name),
+      imageEmbed,
+    }));
+
+    if (payload.imageUrl && (!imageUploaded || !imageEmbed)) {
+      throw Object.assign(
+        new Error('Discord did not confirm both an uploaded image attachment and an image embed.'),
+        { statusCode: 502 },
+      );
+    }
 
     this.stateStore.markGameNewsSent(guildId, payload.id);
     await this.stateStore.save();
