@@ -21,6 +21,7 @@
     "@distube/youtube": "^1.1.0",
     "distube": "^5.2.3",
     "@distube/ytdl-core": "^5.2.1",
-    "distube-yandex-music-plugin": "^1.0.5"
+    "distube-yandex-music-plugin": "^1.0.5",
+    "@zibot/scdl": "^0.1.6"
   }
 }
