@@ -1218,27 +1218,7 @@ class MusicModule {
     this.#createDistube();
     this.#bindEvents();
 
-    // One-shot provider diagnostics can run on Render without joining or interrupting voice.
-    console.log('[music-diag] MUSIC_DIAG_RUN_ONCE=' + (process.env.MUSIC_DIAG_RUN_ONCE || 'false'));
-    if (process.env.MUSIC_DIAG_RUN_ONCE === 'true') {
-      const waitForReady = () => {
-        if (!this.client.isReady()) {
-          const retry = setTimeout(waitForReady, 1000);
-          retry.unref?.();
-          return;
-        }
-        const timer = setTimeout(() => {
-          console.log('[music-diag] starting one-shot provider diagnostics without voice connection');
-          this.runDiagnostics()
-            .then(lines => lines.forEach(line => console.log('[music-diag][provider] ' + line)))
-            .catch(error => console.error('[music-diag] provider diagnostics crashed:', describeMusicError(error)))
-            .finally(() => { process.env.MUSIC_DIAG_RUN_ONCE = 'false'; });
-        }, 10000);
-        timer.unref?.();
-      };
-      const initial = setTimeout(waitForReady, 1000);
-      initial.unref?.();
-    }
+
 
   }
 
