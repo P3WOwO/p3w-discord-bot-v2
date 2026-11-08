@@ -267,6 +267,24 @@ async function fetchOEmbedTitle(url) {
   }
 }
 
+async function fetchSoundCloudOEmbed(url) {
+  try {
+    const endpoint = new URL('https://soundcloud.com/oembed');
+    endpoint.searchParams.set('format', 'json');
+    endpoint.searchParams.set('url', url);
+    const response = await fetch(endpoint, { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (!data?.title) return null;
+    return {
+      title: String(data.title),
+      artist: String(data.author_name || ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Чистим «(Official Video)», «[HD]» и т.п., чтобы поиск на Audius находил больше.
 function cleanTitle(name) {
   return String(name || '')
@@ -599,27 +617,48 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
   }
 
   async resolve(url, options = {}) {
-    await this.streamClient.ensureReady();
-    const item = await this.streamClient.fetchItem(url);
-    if (item?.kind === 'track') return this.#toSong(item, options);
-    if (item?.kind === 'playlist') {
-      const playlist = await this.streamClient.getPlaylistDetails(url);
-      const songs = (playlist.tracks || [])
-        .filter(track => track?.id && track?.permalink_url && track?.title)
-        .map(track => this.#toSong(track, options));
-      if (!songs.length) {
-        throw Object.assign(new Error('SoundCloud playlist is empty or unavailable'), { code: 'SOUNDCLOUD_EMPTY_PLAYLIST' });
+    try {
+      await this.streamClient.ensureReady();
+      const item = await this.streamClient.fetchItem(url);
+      if (item?.kind === 'track') return this.#toSong(item, options);
+      if (item?.kind === 'playlist') {
+        const playlist = await this.streamClient.getPlaylistDetails(url);
+        const songs = (playlist.tracks || [])
+          .filter(track => track?.id && track?.permalink_url && track?.title)
+          .map(track => this.#toSong(track, options));
+        if (!songs.length) {
+          throw Object.assign(new Error('SoundCloud playlist is empty or unavailable'), { code: 'SOUNDCLOUD_EMPTY_PLAYLIST' });
+        }
+        return new Playlist({
+          source: 'soundcloud',
+          songs,
+          id: String(playlist.id),
+          name: playlist.title || 'SoundCloud playlist',
+          url: playlist.permalink_url || url,
+          thumbnail: playlist.artwork_url || undefined,
+        }, options);
       }
-      return new Playlist({
-        source: 'soundcloud',
-        songs,
-        id: String(playlist.id),
-        name: playlist.title || 'SoundCloud playlist',
-        url: playlist.permalink_url || url,
-        thumbnail: playlist.artwork_url || undefined,
-      }, options);
+      throw Object.assign(new Error('SoundCloud URL is not a public track or playlist'), { code: 'SOUNDCLOUD_NOT_SUPPORTED' });
+    } catch (error) {
+      const metadata = await fetchSoundCloudOEmbed(url);
+      const query = metadata ? [metadata.title, metadata.artist].filter(Boolean).join(' ') : '';
+      if (query && this.youtube) {
+        const alternate = await this.youtube.searchSong(query, options).catch(() => null);
+        if (alternate) {
+          setNote(alternate, 'SoundCloud не разрешил ссылку: найдено совпадение из доступного источника');
+          console.warn('[soundcloud-resolve-fallback] ' + query + ' → ' + sourceLabel(alternate.source));
+          return alternate;
+        }
+      }
+      if (query && this.audius) {
+        const alternate = await this.audius.searchSong(query, options).catch(() => null);
+        if (alternate) {
+          setNote(alternate, 'SoundCloud не разрешил ссылку: найдена версия на Audius');
+          return alternate;
+        }
+      }
+      throw error;
     }
-    throw Object.assign(new Error('SoundCloud URL is not a public track or playlist'), { code: 'SOUNDCLOUD_NOT_SUPPORTED' });
   }
 
   async searchSong(query, options = {}, targetDuration = 0) {
