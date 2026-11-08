@@ -18,6 +18,8 @@
 
 const http = require('http');
 const { randomBytes } = require('crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const {
   createAudioResource,
@@ -62,6 +64,104 @@ const VOLUME_STEP = 10;
 const PLAYBACK_CHECK_MS = 4000;
 const SELF_TEST_VIDEO = 'https://www.youtube.com/watch?v=jNQXAC9IVRw';
 const MUSIC_DIAG_SOUNDCLOUD_URL = 'https://soundcloud.com/overtonightofficial/mirrors-demo';
+
+function safeStreamUrl(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return '[invalid-url]';
+  }
+}
+
+async function readResponsePrefix(response, maxBytes = 64 * 1024) {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (length < maxBytes) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      const part = Buffer.from(value).subarray(0, maxBytes - length);
+      chunks.push(part);
+      length += part.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks, length);
+}
+
+async function inspectSoundCloudHls(url, depth = 0) {
+  if (depth > 2) throw new Error('SoundCloud HLS playlist nesting exceeds 2');
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(10000),
+  });
+  const contentType = response.headers.get('content-type') || 'unknown';
+  const body = await readResponsePrefix(response);
+  const prefix = body.subarray(0, 7).toString('utf8');
+  const base = {
+    status: response.status,
+    contentType,
+    finalUrl: safeStreamUrl(response.url),
+    bytesRead: body.length,
+    firstBytesHex: body.subarray(0, 16).toString('hex'),
+  };
+  if (!response.ok) throw new Error(`SoundCloud input HTTP ${response.status} · ${JSON.stringify(base)}`);
+  if (!prefix.startsWith('#EXTM3U') && !contentType.toLowerCase().includes('mpegurl')) {
+    return { ...base, format: 'direct-audio-or-binary' };
+  }
+
+  const lines = body.toString('utf8').split('\n').map(line => line.replaceAll('\r', '').trim());
+  const variantIndex = lines.findIndex(line => line.startsWith('#EXT-X-STREAM-INF'));
+  if (variantIndex >= 0) {
+    const variant = lines.slice(variantIndex + 1).find(line => line && !line.startsWith('#'));
+    if (!variant) throw new Error('SoundCloud master playlist has no variant URL');
+    const nested = await inspectSoundCloudHls(new URL(variant, response.url).toString(), depth + 1);
+    return { ...base, format: 'hls-master', nested };
+  }
+
+  const keyLine = lines.find(line => line.startsWith('#EXT-X-KEY')) || '';
+  const mapLine = lines.find(line => line.startsWith('#EXT-X-MAP')) || '';
+  const mapMatch = mapLine.match(/URI="([^"]+)"/);
+  const segmentIndex = lines.findIndex(line => line.startsWith('#EXTINF'));
+  const segmentPath = segmentIndex >= 0
+    ? lines.slice(segmentIndex + 1).find(line => line && !line.startsWith('#'))
+    : lines.find(line => line && !line.startsWith('#'));
+  const readAsset = async (relative, label) => {
+    if (!relative) return null;
+    const assetUrl = new URL(relative, response.url).toString();
+    const asset = await fetch(assetUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: '*/*', Range: 'bytes=0-4095' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(10000),
+    });
+    const bytes = await readResponsePrefix(asset, 4096);
+    return {
+      label,
+      status: asset.status,
+      contentType: asset.headers.get('content-type') || 'unknown',
+      finalUrl: safeStreamUrl(asset.url),
+      bytesRead: bytes.length,
+      firstBytesHex: bytes.subarray(0, 24).toString('hex'),
+      firstBytesAscii: bytes.subarray(0, 12).toString('latin1').replace(/[^\x20-\x7e]/g, '.'),
+    };
+  };
+
+  return {
+    ...base,
+    format: 'hls-media',
+    hasEncryptionKey: Boolean(keyLine),
+    encryptionMethod: keyLine.match(/METHOD=([^,]+)/)?.[1] || null,
+    hasInitMap: Boolean(mapMatch),
+    initMap: await readAsset(mapMatch?.[1], 'init-map'),
+    firstSegment: await readAsset(segmentPath, 'first-segment'),
+  };
+}
 
 const MUSIC_COMMANDS = new Set([
   'play', 'skip', 'pause', 'resume', 'stop', 'queue', 'nowplaying',
@@ -829,16 +929,17 @@ class MusicModule {
   // ───── создание DisTube ─────
 
   #createDistube() {
-    // Native Node runtime Render (Debian 12) already includes system FFmpeg.
-    // Do not use ffmpeg-static: its Linux binary is not reliably version-pinned.
-    this.ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+    // Prefer a verified BtbN FFmpeg 9.0.2 build installed by npm postinstall.
+    // Fall back to Render's system FFmpeg only if the static binary could not install.
+    const bundledFFmpeg = path.join(__dirname, '..', 'vendor', 'ffmpeg', 'bin', 'ffmpeg');
+    this.ffmpegPath = process.env.FFMPEG_PATH || (fs.existsSync(bundledFFmpeg) ? bundledFFmpeg : 'ffmpeg');
     const ffmpegVersion = spawnSync(this.ffmpegPath, ['-version'], {
       encoding: 'utf8',
       timeout: 5000,
       maxBuffer: 1024 * 1024,
     });
     if (ffmpegVersion.error || ffmpegVersion.status !== 0) {
-      console.error('[music-diag] system FFmpeg unavailable:', ffmpegVersion.error?.message || ffmpegVersion.stderr);
+      console.error('[music-diag] FFmpeg unavailable:', ffmpegVersion.error?.message || ffmpegVersion.stderr);
     } else {
       console.log(`🎛️ FFmpeg binary: ${this.ffmpegPath} · ${String(ffmpegVersion.stdout).split('\n')[0]}`);
     }
@@ -1163,10 +1264,16 @@ class MusicModule {
         member: guild.members.me || undefined,
       });
       const streamUrl = await this.soundcloud.getStreamURL(song);
-      console.log(`[music-diag] SoundCloud resolved: ${song.name}`);
+      console.log(`[music-diag] SoundCloud resolved: ${song.name} · input=${safeStreamUrl(streamUrl)}`);
+      try {
+        const inputReport = await inspectSoundCloudHls(streamUrl);
+        console.log(`[music-diag] SoundCloud input inspection: ${JSON.stringify(inputReport)}`);
+      } catch (inspectError) {
+        console.warn('[music-diag] SoundCloud input inspection failed:', inspectError?.message || inspectError);
+      }
 
       ffmpeg = spawn(this.ffmpegPath, [
-        '-hide_banner', '-loglevel', 'warning', '-nostdin',
+        '-hide_banner', '-loglevel', 'info', '-nostdin', '-rw_timeout', '15000000',
         '-i', streamUrl,
         '-vn', '-ac', '2', '-ar', '48000', '-t', '5',
         '-f', 's16le', 'pipe:1',
@@ -1176,7 +1283,7 @@ class MusicModule {
         const line = String(chunk).trim();
         if (line) {
           stderr.push(line);
-          if (stderr.length > 8) stderr.shift();
+          if (stderr.length > 20) stderr.shift();
           console.warn('[music-diag][ffmpeg]', clampText(line, 500));
         }
       });
