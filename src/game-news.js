@@ -4,7 +4,9 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  AttachmentBuilder,
 } = require('discord.js');
+const { isIP } = require('node:net');
 
 function clean(value, maxLength) {
   return String(value ?? '').trim().slice(0, maxLength);
@@ -71,6 +73,121 @@ function validateGameNewsPayload(raw) {
   const id = suppliedId || crypto.createHash('sha256').update(title + '\n' + url).digest('hex');
 
   return { id, title, url, description, price, oldPrice, discount, source, imageUrl, sourceUrl, expiresAt };
+}
+
+
+const NEWS_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+
+function getImageExtension(contentType) {
+  const extensions = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+  };
+  return extensions[String(contentType || '').split(';')[0].trim().toLowerCase()] || null;
+}
+
+function hasValidImageSignature(buffer, extension) {
+  if (extension === 'png') {
+    return buffer.length >= 8
+      && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  }
+  if (extension === 'jpg') {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (extension === 'webp') {
+    return buffer.length >= 12
+      && buffer.toString('ascii', 0, 4) === 'RIFF'
+      && buffer.toString('ascii', 8, 12) === 'WEBP';
+  }
+  if (extension === 'gif') {
+    const signature = buffer.toString('ascii', 0, 6);
+    return signature === 'GIF87a' || signature === 'GIF89a';
+  }
+  return false;
+}
+
+async function downloadNewsImage(imageUrl) {
+  if (!imageUrl) return null;
+
+  const imageAddress = new URL(imageUrl);
+  const hostname = imageAddress.hostname.toLowerCase();
+
+  // News images must be public HTTPS files. Reject local and IP-literal
+  // destinations rather than allowing the bot to fetch internal services.
+  if (
+    imageAddress.protocol !== 'https:'
+    || !hostname
+    || isIP(hostname.replace(/^\[|\]$/g, ''))
+    || hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local')
+  ) {
+    throw Object.assign(new Error('Для изображения нужна публичная HTTPS-ссылка на файл.'), { statusCode: 422 });
+  }
+
+  let response;
+  try {
+    response = await fetch(imageAddress, {
+      method: 'GET',
+      redirect: 'error',
+      signal: AbortSignal.timeout(12000),
+      headers: { Accept: 'image/png,image/jpeg,image/webp,image/gif' },
+    });
+  } catch (error) {
+    throw Object.assign(
+      new Error('Не удалось скачать изображение новости: ' + (error?.message || 'ошибка сети')),
+      { statusCode: 502 },
+    );
+  }
+
+  if (!response.ok) {
+    throw Object.assign(new Error('Сайт изображения вернул HTTP ' + response.status + '.'), { statusCode: 502 });
+  }
+
+  const extension = getImageExtension(response.headers.get('content-type'));
+  if (!extension) {
+    throw Object.assign(new Error('Ссылка image_url вернула не PNG, JPG, WEBP или GIF.'), { statusCode: 422 });
+  }
+
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (declaredLength > NEWS_IMAGE_MAX_BYTES) {
+    throw Object.assign(new Error('Изображение новости больше допустимых 8 МБ.'), { statusCode: 413 });
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw Object.assign(new Error('Сайт изображения не вернул файл.'), { statusCode: 502 });
+  }
+
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const result = await reader.read();
+    if (result.done) break;
+    totalBytes += result.value.byteLength;
+    if (totalBytes > NEWS_IMAGE_MAX_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw Object.assign(new Error('Изображение новости больше допустимых 8 МБ.'), { statusCode: 413 });
+    }
+    chunks.push(Buffer.from(result.value));
+  }
+
+  const buffer = Buffer.concat(chunks, totalBytes);
+  if (!hasValidImageSignature(buffer, extension)) {
+    throw Object.assign(new Error('Файл image_url не прошёл проверку формата изображения.'), { statusCode: 422 });
+  }
+
+  const filename = 'p3w-news-image.' + extension;
+  return {
+    attachment: new AttachmentBuilder(buffer, {
+      name: filename,
+      description: 'Изображение к игровой новости P3W',
+    }),
+    filename,
+  };
 }
 
 function getEmbedColor(item) {
@@ -199,17 +316,20 @@ function buildGameNewsComponents(raw) {
   return [new ActionRowBuilder().addComponents(buttons)];
 }
 
-function buildGameNewsMessage(raw) {
+async function buildGameNewsMessage(raw) {
   const item = validateGameNewsPayload(raw);
   const embeds = [];
+  const files = [];
 
-  // The hero image is a separate first embed so it appears before the news card.
-  // imageUrl survives the second validation because both key styles are accepted.
+  // Upload artwork with the message and use attachment:// so Discord receives
+  // the actual image bytes instead of having to fetch a remote URL itself.
   if (item.imageUrl) {
+    const image = await downloadNewsImage(item.imageUrl);
+    files.push(image.attachment);
     embeds.push(
       new EmbedBuilder()
         .setColor(getEmbedColor(item))
-        .setImage(item.imageUrl)
+        .setImage('attachment://' + image.filename)
     );
   }
 
@@ -217,6 +337,7 @@ function buildGameNewsMessage(raw) {
 
   return {
     embeds,
+    ...(files.length ? { files } : {}),
     components: buildGameNewsComponents(item),
     allowedMentions: { parse: [] },
   };
