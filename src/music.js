@@ -1526,15 +1526,24 @@ class MusicModule {
     }
 
     await check('Spotify: metadata + подбор воспроизводимого источника', async () => {
-      const metadata = await this.spotify.api.getData(MUSIC_DIAG_SPOTIFY_URL);
-      if (!metadata?.name) throw new Error('Spotify did not return track metadata');
-      const query = metadata.name + ' ' + (metadata.artists || []).map(artist => artist.name).join(' ');
-      const songs = await this.distube.search(query, { limit: 1 });
-      const song = songs?.[0];
-      if (!song?.plugin?.getStreamURL) throw new Error('Spotify metadata loaded, but no playback source matched the track');
-      const url = await song.plugin.getStreamURL(song);
+      const spotifySong = await this.spotify.resolve(MUSIC_DIAG_SPOTIFY_URL, {});
+      if (!spotifySong?.name) throw new Error('Spotify did not return track metadata');
+      const query = await this.spotify.createSearchQuery(spotifySong);
+      let matchedSong = null;
+      for (const provider of [this.youtube, this.soundcloud, this.audius]) {
+        try {
+          matchedSong = await provider.searchSong(query, { member: spotifySong.member });
+          if (matchedSong) break;
+        } catch (error) {
+          console.warn('[spotify-fallback] ' + provider.constructor.name + ': ' + briefError(error));
+        }
+      }
+      if (!matchedSong?.plugin?.getStreamURL) {
+        throw new Error('Spotify metadata loaded, but YouTube, SoundCloud and Audius found no playable match');
+      }
+      const url = await matchedSong.plugin.getStreamURL(matchedSong);
       const probe = await probeAudioUrl(url);
-      return metadata.name + ' → ' + sourceLabel(song.source) + ' · ' + probe.bytes + ' bytes';
+      return spotifySong.name + ' → ' + matchedSong.name + ' (' + sourceLabel(matchedSong.source) + ') · ' + probe.bytes + ' bytes';
     });
 
     if (this.yandex) {
