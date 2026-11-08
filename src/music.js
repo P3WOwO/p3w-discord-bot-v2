@@ -631,17 +631,75 @@ class P3WSoundCloudPlugin extends SoundCloudPlugin {
       });
     }
 
-    const stream = await this.streamClient.downloadTrack(trackUrl, { quality: 'high' });
-    if (!stream || typeof stream.pipe !== 'function') {
-      throw Object.assign(new Error('SoundCloud AAC-HLS client did not return a readable stream'), {
-        code: 'SOUNDCLOUD_STREAM_UNAVAILABLE',
-      });
+    // downloadTrack() catches and discards every per-format error. Resolve each
+    // current SoundCloud transcoding explicitly so logs retain the real failure.
+    const track = await this.streamClient.getTrackDetails(trackUrl);
+    const transcodings = this.streamClient._getSortedTranscodings(track);
+    console.log(`[soundcloud-stream] ${track.title || trackUrl}: policy=${track.policy || 'none'} state=${track.state || 'unknown'} transcodings=${transcodings.length}`);
+    console.log('[soundcloud-stream] formats:', JSON.stringify(transcodings.map(item => ({
+      protocol: item.format?.protocol || null,
+      mime: item.format?.mime_type || null,
+      legacy: item.is_legacy_transcoding ?? null,
+      preset: item.preset || null,
+      endpoint: safeStreamUrl(item.url || ''),
+    }))));
+
+    const failures = [];
+    for (const transcoding of transcodings) {
+      const protocol = transcoding.format?.protocol;
+      try {
+        const streamUrl = await this.streamClient.getStreamUrl(transcoding.url);
+        let stream;
+        if (protocol === 'hls') {
+          // SoundCloud can return a master playlist. Resolve a media playlist first;
+          // @zibot/scdl's low-level fMP4 assembler expects #EXT-X-MAP + #EXTINF.
+          let mediaUrl = streamUrl;
+          for (let depth = 0; depth < 3; depth++) {
+            const response = await this.streamClient.http.get(mediaUrl, {
+              responseType: 'text',
+              headers: {
+                Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, */*',
+                Referer: 'https://soundcloud.com/',
+              },
+            });
+            const playlist = String(response.data || '');
+            if (!playlist.includes('#EXTM3U')) throw new Error('HLS endpoint did not return an M3U8 playlist');
+            if (!playlist.includes('#EXT-X-STREAM-INF')) break;
+            const lines = playlist.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+            const index = lines.findIndex(line => line.startsWith('#EXT-X-STREAM-INF'));
+            const variant = index >= 0 ? lines.slice(index + 1).find(line => line && !line.startsWith('#')) : null;
+            if (!variant) throw new Error('HLS master playlist has no media variant');
+            mediaUrl = new URL(variant, response.request?.res?.responseUrl || mediaUrl).toString();
+            if (depth === 2) throw new Error('HLS playlist nesting exceeds 3');
+          }
+          stream = await this.streamClient._createHlsStream(mediaUrl, 0, { track });
+        } else if (protocol === 'progressive') {
+          const response = await this.streamClient.http.get(streamUrl, { responseType: 'stream' });
+          stream = response.data;
+        } else {
+          throw new Error(`Unsupported SoundCloud transcoding protocol: ${protocol || 'missing'}`);
+        }
+
+        if (stream && typeof stream.pipe === 'function') {
+          stream.on('error', error => {
+            console.warn(`SoundCloud readable stream error (${track.title || trackUrl}):`, error?.message || error);
+          });
+          console.log(`[soundcloud-stream] selected ${protocol} ${transcoding.format?.mime_type || 'unknown'}; handing readable stream to FFmpeg bridge`);
+          return this.bridge.register(stream, `SoundCloud · ${track.title || trackUrl}`);
+        }
+        throw new Error('SoundCloud transcoding did not return a readable stream');
+      } catch (error) {
+        const summary = `${protocol || 'unknown'} ${transcoding.format?.mime_type || ''}: ${error?.message || error}`;
+        failures.push(summary);
+        console.warn('[soundcloud-stream] transcoding failed:', summary);
+      }
     }
 
-    stream.on('error', error => {
-      console.warn(`SoundCloud readable stream error (${songOrUrl?.name || trackUrl}):`, error?.message || error);
-    });
-    return this.bridge.register(stream, `SoundCloud · ${songOrUrl?.name || trackUrl}`);
+    throw Object.assign(new Error(
+      transcodings.length
+        ? `Every SoundCloud transcoding failed: ${failures.join(' | ')}`
+        : 'SoundCloud track contains no media.transcodings entries',
+    ), { code: 'SOUNDCLOUD_NO_USABLE_TRANSCODING' });
   }
 }
 
