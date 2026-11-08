@@ -281,8 +281,8 @@ function primeStream(stream, timeoutMs = STREAM_PRIME_TIMEOUT_MS) {
 }
 
 // Проверяем, что SoundCloud действительно отдаёт байты медиа, а не только результат поиска.
-async function probeHttpStream(url, timeoutMs = 7000) {
-  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+async function probeHttpStream(url, timeoutMs = 7000, depth = 0) {
+  if (typeof url !== 'string' || !(url.startsWith('http://') || url.startsWith('https://'))) {
     throw Object.assign(new Error('SoundCloud returned an invalid stream URL'), { code: 'SOUNDCLOUD_INVALID_STREAM_URL' });
   }
 
@@ -292,13 +292,13 @@ async function probeHttpStream(url, timeoutMs = 7000) {
 
   try {
     const response = await fetch(url, {
-      headers: { Range: 'bytes=0-4095' },
+      headers: { Range: 'bytes=0-65535' },
       redirect: 'follow',
       signal: controller.signal,
     });
 
     if (!response.ok) {
-      throw Object.assign(new Error(`SoundCloud media returned HTTP ${response.status}`), {
+      throw Object.assign(new Error('SoundCloud media returned HTTP ' + response.status), {
         code: 'SOUNDCLOUD_HTTP_ERROR',
         status: response.status,
       });
@@ -308,20 +308,75 @@ async function probeHttpStream(url, timeoutMs = 7000) {
       throw Object.assign(new Error('SoundCloud response has no media body'), { code: 'SOUNDCLOUD_STREAM_EMPTY' });
     }
 
+    const contentType = response.headers.get('content-type') || 'unknown';
     reader = response.body.getReader();
-    const { value, done } = await reader.read();
-    if (done || !value?.byteLength) {
+    const chunks = [];
+    let totalBytes = 0;
+    let playlist = contentType.toLowerCase().includes('mpegurl');
+
+    // Для HLS читаем небольшой плейлист целиком; для обычного аудио достаточно первого блока.
+    while (totalBytes < (playlist ? 128 * 1024 : 4096)) {
+      const part = await reader.read();
+      if (part.done) break;
+      if (part.value && part.value.byteLength) {
+        chunks.push(Buffer.from(part.value));
+        totalBytes += part.value.byteLength;
+      }
+
+      if (!playlist && totalBytes > 0) {
+        const prefix = Buffer.concat(chunks, Math.min(totalBytes, 7)).toString('utf8');
+        playlist = prefix.startsWith('#EXTM3U');
+        if (!playlist) break;
+      }
+    }
+
+    const body = Buffer.concat(chunks, totalBytes);
+    if (!totalBytes) {
       throw Object.assign(new Error('SoundCloud stream returned no media bytes'), { code: 'SOUNDCLOUD_STREAM_EMPTY' });
+    }
+
+    if (playlist || body.subarray(0, 7).toString('utf8') === '#EXTM3U') {
+      if (depth >= 2) {
+        throw Object.assign(new Error('SoundCloud HLS playlist nesting is too deep'), { code: 'SOUNDCLOUD_HLS_INVALID' });
+      }
+
+      const lines = body.toString('utf8').split('\n').map(line => line.replaceAll('\r', '').trim());
+      const nextUri = index => lines.slice(index + 1).find(line => line && !line.startsWith('#'));
+      let mediaPath = null;
+
+      // Master playlist: choose the first variant, then descend into its media playlist.
+      const variantIndex = lines.findIndex(line => line.startsWith('#EXT-X-STREAM-INF'));
+      if (variantIndex >= 0) mediaPath = nextUri(variantIndex);
+
+      // Media playlist: probe the first actual segment, not the manifest or init-map.
+      if (!mediaPath) {
+        const segmentIndex = lines.findIndex(line => line.startsWith('#EXTINF'));
+        if (segmentIndex >= 0) mediaPath = nextUri(segmentIndex);
+      }
+      if (!mediaPath) mediaPath = lines.find(line => line && !line.startsWith('#'));
+
+      if (!mediaPath) {
+        throw Object.assign(new Error('SoundCloud HLS playlist contains no media segment'), { code: 'SOUNDCLOUD_HLS_SEGMENT_MISSING' });
+      }
+
+      const mediaUrl = new URL(mediaPath, response.url).toString();
+      const segment = await probeHttpStream(mediaUrl, timeoutMs, depth + 1);
+      return {
+        ...segment,
+        playlistBytes: totalBytes,
+        playlistContentType: contentType,
+      };
     }
 
     return {
       status: response.status,
-      bytes: value.byteLength,
-      contentType: response.headers.get('content-type') || 'unknown',
+      bytes: totalBytes,
+      contentType,
+      playlistBytes: 0,
     };
   } catch (err) {
     if (controller.signal.aborted) {
-      throw Object.assign(new Error(`SoundCloud stream timed out after ${timeoutMs} ms`), {
+      throw Object.assign(new Error('SoundCloud stream timed out after ' + timeoutMs + ' ms'), {
         code: 'SOUNDCLOUD_STREAM_TIMEOUT',
         cause: err,
       });
@@ -973,7 +1028,7 @@ class MusicModule {
             code: 'SOUNDCLOUD_NO_PLAYABLE_STREAM',
           });
         }
-        return `${clampText(selected.song.name, 38)} · ${selected.probe.bytes} байт · HTTP ${selected.probe.status} · ${selected.probe.contentType}`;
+        return `${clampText(selected.song.name, 38)} · сегмент ${selected.probe.bytes} байт · HTTP ${selected.probe.status} · ${selected.probe.contentType}${selected.probe.playlistBytes ? ` · HLS ${selected.probe.playlistBytes} байт` : ''}`;
       });
     } else {
       lines.push('⏭️ SoundCloud: аудиопоток — пропущен, результаты поиска не получены');
