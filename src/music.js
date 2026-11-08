@@ -280,6 +280,85 @@ function primeStream(stream, timeoutMs = STREAM_PRIME_TIMEOUT_MS) {
   });
 }
 
+// Проверяем, что SoundCloud действительно отдаёт байты медиа, а не только результат поиска.
+async function probeHttpStream(url, timeoutMs = 7000) {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    throw Object.assign(new Error('SoundCloud returned an invalid stream URL'), { code: 'SOUNDCLOUD_INVALID_STREAM_URL' });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let reader;
+
+  try {
+    const response = await fetch(url, {
+      headers: { Range: 'bytes=0-4095' },
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw Object.assign(new Error(`SoundCloud media returned HTTP ${response.status}`), {
+        code: 'SOUNDCLOUD_HTTP_ERROR',
+        status: response.status,
+      });
+    }
+
+    if (!response.body) {
+      throw Object.assign(new Error('SoundCloud response has no media body'), { code: 'SOUNDCLOUD_STREAM_EMPTY' });
+    }
+
+    reader = response.body.getReader();
+    const { value, done } = await reader.read();
+    if (done || !value?.byteLength) {
+      throw Object.assign(new Error('SoundCloud stream returned no media bytes'), { code: 'SOUNDCLOUD_STREAM_EMPTY' });
+    }
+
+    return {
+      status: response.status,
+      bytes: value.byteLength,
+      contentType: response.headers.get('content-type') || 'unknown',
+    };
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw Object.assign(new Error(`SoundCloud stream timed out after ${timeoutMs} ms`), {
+        code: 'SOUNDCLOUD_STREAM_TIMEOUT',
+        cause: err,
+      });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (reader) await reader.cancel().catch(() => {});
+  }
+}
+
+// Проверяем несколько результатов SoundCloud: первый в выдаче не всегда имеет рабочий поток.
+async function pickPlayableSoundCloudSong(plugin, candidates, targetDuration = 0) {
+  let ranked = Array.isArray(candidates) ? candidates.filter(song => song?.url) : [];
+
+  if (targetDuration > 0) {
+    const tolerance = Math.max(8, Math.round(targetDuration * 0.06));
+    ranked = ranked
+      .map(song => ({ song, diff: Math.abs((Number(song.duration) || 0) - targetDuration) }))
+      .filter(item => item.song.duration > 0 && item.diff <= tolerance)
+      .sort((a, b) => a.diff - b.diff)
+      .map(item => item.song);
+  }
+
+  for (const candidate of ranked.slice(0, 5)) {
+    try {
+      const url = await plugin.getStreamURL(candidate);
+      const probe = await probeHttpStream(url);
+      return { song: candidate, probe };
+    } catch (err) {
+      console.warn(`SoundCloud candidate rejected (${candidate.name || candidate.url}):`, briefError(err));
+    }
+  }
+
+  return null;
+}
+
 // ───────────────────────────── локальный мост для YouTube ─────────────────────────────
 
 class StreamBridge {
@@ -385,9 +464,12 @@ class P3WYouTubePlugin extends YouTubePlugin {
       console.warn('YouTube resolve failed, trying SoundCloud by title:', briefError(err));
       const title = await fetchOEmbedTitle(url);
       if (!title) throw err;
-      const song = await this.fallback.searchSong(title, options).catch(() => null);
+      const song = await this.#findSoundCloudSong(title, options).catch(fallbackErr => {
+        console.warn('SoundCloud fallback search failed:', briefError(fallbackErr));
+        return null;
+      });
       if (!song) throw err;
-      setNote(song, 'YouTube недоступен: трек найден на SoundCloud по названию');
+      setNote(song, 'YouTube недоступен: проверенная версия найдена на SoundCloud');
       return song;
     }
   }
@@ -401,10 +483,16 @@ class P3WYouTubePlugin extends YouTubePlugin {
       console.warn('YouTube search failed, trying SoundCloud:', briefError(err));
     }
     if (!this.fallback) return null;
-    return this.fallback.searchSong(query, options).catch(err => {
+    return this.#findSoundCloudSong(query, options).catch(err => {
       console.warn('SoundCloud search failed:', briefError(err));
       return null;
     });
+  }
+
+  async #findSoundCloudSong(query, options, targetDuration = 0) {
+    const candidates = await this.fallback.search(query, undefined, 8, options || {});
+    const selected = await pickPlayableSoundCloudSong(this.fallback, candidates, targetDuration);
+    return selected?.song || null;
   }
 
   async getStreamURL(song) {
@@ -464,13 +552,12 @@ class P3WYouTubePlugin extends YouTubePlugin {
     if (!this.fallback) return null;
     const query = buildFallbackQuery(song);
     if (!query) return null;
-    const candidates = await this.fallback.search(query, undefined, 6, { member: song.member });
-    const match = pickBestMatch(candidates, song.duration);
+    const match = await this.#findSoundCloudSong(query, { member: song.member }, song.duration);
     if (!match) return null;
     const url = await this.fallback.getStreamURL(match);
     if (!url) return null;
-    setNote(song, 'YouTube не отдал звук: играет версия с SoundCloud');
-    console.log(`🔁 "${song.name}" → SoundCloud "${match.name}"`);
+    setNote(song, 'YouTube не отдал звук: проверенная версия играет с SoundCloud');
+    console.log(`🔁 "${song.name}" → SoundCloud "${match.name}" (поток проверен)`);
     return url;
   }
 }
@@ -871,11 +958,26 @@ class MusicModule {
       lines.push('⏭️ YouTube: аудиопоток — пропущен, данные видео не получены');
     }
 
+    let soundCloudCandidates = [];
     await check('SoundCloud: поиск', async () => {
-      const results = await this.soundcloud.search('never gonna give you up', undefined, 1);
-      if (!results.length) throw new Error('пустая выдача');
-      return clampText(results[0].name, 40);
+      soundCloudCandidates = await this.soundcloud.search('never gonna give you up', undefined, 6);
+      if (!soundCloudCandidates.length) throw new Error('пустая выдача');
+      return `${soundCloudCandidates.length} вариантов · ${clampText(soundCloudCandidates[0].name, 40)}`;
     });
+
+    if (soundCloudCandidates.length) {
+      await check('SoundCloud: аудиопоток', async () => {
+        const selected = await pickPlayableSoundCloudSong(this.soundcloud, soundCloudCandidates);
+        if (!selected) {
+          throw Object.assign(new Error('Поиск успешен, но ни один из 5 SoundCloud-треков не отдал аудиоданные'), {
+            code: 'SOUNDCLOUD_NO_PLAYABLE_STREAM',
+          });
+        }
+        return `${clampText(selected.song.name, 38)} · ${selected.probe.bytes} байт · HTTP ${selected.probe.status} · ${selected.probe.contentType}`;
+      });
+    } else {
+      lines.push('⏭️ SoundCloud: аудиопоток — пропущен, результаты поиска не получены');
+    }
 
     lines.push(this.config.YT_COOKIE ? 'ℹ️ YT_COOKIE задан' : 'ℹ️ YT_COOKIE не задан');
     return lines;
@@ -1226,7 +1328,11 @@ class MusicModule {
       console.log(`🔌 voice connection ${from.status} -> ${to.status}${to.reason !== undefined ? ` (reason ${to.reason}${to.closeCode ? `, close ${to.closeCode}` : ''})` : ''}`);
     });
     voice.audioPlayer?.on('stateChange', (from, to) => {
-      console.log(`🎚️ audio player ${from.status} -> ${to.status}`);
+      const ending = to.status === 'idle' && from.status !== 'idle';
+      const detail = ending
+        ? ` · reason=${to.reason || 'unknown'}, playedMs=${from.resource?.playbackDuration ?? 0}, ffmpegExit=${voice.stream?.process?.exitCode ?? 'unknown'}, ffmpegSignal=${voice.stream?.process?.signalCode ?? 'none'}`
+        : '';
+      console.log(`🎚️ audio player ${from.status} -> ${to.status}${detail}`);
     });
   }
 
