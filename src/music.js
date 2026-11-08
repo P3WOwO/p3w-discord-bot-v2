@@ -660,7 +660,15 @@ class MusicModule {
   // ───── создание DisTube ─────
 
   #createDistube() {
-    const ffmpegPath = require('ffmpeg-static');
+    // ffmpeg: пакет из npm (не качает бинарник с GitHub), затем ffmpeg-static, затем системный ffmpeg.
+    let ffmpegPath = null;
+    for (const name of ['@ffmpeg-installer/ffmpeg', 'ffmpeg-static']) {
+      try {
+        const mod = require(name);
+        ffmpegPath = typeof mod === 'string' ? mod : mod?.path;
+        if (ffmpegPath) break;
+      } catch { /* пакет не установлен */ }
+    }
     const cookie = this.config.YT_COOKIE;
 
     this.youtube = new P3WYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);

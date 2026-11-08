@@ -36,6 +36,19 @@ index a4408ea..284a178 100644
  - **SoundCloud:** работает через официальный экстрактор DisTube; поддерживаются треки и подборки.
  - **Spotify:** сам Spotify не отдаёт боту аудиопоток. Плагин получает название и исполнителя и ищет аудио в других подключённых источниках.
  - **Яндекс Музыка:** поддерживаются публичные ссылки на треки, альбомы и плейлисты. Плагин включается только после настройки двух секретов Render: `YANDEX_MUSIC_OAUTH_TOKEN` и `YANDEX_MUSIC_UID`. Токен и UID должны принадлежать одному аккаунту. Вне российского VDS для API может потребоваться Premium-подписка Яндекс Музыки.
+diff --git a/package.json b/package.json
+index 502fe7b..c7cf8e9 100644
+--- a/package.json
++++ b/package.json
+@@ -20,7 +20,7 @@
+     "@distube/soundcloud": "^2.0.4",
+     "@distube/youtube": "^1.1.0",
+     "distube": "^5.2.3",
+-    "ffmpeg-static": "^5.3.0",
++    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+     "@distube/ytdl-core": "^5.2.1",
+     "distube-yandex-music-plugin": "^1.0.5"
+   }
 diff --git a/src/bot.js b/src/bot.js
 index d58e6a6..08d618a 100644
 --- a/src/bot.js
@@ -532,10 +545,10 @@ index d58e6a6..08d618a 100644
        if (this.client?.destroy) await this.client.destroy();
      } catch (e) {
 diff --git a/src/music.js b/src/music.js
-index 6a79c63..f4f53fd 100644
+index 6a79c63..80f0376 100644
 --- a/src/music.js
 +++ b/src/music.js
-@@ -1,42 +1,1346 @@
+@@ -1,42 +1,1354 @@
 -const { DisTube } = require('distube');
 -const { YouTubePlugin } = require('@distube/youtube');
 +'use strict';
@@ -1227,7 +1240,15 @@ index 6a79c63..f4f53fd 100644
 +  // ───── создание DisTube ─────
 +
 +  #createDistube() {
-+    const ffmpegPath = require('ffmpeg-static');
++    // ffmpeg: пакет из npm (не качает бинарник с GitHub), затем ffmpeg-static, затем системный ffmpeg.
++    let ffmpegPath = null;
++    for (const name of ['@ffmpeg-installer/ffmpeg', 'ffmpeg-static']) {
++      try {
++        const mod = require(name);
++        ffmpegPath = typeof mod === 'string' ? mod : mod?.path;
++        if (ffmpegPath) break;
++      } catch { /* пакет не установлен */ }
++    }
 +    const cookie = this.config.YT_COOKIE;
 +
 +    this.youtube = new P3WYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);
