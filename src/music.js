@@ -3,7 +3,7 @@
 /**
  * Музыкальный модуль P3W.
  *
- * Всё, что относится к музыке, живёт здесь: источники (YouTube / SoundCloud /
+ * Всё, что относится к музыке, живёт здесь: источники (YouTube / Audius /
  * Spotify / Яндекс Музыка), очередь, слэш-команды, панель управления с кнопками
  * и обработка голосового канала. bot.js только подключает модуль.
  *
@@ -13,7 +13,7 @@
  *   ytdl.download() — он сам ходит с нужными заголовками, кусками, перезапрашивает
  *   ссылку при 403 и умеет SABR. Поток отдаётся ffmpeg через локальный мост
  *   (127.0.0.1), а если YouTube не отдал даже первые байты — трек автоматически
- *   ищется на SoundCloud.
+ *   ищется на Audius.
  */
 
 const http = require('http');
@@ -90,7 +90,7 @@ const AUDIO_FILTERS = [
 
 const SOURCE_LABELS = {
   youtube: 'YouTube',
-  soundcloud: 'SoundCloud',
+  audius: 'Audius',
   spotify: 'Spotify',
   yandex: 'Яндекс Музыка',
   'yandex-music': 'Яндекс Музыка',
@@ -139,7 +139,7 @@ function sourceLabel(source) {
   return SOURCE_LABELS[key] || (key ? key[0].toUpperCase() + key.slice(1) : 'Неизвестно');
 }
 
-// Заметки про трек (например, «звук взят с SoundCloud»), не засоряя объект Song.
+// Заметки про трек (например, «звук взят с Audius»), не засоряя объект Song.
 const songNotes = new WeakMap();
 const setNote = (song, note) => { if (song && typeof song === 'object') songNotes.set(song, note); };
 const getNote = song => (song && typeof song === 'object' ? songNotes.get(song) : undefined);
@@ -209,13 +209,13 @@ function formatMusicError(err) {
     return '❌ Источник временно ограничил запросы. Попробуй немного позже.';
   }
   if (/YT_STREAM_TIMEOUT|YT_STREAM_EMPTY|NO_FORMAT|UNPLAYABLE_FORMATS|PLAYER_SOLVE_FAILED|REQUEST_FAILED/i.test(all)) {
-    return '❌ YouTube не отдал аудиопоток, а на SoundCloud такого же трека не нашлось. Попробуй другую ссылку или название, либо подключи YT_COOKIE.';
+    return '❌ YouTube не отдал аудиопоток, а на Audius такого же трека не нашлось. Попробуй другую ссылку или название, либо подключи YT_COOKIE.';
   }
   if (/NO_RESULT|NOT_FOUND|NO_STREAM_URL|CANNOT_RESOLVE/i.test(code)) {
     return '❌ Не удалось найти трек. Проверь ссылку или попробуй другое название.';
   }
   if (/NOT_SUPPORTED_URL/i.test(code)) {
-    return '❌ Эта ссылка не поддерживается. Работают YouTube, SoundCloud, Spotify и Яндекс Музыка.';
+    return '❌ Эта ссылка не поддерживается. Работают YouTube, Audius, Spotify и Яндекс Музыка.';
   }
   const detail = cause && cause !== raw ? ` · ${cause}` : '';
   return `❌ Не удалось запустить музыку: ${clampText(raw + detail, 350)}`;
@@ -235,7 +235,7 @@ async function fetchOEmbedTitle(url) {
   }
 }
 
-// Чистим «(Official Video)», «[HD]» и т.п., чтобы поиск на SoundCloud находил больше.
+// Чистим «(Official Video)», «[HD]» и т.п., чтобы поиск на Audius находил больше.
 function cleanTitle(name) {
   return String(name || '')
     .replace(/[([{](?:official|lyrics?|lyric video|audio|video|music video|hd|hq|4k|remaster(?:ed)?|clip|клип|премьера|live)[^)\]}]*[)\]}]/gi, ' ')
@@ -303,7 +303,7 @@ function primeStream(stream, timeoutMs = STREAM_PRIME_TIMEOUT_MS) {
   });
 }
 
-// Проверяем, что SoundCloud действительно отдаёт байты медиа, а не только результат поиска.
+// Проверяем, что Audius действительно отдаёт байты медиа, а не только результат поиска.
 // ───────────────────────────── локальный мост для YouTube ─────────────────────────────
 
 class StreamBridge {
@@ -390,10 +390,10 @@ class StreamBridge {
   }
 }
 
-// ───────────────────────────── SoundCloud AAC-HLS → Readable bridge ─────────────────────────────
+// ───────────────────────────── Audius AAC-HLS → Readable bridge ─────────────────────────────
 
-// @distube/soundcloud resolves and searches tracks, while this maintained stream client
-// assembles SoundCloud's AAC HLS init segment + media fragments into one readable stream.
+// @distube/audius resolves and searches tracks, while this maintained stream client
+// assembles Audius's AAC HLS init segment + media fragments into one readable stream.
 class P3WAudiusPlugin extends ExtractorPlugin {
   constructor(options = {}) {
     super();
@@ -520,40 +520,40 @@ class P3WYouTubePlugin extends YouTubePlugin {
   constructor(options, bridge) {
     super(options);
     this.bridge = bridge;
-    this.fallback = null; // SoundCloudPlugin, подставляется после создания
+    this.fallback = null; // AudiusPlugin, подставляется после создания
   }
 
-  // Ссылка на ролик: если YouTube не отдаёт данные, берём название через oEmbed и ищем на SoundCloud.
+  // Ссылка на ролик: если YouTube не отдаёт данные, берём название через oEmbed и ищем на Audius.
   async resolve(url, options) {
     try {
       return await super.resolve(url, options);
     } catch (err) {
       const singleVideo = !parsePlaylistId(url) && parseVideoId(url);
       if (!singleVideo || !this.fallback) throw err;
-      console.warn('YouTube resolve failed, trying SoundCloud by title:', briefError(err));
+      console.warn('YouTube resolve failed, trying Audius by title:', briefError(err));
       const title = await fetchOEmbedTitle(url);
       if (!title) throw err;
       const song = await this.#findAudiusSong(title, options).catch(fallbackErr => {
-        console.warn('SoundCloud fallback search failed:', briefError(fallbackErr));
+        console.warn('Audius fallback search failed:', briefError(fallbackErr));
         return null;
       });
       if (!song) throw err;
-      setNote(song, 'YouTube недоступен: проверенная версия найдена на SoundCloud');
+      setNote(song, 'YouTube недоступен: проверенная версия найдена на Audius');
       return song;
     }
   }
 
-  // Текстовый запрос (и подбор трека для Spotify): сначала YouTube, при сбое — SoundCloud.
+  // Текстовый запрос (и подбор трека для Spotify): сначала YouTube, при сбое — Audius.
   async searchSong(query, options) {
     try {
       const song = await super.searchSong(query, options);
       if (song) return song;
     } catch (err) {
-      console.warn('YouTube search failed, trying SoundCloud:', briefError(err));
+      console.warn('YouTube search failed, trying Audius:', briefError(err));
     }
     if (!this.fallback) return null;
     return this.#findAudiusSong(query, options).catch(err => {
-      console.warn('SoundCloud search failed:', briefError(err));
+      console.warn('Audius search failed:', briefError(err));
       return null;
     });
   }
@@ -577,7 +577,7 @@ class P3WYouTubePlugin extends YouTubePlugin {
         const alt = await this.#audiusStream(song);
         if (alt) return alt;
       } catch (fallbackErr) {
-        console.warn('SoundCloud fallback failed:', briefError(fallbackErr));
+        console.warn('Audius fallback failed:', briefError(fallbackErr));
       }
       throw err;
     }
@@ -623,8 +623,8 @@ class P3WYouTubePlugin extends YouTubePlugin {
     if (!match) return null;
     const url = await this.fallback.getStreamURL(match);
     if (!url) return null;
-    setNote(song, 'YouTube не отдал звук: проверенная версия играет с SoundCloud');
-    console.log(`🔁 "${song.name}" → SoundCloud "${match.name}" (поток проверен)`);
+    setNote(song, 'YouTube не отдал звук: проверенная версия играет с Audius');
+    console.log(`🔁 "${song.name}" → Audius "${match.name}" (поток проверен)`);
     return url;
   }
 }
@@ -782,7 +782,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName('leave').setDescription('Остановить музыку и отключить P3W от войса').toJSON(),
     new SlashCommandBuilder()
       .setName('musictest')
-      .setDescription('Проверить источники музыки (YouTube, SoundCloud) и показать, что сломано')
+      .setDescription('Проверить источники музыки (YouTube, Audius) и показать, что сломано')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .toJSON(),
   ];
@@ -1232,7 +1232,7 @@ class MusicModule {
 
       if (playerError) throw playerError;
       if (ffmpeg.signalCode === 'SIGSEGV' || processResult?.signal === 'SIGSEGV') {
-        throw new Error('FFmpeg crashed with SIGSEGV while decoding SoundCloud audio');
+        throw new Error('FFmpeg crashed with SIGSEGV while decoding Audius audio');
       }
       if (processResult && processResult.code !== 0) {
         throw new Error(`FFmpeg exited with code ${processResult.code}: ${stderr.join(' | ')}`);
