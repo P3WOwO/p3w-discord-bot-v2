@@ -204,7 +204,10 @@ function formatMusicError(err) {
     return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
   }
   if (/BOT_CHECK|AUTH_FAILED|SIGN_IN|LOGIN_REQUIRED|not a bot/i.test(all)) {
-    return '❌ YouTube ограничил запросы, а запасные источники не нашли подходящую версию. Можно подключить YT_COOKIE в секретах Render, но fallback SoundCloud/Audius уже включён.';
+    return '❌ YouTube ограничил запросы, а SoundCloud/Audius не нашли подходящую версию. Можно подключить YT_COOKIE в секретах Render.';
+  }
+  if (/SOUNDCLOUD_NO_PLAYABLE_STREAM|cbc-encrypted-hls|ctr-encrypted-hls/i.test(all)) {
+    return '❌ SoundCloud отдаёт только защищённый поток, а альтернативная версия не найдена. Для этой записи источник не предоставляет обычное аудио.';
   }
   if (/AGE_RESTRICTED|PRIVATE|MEMBERS_ONLY|PREMIUM_ONLY|REGION_BLOCKED|UNAVAILABLE_VIDEO|NOT_STARTED/i.test(all)) {
     return '❌ Этот трек недоступен: он приватный, с возрастным ограничением, ограничен по региону или ещё не вышел.';
@@ -691,6 +694,7 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
     if (!trackUrl) throw new Error('SoundCloud track URL is missing');
 
     const track = await this.streamClient.getTrackDetails(trackUrl);
+    const songObject = typeof song === 'string' ? this.#toSong(track) : song;
     const transcodings = this.streamClient._getSortedTranscodings(track);
     const failures = [];
     console.log('[soundcloud-stream] ' + (track.title || trackUrl) + ': transcodings=' + transcodings.length);
@@ -735,8 +739,8 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
       }
     }
 
-    if (typeof song === 'object' && song) {
-      return this.#fallbackStream(song, failures);
+    if (songObject) {
+      return this.#fallbackStream(songObject, failures);
     }
     throw Object.assign(new Error('SoundCloud has no playable transcoding: ' + failures.join(' | ')), {
       code: 'SOUNDCLOUD_NO_PLAYABLE_STREAM',
@@ -898,6 +902,70 @@ class P3WYouTubePlugin extends YouTubePlugin {
     await primeStream(stream);
     await this.bridge.start();
     return this.bridge.register(stream, song.name);
+  }
+}
+
+
+// Yandex Music direct playback with mirror fallback when its stream endpoint fails.
+// Metadata resolution still requires the user's Yandex OAuth token and UID.
+class P3WYandexMusicPlugin extends YandexMusicPlugin {
+  constructor(options, sources) {
+    super(options);
+    this.sources = sources || {};
+  }
+
+  async getStreamURL(song) {
+    try {
+      return await super.getStreamURL(song);
+    } catch (error) {
+      const query = buildFallbackQuery(song);
+      const failures = ['Yandex Music: ' + briefError(error)];
+      if (query && this.sources.youtube) {
+        try {
+          const candidate = await this.sources.youtube.searchYouTubeOnly(query, { member: song.member }, song.duration);
+          if (candidate) {
+            const url = await this.sources.youtube.getDirectStreamURL(candidate);
+            if (url) {
+              setNote(song, 'Яндекс не отдал аудио: включена подходящая версия с YouTube');
+              return url;
+            }
+          }
+        } catch (fallbackError) {
+          failures.push('YouTube: ' + briefError(fallbackError));
+        }
+      }
+      if (query && this.sources.soundcloud) {
+        try {
+          const candidate = await this.sources.soundcloud.searchSong(query, { member: song.member }, song.duration);
+          if (candidate) {
+            const url = await this.sources.soundcloud.getStreamURL(candidate);
+            if (url) {
+              setNote(song, 'Яндекс не отдал аудио: включена подходящая версия с SoundCloud/Audius');
+              return url;
+            }
+          }
+        } catch (fallbackError) {
+          failures.push('SoundCloud: ' + briefError(fallbackError));
+        }
+      }
+      if (query && this.sources.audius) {
+        try {
+          const candidate = await this.sources.audius.searchSong(query, { member: song.member }, song.duration);
+          if (candidate) {
+            const url = await this.sources.audius.getStreamURL(candidate);
+            if (url) {
+              setNote(song, 'Яндекс не отдал аудио: включена подходящая версия с Audius');
+              return url;
+            }
+          }
+        } catch (fallbackError) {
+          failures.push('Audius: ' + briefError(fallbackError));
+        }
+      }
+      throw Object.assign(new Error('Яндекс не отдал поток, резервные источники не нашли рабочую версию: ' + failures.join(' | '), {
+        cause: error,
+      }), { code: 'YANDEX_NO_PLAYABLE_STREAM' });
+    }
   }
 }
 
@@ -1135,10 +1203,10 @@ class MusicModule {
     // Яндекс играет напрямую; Spotify использует общую цепочку поиска плеера.
     this.yandex = null;
     if (this.config.YANDEX_MUSIC_OAUTH_TOKEN && this.config.YANDEX_MUSIC_UID) {
-      this.yandex = new YandexMusicPlugin({
+      this.yandex = new P3WYandexMusicPlugin({
         oauthToken: this.config.YANDEX_MUSIC_OAUTH_TOKEN,
         uid: this.config.YANDEX_MUSIC_UID,
-      });
+      }, { youtube: this.youtube, soundcloud: this.soundcloud, audius: this.audius });
       plugins.splice(plugins.length - 1, 0, this.yandex);
       console.log('✅ Yandex Music source enabled');
     } else {
