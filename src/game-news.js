@@ -10,6 +10,14 @@ function clean(value, maxLength) {
   return String(value ?? '').trim().slice(0, maxLength);
 }
 
+// Accept both original JSON keys and normalized camelCase keys.
+// publishGameNews() validates first, then passes that result to the message
+// builder, which validates again. Supporting both shapes prevents image_url
+// (and source_url / old_price / expires_at) from being silently discarded.
+function readField(raw, snakeCase, camelCase) {
+  return raw?.[snakeCase] ?? raw?.[camelCase];
+}
+
 // Some generated JSON descriptions arrive with literal "\\n" text.
 // Convert those sequences to real line breaks before placing them in Discord.
 function normalizeDescription(value) {
@@ -29,10 +37,10 @@ function validHttpUrl(value, fieldName, required = false) {
   try {
     parsed = new URL(input);
   } catch {
-    throw Object.assign(new Error(`Поле ${fieldName} должно быть корректной ссылкой.`), { statusCode: 400 });
+    throw Object.assign(new Error('Поле ' + fieldName + ' должно быть корректной ссылкой.'), { statusCode: 400 });
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw Object.assign(new Error(`Поле ${fieldName} должно начинаться с http:// или https://.`), { statusCode: 400 });
+    throw Object.assign(new Error('Поле ' + fieldName + ' должно начинаться с http:// или https://.'), { statusCode: 400 });
   }
   return parsed.toString();
 }
@@ -48,19 +56,19 @@ function validateGameNewsPayload(raw) {
   const url = validHttpUrl(raw.url, 'url', true);
   const description = normalizeDescription(raw.description);
   const price = clean(raw.price, 80);
-  const oldPrice = clean(raw.old_price, 80);
+  const oldPrice = clean(readField(raw, 'old_price', 'oldPrice'), 80);
   const discount = clean(raw.discount, 40);
   const source = clean(raw.source, 80) || 'Игровые предложения';
-  const imageUrl = validHttpUrl(raw.image_url, 'image_url');
-  const sourceUrl = validHttpUrl(raw.source_url, 'source_url');
-  const expiresAt = clean(raw.expires_at, 64);
+  const imageUrl = validHttpUrl(readField(raw, 'image_url', 'imageUrl'), 'image_url');
+  const sourceUrl = validHttpUrl(readField(raw, 'source_url', 'sourceUrl'), 'source_url');
+  const expiresAt = clean(readField(raw, 'expires_at', 'expiresAt'), 64);
 
   if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) {
     throw Object.assign(new Error('Поле expires_at должно содержать дату ISO 8601.'), { statusCode: 400 });
   }
 
   const suppliedId = clean(raw.id, 160);
-  const id = suppliedId || crypto.createHash('sha256').update(`${title}\n${url}`).digest('hex');
+  const id = suppliedId || crypto.createHash('sha256').update(title + '\n' + url).digest('hex');
 
   return { id, title, url, description, price, oldPrice, discount, source, imageUrl, sourceUrl, expiresAt };
 }
@@ -76,45 +84,101 @@ function getEmbedColor(item) {
   return 0x5865f2;
 }
 
+function parseDescription(value) {
+  const paragraphs = normalizeDescription(value)
+    .split(/\n\s*\n/)
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  const lead = [];
+  const sections = [];
+
+  for (const paragraph of paragraphs) {
+    const match = paragraph.match(/^\*\*([^*]{1,48}):\*\*\s*([\s\S]+)$/);
+    if (match) {
+      sections.push({
+        label: match[1].trim(),
+        value: match[2].trim(),
+      });
+    } else {
+      lead.push(paragraph);
+    }
+  }
+
+  return {
+    lead: clean(lead.join('\n\n'), 1100),
+    sections,
+  };
+}
+
+function formatSectionName(label) {
+  const normalized = String(label || '').toLowerCase().replace(/ё/g, 'е');
+
+  if (/что происходит|что произошло|что известно|главное|суть/.test(normalized)) return '📰 ЧТО ПРОИЗОШЛО';
+  if (/почему важно|почему это важно|значение/.test(normalized)) return '💡 ПОЧЕМУ ЭТО ВАЖНО';
+  if (/статус|подтверждение/.test(normalized)) return '📍 СТАТУС';
+  if (/как получить|как забрать|получение/.test(normalized)) return '🎁 КАК ПОЛУЧИТЬ';
+  if (/срок|действует до|забрать до/.test(normalized)) return '⏳ СРОК';
+  if (/условия|ограничения/.test(normalized)) return 'ℹ️ УСЛОВИЯ';
+
+  return '✦ ' + clean(label, 48).toUpperCase();
+}
+
 function buildGameNewsEmbed(raw) {
   const item = validateGameNewsPayload(raw);
+  const parsed = parseDescription(item.description);
   const embed = new EmbedBuilder()
     .setColor(getEmbedColor(item))
-    .setAuthor({ name: `🎮 ${item.source}` })
+    .setAuthor({ name: 'P3W  /  ' + item.source.toUpperCase() })
     .setTitle(item.title)
     .setURL(item.url)
     .setTimestamp();
 
-  if (item.description) embed.setDescription(item.description);
+  if (parsed.lead) {
+    embed.setDescription(parsed.lead);
+  } else if (item.description && !parsed.sections.length) {
+    embed.setDescription(clean(item.description, 1100));
+  }
 
   const fields = [];
+  for (const section of parsed.sections) {
+    fields.push({
+      name: formatSectionName(section.label),
+      value: clean(section.value, 1024) || 'Подробности по ссылке.',
+      inline: false,
+    });
+  }
+
   if (item.price || item.oldPrice) {
     const priceParts = [];
-    if (item.oldPrice) priceParts.push(`~~${item.oldPrice}~~`);
-    if (item.price) priceParts.push(`**${item.price}**`);
-    fields.push({ name: '💰 Цена', value: priceParts.join(' → ') || '—', inline: true });
+    if (item.oldPrice) priceParts.push('~~' + item.oldPrice + '~~');
+    if (item.price) priceParts.push('**' + item.price + '**');
+    fields.push({ name: '💰 ЦЕНА', value: priceParts.join(' → ') || '—', inline: true });
   }
   if (item.discount) {
-    fields.push({ name: '🏷️ Скидка', value: `**${item.discount}**`, inline: true });
+    fields.push({ name: '🏷️ СКИДКА', value: '**' + item.discount + '**', inline: true });
   }
   if (item.expiresAt) {
     const timestamp = Math.floor(Date.parse(item.expiresAt) / 1000);
     fields.push({
-      name: '⏳ Забрать до',
-      value: `<t:${timestamp}:F>\n<t:${timestamp}:R>`,
+      name: '⏳ ЗАБРАТЬ ДО',
+      value: '<t:' + timestamp + ':D>\n<t:' + timestamp + ':R>',
       inline: true,
     });
   }
+
   if (fields.length) embed.addFields(fields);
-  embed.setFooter({ text: 'P3W  •  Игровые новости' });
+  embed.setFooter({ text: 'P3W  •  ИГРОВЫЕ НОВОСТИ' });
   return embed;
 }
 
 function buildGameNewsComponents(raw) {
   const item = validateGameNewsPayload(raw);
   const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount);
-  const storeName = item.source.trim();
-  const actionLabel = isFree ? 'Забрать бесплатно' : `Открыть ${storeName}`.slice(0, 80);
+  const isOffer = Boolean(item.price || item.oldPrice || item.discount || item.expiresAt);
+  const actionLabel = isFree
+    ? 'Забрать бесплатно'
+    : (isOffer ? 'Открыть предложение' : 'Читать новость');
 
   const buttons = [
     new ButtonBuilder()
@@ -127,7 +191,7 @@ function buildGameNewsComponents(raw) {
     buttons.push(
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
-        .setLabel('Источник')
+        .setLabel('Официальный источник')
         .setURL(item.sourceUrl),
     );
   }
@@ -139,8 +203,8 @@ function buildGameNewsMessage(raw) {
   const item = validateGameNewsPayload(raw);
   const embeds = [];
 
-  // Separate wide artwork embed keeps the image above the information card,
-  // similar to a promo banner followed by a structured news card.
+  // The hero image is a separate first embed so it appears before the news card.
+  // imageUrl survives the second validation because both key styles are accepted.
   if (item.imageUrl) {
     embeds.push(
       new EmbedBuilder()
@@ -149,7 +213,7 @@ function buildGameNewsMessage(raw) {
     );
   }
 
-  embeds.push(buildGameNewsEmbed({ ...raw, image_url: null }));
+  embeds.push(buildGameNewsEmbed(item));
 
   return {
     embeds,
