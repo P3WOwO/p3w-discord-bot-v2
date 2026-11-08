@@ -793,10 +793,6 @@ class MusicModule {
     this.#createDistube();
     this.#bindEvents();
 
-    client.once(Events.ClientReady, () => {
-      const timer = setTimeout(() => this.#logSelfTest(), 8000);
-      timer.unref?.();
-    });
   }
 
   // ───── создание DisTube ─────
@@ -1037,15 +1033,6 @@ class MusicModule {
 
     lines.push(this.config.YT_COOKIE ? 'ℹ️ YT_COOKIE задан' : 'ℹ️ YT_COOKIE не задан');
     return lines;
-  }
-
-  async #logSelfTest() {
-    try {
-      const lines = await this.runDiagnostics();
-      console.log(`🎵 Проверка музыкальных источников:\n${lines.join('\n')}`);
-    } catch (err) {
-      console.warn('Music self-test failed:', briefError(err));
-    }
   }
 
   // ───── slash-команды ─────
