@@ -757,7 +757,15 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
     const trackUrl = typeof song === 'string' ? song : song?.url;
     if (!trackUrl) throw new Error('SoundCloud track URL is missing');
 
-    const track = await this.streamClient.getTrackDetails(trackUrl);
+    let track;
+    try {
+      track = await this.streamClient.getTrackDetails(trackUrl);
+    } catch (error) {
+      if (song && typeof song === 'object') {
+        return this.#fallbackStream(song, ['SoundCloud metadata: ' + briefError(error)]);
+      }
+      throw error;
+    }
     const songObject = typeof song === 'string' ? this.#toSong(track) : song;
     const transcodings = this.streamClient._getSortedTranscodings(track);
     const failures = [];
