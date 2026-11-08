@@ -1156,12 +1156,22 @@ class P3WYouTubePlugin extends YouTubePlugin {
         }
       }
 
+      if (cookiePath) {
+        const cookieEntries = fs.readFileSync(cookiePath, 'utf8')
+          .split(/\\r?\\n/)
+          .filter(line => line.split('\\t').length >= 7).length;
+        console.log(`[youtube-fallback] yt-dlp cookie entries loaded: ${cookieEntries}`);
+      } else {
+        console.warn('[youtube-fallback] yt-dlp has no cookies; set YT_COOKIE or YT_COOKIE_FILE');
+      }
+
       const args = [
         '--ignore-config',
         '--no-playlist',
         '--no-progress',
         '--no-warnings',
         '--quiet',
+        '--extractor-args', process.env.YT_DLP_EXTRACTOR_ARGS || 'youtube:player_client=default,-web_embedded',
         '--format', 'bestaudio/best',
         '--output', '-',
         '--socket-timeout', '20',
