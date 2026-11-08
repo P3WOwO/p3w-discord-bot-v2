@@ -78,6 +78,31 @@ function safeStreamUrl(value) {
   }
 }
 
+async function probeAudioUrl(url, timeoutMs = 12000) {
+  const response = await fetch(url, {
+    headers: { Range: 'bytes=0-4095' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error('Audio input HTTP ' + response.status + ' · ' + (response.headers.get('content-type') || 'no body'));
+  }
+  const reader = response.body.getReader();
+  let first;
+  try {
+    first = await reader.read();
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  if (!first?.value?.byteLength) throw new Error('Audio input returned an empty body');
+  return {
+    status: response.status,
+    bytes: first.value.byteLength,
+    contentType: response.headers.get('content-type') || 'unknown',
+    finalUrl: safeStreamUrl(response.url),
+  };
+}
+
 const MUSIC_COMMANDS = new Set([
   'play', 'skip', 'pause', 'resume', 'stop', 'queue', 'nowplaying',
   'volume', 'leave', 'player', 'loop', 'shuffle', 'musictest',
@@ -1455,6 +1480,46 @@ class MusicModule {
       lines.push('⏭️ Audius: аудиопоток — пропущен, поиск не дал допустимых результатов');
     }
 
+    let soundCloudSong = null;
+    await check('SoundCloud: поиск', async () => {
+      soundCloudSong = await this.soundcloud.searchSong('lofi instrumental');
+      if (!soundCloudSong) throw new Error('пустая выдача');
+      return clampText(soundCloudSong.name, 48);
+    });
+
+    if (soundCloudSong) {
+      await check('SoundCloud: поток или автоматический fallback', async () => {
+        const url = await this.soundcloud.getStreamURL(soundCloudSong);
+        const probe = await probeAudioUrl(url);
+        return (getNote(soundCloudSong) || 'нативный SoundCloud') + ' · HTTP ' + probe.status + ' · ' + probe.contentType + ' · ' + probe.bytes + ' bytes';
+      });
+    } else {
+      lines.push('⏭️ SoundCloud: поток — пропущен, поиск не дал результатов');
+    }
+
+    await check('Spotify: metadata + подбор воспроизводимого источника', async () => {
+      const metadata = await this.spotify.api.getData(MUSIC_DIAG_SPOTIFY_URL);
+      if (!metadata?.name) throw new Error('Spotify did not return track metadata');
+      const query = metadata.name + ' ' + (metadata.artists || []).map(artist => artist.name).join(' ');
+      const songs = await this.distube.search(query, { limit: 1 });
+      const song = songs?.[0];
+      if (!song?.plugin?.getStreamURL) throw new Error('Spotify metadata loaded, but no playback source matched the track');
+      const url = await song.plugin.getStreamURL(song);
+      const probe = await probeAudioUrl(url);
+      return metadata.name + ' → ' + sourceLabel(song.source) + ' · ' + probe.bytes + ' bytes';
+    });
+
+    if (this.yandex) {
+      await check('Яндекс Музыка: resolve + аудиопоток/fallback', async () => {
+        const song = await this.yandex.resolve('https://music.yandex.ru/album/10030/track/38634572', {});
+        const url = await this.yandex.getStreamURL(song);
+        const probe = await probeAudioUrl(url);
+        return clampText(song.name, 38) + ' · HTTP ' + probe.status + ' · ' + probe.bytes + ' bytes';
+      });
+    } else {
+      lines.push('⚠️ Яндекс Музыка: не включена — Render не содержит OAuth token и UID аккаунта');
+    }
+
     lines.push(this.config.YT_COOKIE ? 'ℹ️ YT_COOKIE задан' : 'ℹ️ YT_COOKIE не задан');
     return lines;
   }
@@ -1529,29 +1594,16 @@ class MusicModule {
       await entersState(voice.connection, VoiceConnectionStatus.Ready, 20_000);
       console.log('[music-diag] voice connection is READY');
 
-      const song = await this.audius.searchSong(MUSIC_DIAG_AUDIUS_QUERY, {
+      const song = await this.soundcloud.resolve(MUSIC_DIAG_SOUNDCLOUD_URL, {
         member: guild.members.me || undefined,
       });
-      if (!song) throw new Error('Audius did not return a public, ungated and licensed streamable track');
-
-      const streamUrl = await this.audius.getStreamURL(song);
-      const audioResponse = await fetch(streamUrl, {
-        headers: { Accept: 'audio/mpeg' },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(25000),
-      });
-      if (!audioResponse.ok || !audioResponse.body) {
-        throw new Error('Audius stream HTTP ' + audioResponse.status + ' · ' + (audioResponse.headers.get('content-type') || 'no audio body'));
-      }
-      const audioStream = Readable.fromWeb(audioResponse.body);
-      await this.bridge.start();
-      const bridgedAudioUrl = this.bridge.register(audioStream, 'Audius · ' + song.name);
-      console.log('[music-diag] Audius resolved: ' + song.name + ' · trackId=' + song.id);
-      console.log('[music-diag] Audius stream: HTTP ' + audioResponse.status + ' · ' + (audioResponse.headers.get('content-type') || 'unknown') + ' · ' + safeStreamUrl(audioResponse.url));
+      const streamUrl = await this.soundcloud.getStreamURL(song);
+      console.log('[music-diag] SoundCloud URL resolved: ' + song.name + ' · input=' + safeStreamUrl(song.url));
+      console.log('[music-diag] selected playback: ' + (getNote(song) || 'native SoundCloud stream') + ' · stream=' + safeStreamUrl(streamUrl));
 
       ffmpeg = spawn(this.ffmpegPath, [
         '-hide_banner', '-loglevel', 'info', '-nostdin', '-rw_timeout', '15000000',
-        '-i', bridgedAudioUrl,
+        '-i', streamUrl,
         '-vn', '-ac', '2', '-ar', '48000', '-t', '5',
         '-f', 's16le', 'pipe:1',
       ], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1582,7 +1634,7 @@ class MusicModule {
 
       if (playerError) throw playerError;
       if (ffmpeg.signalCode === 'SIGSEGV' || processResult?.signal === 'SIGSEGV') {
-        throw new Error('FFmpeg crashed with SIGSEGV while decoding Audius audio');
+        throw new Error('FFmpeg crashed with SIGSEGV while decoding the selected SoundCloud/fallback audio');
       }
       if (processResult && processResult.code !== 0) {
         throw new Error(`FFmpeg exited with code ${processResult.code}: ${stderr.join(' | ')}`);
@@ -1590,7 +1642,7 @@ class MusicModule {
       if (playedMs < 1500) {
         throw new Error(`voice player produced only ${playedMs} ms of playback; expected at least 1500 ms`);
       }
-      console.log(`[music-diag] PASS: Audius → system FFmpeg → PCM → Opus → Discord voice; playedMs=${playedMs}, ffmpegExit=${processResult?.code ?? 'still running'}`);
+      console.log(`[music-diag] PASS: SoundCloud URL → selected source/fallback → FFmpeg → PCM → Opus → Discord voice; playedMs=${playedMs}, ffmpegExit=${processResult?.code ?? 'still running'}`);
     } catch (err) {
       console.error('[music-diag] FAIL:', describeMusicError(err), {
         ffmpegExit: ffmpeg?.exitCode ?? null,
