@@ -10,15 +10,17 @@
  * Как устроен YouTube:
  *   DisTube по умолчанию отдаёт ffmpeg «голую» ссылку googlevideo. Новый YouTube
  *   такие ссылки часто режет (403, SABR, PO-токены), поэтому звук берётся через
- *   ytdl.download() — он сам ходит с нужными заголовками, кусками, перезапрашивает
- *   ссылку при 403 и умеет SABR. Поток отдаётся ffmpeg через локальный мост
- *   (127.0.0.1), а если YouTube не отдал даже первые байты — трек автоматически
- *   ищется на Audius.
+ *   ytdl.download() — основной загрузчик: он ходит с нужными заголовками, кусками,
+ *   перезапрашивает ссылку при 403 и умеет SABR. Если YouTube обновил player и
+ *   ytdl-core не может его разобрать, поток повторно извлекается через yt-dlp.
+ *   Оба потока отдаются ffmpeg через локальный мост (127.0.0.1), а если оба
+ *   загрузчика не справились — включается поиск на SoundCloud/Audius.
  */
 
 const http = require('http');
 const { randomBytes } = require('crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { Readable } = require('node:stream');
@@ -77,6 +79,29 @@ function safeStreamUrl(value) {
   } catch {
     return '[invalid-url]';
   }
+}
+
+// yt-dlp expects a Netscape cookie jar, while YT_COOKIE is normally a Cookie header.
+// A user can also supply a complete cookies.txt export in YT_COOKIE.
+function toNetscapeCookieFile(rawCookie) {
+  const value = String(rawCookie || '').trim();
+  if (!value) return '';
+  if (/^#.*cookie file/im.test(value)) return value.endsWith('\n') ? value : value + '\n';
+
+  const header = value.replace(/^cookie:\s*/i, '').trim();
+  const rows = header.split(/;\s*/).map(pair => {
+    const separator = pair.indexOf('=');
+    if (separator <= 0) return null;
+    const name = pair.slice(0, separator).trim();
+    const cookieValue = pair.slice(separator + 1).trim();
+    if (!name || /[\t\r\n]/.test(name + cookieValue)) return null;
+    return `.youtube.com\tTRUE\t/\tTRUE\t0\t${name}\t${cookieValue}`;
+  }).filter(Boolean);
+
+  if (!rows.length) {
+    throw new Error('YT_COOKIE is not a Cookie header or Netscape cookies.txt export');
+  }
+  return '# Netscape HTTP Cookie File\n' + rows.join('\n') + '\n';
 }
 
 async function probeAudioUrl(url, timeoutMs = 12000) {
@@ -228,6 +253,9 @@ function formatMusicError(err) {
   }
   if (/VOICE_ALREADY_CREATED|VOICE_CHANNEL_DIFFERENT|QUEUE_EXIST/i.test(code)) {
     return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
+  }
+  if (/YOUTUBE_EXTRACTORS_FAILED/.test(code)) {
+    return '❌ YouTube не удалось извлечь ни основным загрузчиком, ни резервным yt-dlp. Подробная причина записана в Render Logs.';
   }
   if (/BOT_CHECK|AUTH_FAILED|SIGN_IN|LOGIN_REQUIRED|not a bot/i.test(all)) {
     return '❌ YouTube ограничил запросы, а SoundCloud/Audius не нашли подходящую версию. Можно подключить YT_COOKIE в секретах Render.';
@@ -836,6 +864,39 @@ class P3WYouTubePlugin extends YouTubePlugin {
     this.bridge = bridge;
     this.soundcloud = null;
     this.fallback = null; // AudiusPlugin, подставляется после создания
+    this.cookieHeader = options?.ytdlOptions?.cookie || process.env.YT_COOKIE || '';
+
+    const bundledYtDlp = path.join(
+      __dirname,
+      '..',
+      'vendor',
+      'yt-dlp',
+      process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp',
+    );
+    this.ytdlpPath = process.env.YT_DLP_PATH || bundledYtDlp;
+    let probe = spawnSync(this.ytdlpPath, ['--version'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if ((probe.error || probe.status !== 0) && !process.env.YT_DLP_PATH) {
+      const systemProbe = spawnSync('yt-dlp', ['--version'], {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+      });
+      if (!systemProbe.error && systemProbe.status === 0) {
+        this.ytdlpPath = 'yt-dlp';
+        probe = systemProbe;
+      }
+    }
+    this.ytdlpAvailable = !probe.error && probe.status === 0;
+    this.ytdlpVersion = this.ytdlpAvailable ? String(probe.stdout || '').trim() : '';
+    if (this.ytdlpAvailable) {
+      console.log(`✅ YouTube backup extractor: yt-dlp ${this.ytdlpVersion}`);
+    } else {
+      console.warn('[music-diag] yt-dlp backup extractor is not installed');
+    }
   }
 
   async #findFallbackSong(query, options, targetDuration = 0) {
@@ -947,6 +1008,30 @@ class P3WYouTubePlugin extends YouTubePlugin {
   }
 
   async #prepareStream(song) {
+    let primaryError;
+    try {
+      return await this.#prepareWithYtdlCore(song);
+    } catch (error) {
+      primaryError = error;
+      if (!this.ytdlpAvailable) throw error;
+      console.warn('[youtube-fallback] ytdl-core failed; trying yt-dlp:', briefError(error));
+    }
+
+    try {
+      return await this.#prepareWithYtDlp(song);
+    } catch (fallbackError) {
+      throw Object.assign(new Error(
+        'YouTube extraction failed: ytdl-core: ' + briefError(primaryError)
+        + ' | yt-dlp: ' + briefError(fallbackError),
+        { cause: primaryError },
+      ), {
+        code: 'YOUTUBE_EXTRACTORS_FAILED',
+        errors: [primaryError, fallbackError],
+      });
+    }
+  }
+
+  async #prepareWithYtdlCore(song) {
     const ytdl = this.ytdl;
     const info = await ytdl.getInfo(song.url);
     if (!info.formats?.length) {
@@ -975,6 +1060,89 @@ class P3WYouTubePlugin extends YouTubePlugin {
     await primeStream(stream);
     await this.bridge.start();
     return this.bridge.register(stream, song.name);
+  }
+
+  async #prepareWithYtDlp(song) {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p3w-ytdlp-'));
+    const tempCookiePath = path.join(tempDir, 'youtube-cookies.txt');
+    let cookiePath = '';
+
+    try {
+      const configuredCookieFile = process.env.YT_COOKIE_FILE
+        ? path.resolve(process.env.YT_COOKIE_FILE)
+        : '';
+      if (configuredCookieFile && fs.existsSync(configuredCookieFile)) {
+        cookiePath = configuredCookieFile;
+      } else if (this.cookieHeader) {
+        const cookieText = toNetscapeCookieFile(this.cookieHeader);
+        if (cookieText) {
+          fs.writeFileSync(tempCookiePath, cookieText, { mode: 0o600 });
+          cookiePath = tempCookiePath;
+        }
+      }
+
+      const args = [
+        '--ignore-config',
+        '--no-playlist',
+        '--no-progress',
+        '--no-warnings',
+        '--quiet',
+        '--format', 'bestaudio/best',
+        '--output', '-',
+        '--socket-timeout', '20',
+        '--retries', '2',
+        '--js-runtimes', `node:${process.execPath}`,
+      ];
+      if (cookiePath) args.push('--cookies', cookiePath);
+      args.push(song.url);
+
+      const child = spawn(this.ytdlpPath, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      let stderr = '';
+      child.stderr.on('data', chunk => {
+        stderr = (stderr + chunk.toString('utf8')).slice(-6000);
+      });
+      child.stdout.on('error', error => {
+        console.warn('[youtube-fallback] yt-dlp stdout error:', error?.message || error);
+      });
+
+      child.once('error', error => {
+        if (child.stdout && !child.stdout.destroyed) child.stdout.destroy(error);
+      });
+      child.once('close', (code, signal) => {
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* cleanup */ }
+        if (code !== 0 && child.stdout && !child.stdout.destroyed) {
+          const details = clampText(stderr.trim(), 1800);
+          child.stdout.destroy(Object.assign(new Error(
+            `yt-dlp exited with code ${code}${signal ? ' (' + signal + ')' : ''}${details ? ': ' + details : ''}`,
+          ), { code: 'YT_DLP_FAILED' }));
+        }
+      });
+      child.stdout.once('close', () => {
+        if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+      });
+
+      try {
+        await primeStream(child.stdout, 35_000);
+      } catch (error) {
+        if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+        const details = clampText(stderr.trim(), 1800);
+        if (details && !String(error.message || '').includes(details)) {
+          error.message = `${error.message || error} · yt-dlp: ${details}`;
+        }
+        throw error;
+      }
+
+      await this.bridge.start();
+      const bridgeUrl = this.bridge.register(child.stdout, 'YouTube yt-dlp · ' + song.name);
+      console.log('[youtube-fallback] yt-dlp stream prepared for "' + song.name + '"');
+      return bridgeUrl;
+    } catch (error) {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* cleanup */ }
+      throw error;
+    }
   }
 }
 
@@ -1476,26 +1644,15 @@ class MusicModule {
       return clampText(first.title, 40);
     });
 
-    let info = null;
-    const infoOk = await check('YouTube: данные видео', async () => {
-      info = await ytdl.getInfo(SELF_TEST_VIDEO);
-      return `${info.formats?.length || 0} форматов`;
-    });
-
-    if (infoOk && info) {
-      await check('YouTube: аудиопоток', async () => {
-        const stream = ytdl.download(info, { quality: Quality.HighestAudio, filter: AUDIO_FILTERS });
-        stream.on('error', () => {}); // ошибка уже придёт через primeStream
-        try {
-          const bytes = await primeStream(stream, 20_000);
-          return `первые ${bytes} байт получены`;
-        } finally {
-          if (!stream.destroyed) stream.destroy();
-        }
+    await check('YouTube: аудиопоток (ytdl-core → yt-dlp fallback)', async () => {
+      const streamUrl = await this.youtube.getDirectStreamURL({
+        url: SELF_TEST_VIDEO,
+        name: 'P3W YouTube self-test',
+        duration: 0,
       });
-    } else {
-      lines.push('⏭️ YouTube: аудиопоток — пропущен, данные видео не получены');
-    }
+      const probe = await probeAudioUrl(streamUrl, 35_000);
+      return `${probe.contentType} · ${probe.bytes} bytes`;
+    });
 
     let audiusSong = null;
     await check('Audius: поиск', async () => {
@@ -1574,6 +1731,9 @@ class MusicModule {
     }
 
     lines.push(this.config.YT_COOKIE ? 'ℹ️ YT_COOKIE задан' : 'ℹ️ YT_COOKIE не задан');
+    lines.push(this.youtube.ytdlpAvailable
+      ? `ℹ️ yt-dlp fallback: ${this.youtube.ytdlpVersion}`
+      : '⚠️ yt-dlp fallback: не установлен');
     return lines;
   }
 
