@@ -1113,17 +1113,36 @@ class MusicModule {
       return;
     }
 
-    const activeChannels = [...guild.channels.cache.values()].filter(channel =>
-      channel.type === ChannelType.GuildVoice
-      && channel.members.some(member => !member.user.bot),
+    const voiceChannels = [...guild.channels.cache.values()].filter(channel =>
+      channel.type === ChannelType.GuildVoice,
+    );
+    const activeChannels = voiceChannels.filter(channel =>
+      channel.members.some(member => !member.user.bot),
     );
 
-    if (activeChannels.length !== 1) {
-      console.warn(`[music-diag] auto-join skipped: expected exactly one occupied voice channel, found ${activeChannels.length}`);
+    let channel;
+    if (activeChannels.length === 1) {
+      channel = activeChannels[0];
+    } else if (activeChannels.length === 0) {
+      // Когда людей в войсе нет, используем пустой обычный канал: так можно
+      // проверить Discord voice без вторжения в чей-либо разговор.
+      const candidates = voiceChannels
+        .filter(item =>
+          item.members.size === 0
+          && !/afk|away|sleep|сон|неактив/i.test(item.name)
+          && item.permissionsFor(guild.members.me)?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]),
+        )
+        .sort((a, b) => a.rawPosition - b.rawPosition);
+      channel = candidates[0];
+      if (!channel) {
+        console.warn('[music-diag] auto-join skipped: no empty non-AFK voice channel with Connect+Speak permissions');
+        return;
+      }
+      console.log(`[music-diag] no humans online; using empty voice channel "${channel.name}" (${channel.id})`);
+    } else {
+      console.warn(`[music-diag] auto-join skipped: ${activeChannels.length} occupied voice channels; refusing to interrupt them`);
       return;
     }
-
-    const channel = activeChannels[0];
     if (this.distube.getQueue(guild.id)) {
       console.warn('[music-diag] auto-join skipped: a music queue is already active');
       return;
