@@ -1,4 +1,4 @@
-![Логотип Unity — изображение из материала Game Developer, via Unity](https://eu-images.contentstack.com/v3/assets/blt740a130ae3c5d529/blt78529dedab85c7dd/650f04e227144bcd7c2b193f/unitynewlogofeatured.jpg?auto=webp&disable=upscale&quality=80&width=1280)
+![Официальный логотип Unity](https://connect-mediagw.unity.com/h1/20241206/learn/images/b9321927-0355-490b-a329-8de4680ad354_UnityLogo-black.png)
 
 # Silver Lake и суверенный фонд Саудовской Аравии обсуждают покупку Unity примерно за $25 млрд
 
@@ -16,4 +16,4 @@ Reuters подчёркивает, что соглашение не гарант�
 
 **Официальная информация о компании:** [Unity Investor Relations](https://investors.unity.com/overview/)
 
-*Изображение: Unity logo, опубликовано Game Developer с указанием Unity. Материал не является заявлением Unity о продаже компании.*
+*Изображение: официальный логотип Unity.*
