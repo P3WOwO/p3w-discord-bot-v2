@@ -943,7 +943,7 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
     }
     const track = await streamClient.getTrackDetails(song.url).catch(() => null);
     if (!track?.id) return [];
-    const related = await this.streamClient.getRelatedTracks(track.id, { limit: 10 }).catch(() => []);
+    const related = await streamClient.getRelatedTracks(track.id, { limit: 10 }).catch(() => []);
     return (related || []).filter(item => item?.permalink_url && item?.title).map(item => this.#toSong(item));
   }
 }
