@@ -1158,8 +1158,8 @@ class P3WYouTubePlugin extends YouTubePlugin {
 
       if (cookiePath) {
         const cookieEntries = fs.readFileSync(cookiePath, 'utf8')
-          .split(/\\r?\\n/)
-          .filter(line => line.split('\\t').length >= 7).length;
+          .split(String.fromCharCode(10))
+          .filter(line => line.split(String.fromCharCode(9)).length >= 7).length;
         console.log(`[youtube-fallback] yt-dlp cookie entries loaded: ${cookieEntries}`);
       } else {
         console.warn('[youtube-fallback] yt-dlp has no cookies; set YT_COOKIE or YT_COOKIE_FILE');
