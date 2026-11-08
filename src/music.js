@@ -66,6 +66,8 @@ const PLAYBACK_CHECK_MS = 4000;
 const SELF_TEST_VIDEO = 'https://www.youtube.com/watch?v=jNQXAC9IVRw';
 const AUDIUS_API_BASE = (process.env.AUDIUS_API_BASE || 'https://discoveryprovider.audius.co/v1').replace(/\/+$/, '');
 const MUSIC_DIAG_AUDIUS_QUERY = 'lofi instrumental';
+const MUSIC_DIAG_SOUNDCLOUD_URL = 'https://soundcloud.com/overtonightofficial/mirrors-demo';
+const MUSIC_DIAG_SPOTIFY_URL = 'https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT';
 
 function safeStreamUrl(value) {
   try {
@@ -202,7 +204,7 @@ function formatMusicError(err) {
     return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
   }
   if (/BOT_CHECK|AUTH_FAILED|SIGN_IN|LOGIN_REQUIRED|not a bot/i.test(all)) {
-    return '❌ YouTube требует подтвердить, что запросы идут не от бота, а запасной поиск на Audius ничего подходящего не нашёл. Помогает отдельный YT_COOKIE в секретах Render (см. README).';
+    return '❌ YouTube ограничил запросы, а запасные источники не нашли подходящую версию. Можно подключить YT_COOKIE в секретах Render, но fallback SoundCloud/Audius уже включён.';
   }
   if (/AGE_RESTRICTED|PRIVATE|MEMBERS_ONLY|PREMIUM_ONLY|REGION_BLOCKED|UNAVAILABLE_VIDEO|NOT_STARTED/i.test(all)) {
     return '❌ Этот трек недоступен: он приватный, с возрастным ограничением, ограничен по региону или ещё не вышел.';
@@ -217,7 +219,7 @@ function formatMusicError(err) {
     return '❌ Не удалось найти трек. Проверь ссылку или попробуй другое название.';
   }
   if (/NOT_SUPPORTED_URL/i.test(code)) {
-    return '❌ Эта ссылка не поддерживается. Работают YouTube, Audius, Spotify и Яндекс Музыка.';
+    return '❌ Эта ссылка не поддерживается. Работают YouTube, SoundCloud, Audius, Spotify и Яндекс Музыка.';
   }
   const detail = cause && cause !== raw ? ` · ${cause}` : '';
   return `❌ Не удалось запустить музыку: ${clampText(raw + detail, 350)}`;
@@ -494,15 +496,26 @@ class P3WAudiusPlugin extends ExtractorPlugin {
     return this.#toSong(track, options);
   }
 
-  async searchSong(query, options = {}) {
+  async searchSong(query, options = {}, targetDuration = 0) {
     const results = await this.#request('/tracks/search', {
       query,
       limit: 20,
       sort_method: 'relevant',
     });
-    const tracks = Array.isArray(results) ? results : [];
-    const track = tracks.find(item => this.#isAllowedTrack(item));
-    if (!track) return null;
+    const tracks = (Array.isArray(results) ? results : []).filter(item => this.#isAllowedTrack(item));
+    if (!tracks.length) return null;
+    let track = tracks[0];
+    if (targetDuration > 0) {
+      const ranked = tracks
+        .map(item => ({ item, duration: Number(item.duration) || 0 }))
+        .filter(item => item.duration > 0)
+        .map(item => ({ ...item, diff: Math.abs(item.duration - targetDuration) }))
+        .sort((a, b) => a.diff - b.diff);
+      const best = ranked[0];
+      const tolerance = Math.max(12, Math.round(targetDuration * 0.08));
+      if (!best || best.diff > tolerance) return null;
+      track = best.item;
+    }
     return this.#toSong(track, options);
   }
 
@@ -1016,7 +1029,7 @@ function buildCommands() {
     new SlashCommandBuilder()
       .setName('play')
       .setDescription('Включить музыку по ссылке или названию')
-      .addStringOption(o => o.setName('query').setDescription('YouTube, Audius, Spotify, Яндекс Музыка или название трека').setRequired(true).setMaxLength(500))
+      .addStringOption(o => o.setName('query').setDescription('YouTube, SoundCloud, Spotify, Audius, Яндекс Музыка или название трека').setRequired(true).setMaxLength(500))
       .addBooleanOption(o => o.setName('next').setDescription('Поставить следующим в очереди'))
       .toJSON(),
     new SlashCommandBuilder().setName('player').setDescription('Показать панель плеера с кнопками').toJSON(),
@@ -1041,7 +1054,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName('leave').setDescription('Остановить музыку и отключить P3W от войса').toJSON(),
     new SlashCommandBuilder()
       .setName('musictest')
-      .setDescription('Проверить источники музыки (YouTube, Audius) и показать, что сломано')
+      .setDescription('Проверить YouTube, SoundCloud, Spotify, Audius, Яндекс Музыку и голосовой вывод')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .toJSON(),
   ];
@@ -1106,20 +1119,30 @@ class MusicModule {
     const cookie = this.config.YT_COOKIE;
 
     this.youtube = new P3WYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);
+    this.soundcloud = new P3WSoundCloudPlugin(this.bridge);
     this.audius = new P3WAudiusPlugin({ apiKey: this.config.AUDIUS_API_KEY });
+    this.spotify = new SpotifyPlugin();
+
+    // Источники соединены в одну fallback-цепочку: YouTube -> SoundCloud -> Audius.
+    this.youtube.soundcloud = this.soundcloud;
     this.youtube.fallback = this.audius;
+    this.soundcloud.youtube = this.youtube;
+    this.soundcloud.audius = this.audius;
 
-    const plugins = [this.youtube, this.audius, new SpotifyPlugin()];
+    const plugins = [this.youtube, this.soundcloud, this.audius, this.spotify];
 
-    // Яндекс Музыке нужны реальный токен и UID пользователя (хранятся вне репозитория).
+    // Яндекс API требует токен и UID одного аккаунта. Если они заданы,
+    // Яндекс играет напрямую; Spotify использует общую цепочку поиска плеера.
+    this.yandex = null;
     if (this.config.YANDEX_MUSIC_OAUTH_TOKEN && this.config.YANDEX_MUSIC_UID) {
-      plugins.push(new YandexMusicPlugin({
+      this.yandex = new YandexMusicPlugin({
         oauthToken: this.config.YANDEX_MUSIC_OAUTH_TOKEN,
         uid: this.config.YANDEX_MUSIC_UID,
-      }));
+      });
+      plugins.splice(plugins.length - 1, 0, this.yandex);
       console.log('✅ Yandex Music source enabled');
     } else {
-      console.log('ℹ️ Yandex Music source is installed but disabled: set YANDEX_MUSIC_OAUTH_TOKEN and YANDEX_MUSIC_UID');
+      console.warn('⚠️ Yandex Music source disabled: YANDEX_MUSIC_OAUTH_TOKEN and YANDEX_MUSIC_UID are not configured');
     }
 
     this.distube = new DisTube(this.client, {
