@@ -81,7 +81,8 @@ async function main() {
   const url = `https://github.com/yt-dlp/yt-dlp/releases/download/${VERSION}/${asset}`;
   try {
     console.log(`[yt-dlp-installer] downloading official yt-dlp ${VERSION} for ${process.platform}/${process.arch}`);
-    await pipeline(requestStream(url), fs.createWriteStream(tempPath));
+    const response = await requestStream(url);
+    await pipeline(response, fs.createWriteStream(tempPath));
     if (process.platform !== 'win32') fs.chmodSync(tempPath, 0o755);
     const actualVersion = getVersion(tempPath);
     if (actualVersion !== VERSION) {
