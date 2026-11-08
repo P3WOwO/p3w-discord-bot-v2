@@ -1214,35 +1214,49 @@ class MusicModule {
       return;
     }
 
-    const voiceChannels = [...guild.channels.cache.values()].filter(channel =>
-      channel.type === ChannelType.GuildVoice,
-    );
-    const activeChannels = voiceChannels.filter(channel =>
-      channel.members.some(member => !member.user.bot),
-    );
-
+    const forcedChannelId = process.env.MUSIC_DIAG_CHANNEL_ID;
     let channel;
-    if (activeChannels.length === 1) {
-      channel = activeChannels[0];
-    } else if (activeChannels.length === 0) {
-      // Когда людей в войсе нет, используем пустой обычный канал: так можно
-      // проверить Discord voice без вторжения в чей-либо разговор.
-      const candidates = voiceChannels
-        .filter(item =>
-          item.members.size === 0
-          && !/afk|away|sleep|сон|неактив/i.test(item.name)
-          && item.permissionsFor(guild.members.me)?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]),
-        )
-        .sort((a, b) => a.rawPosition - b.rawPosition);
-      channel = candidates[0];
-      if (!channel) {
-        console.warn('[music-diag] auto-join skipped: no empty non-AFK voice channel with Connect+Speak permissions');
+    if (forcedChannelId) {
+      channel = guild.channels.cache.get(forcedChannelId)
+        || await guild.channels.fetch(forcedChannelId).catch(() => null);
+      if (!channel || channel.type !== ChannelType.GuildVoice) {
+        console.warn(`[music-diag] auto-join skipped: MUSIC_DIAG_CHANNEL_ID ${forcedChannelId} is not a cached/fetchable voice channel`);
         return;
       }
-      console.log(`[music-diag] no humans online; using empty voice channel "${channel.name}" (${channel.id})`);
+      const permissions = channel.permissionsFor(guild.members.me);
+      if (!permissions?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
+        console.warn(`[music-diag] auto-join skipped: missing Connect/Speak permission in configured channel ${forcedChannelId}`);
+        return;
+      }
+      console.log(`[music-diag] using configured voice channel "${channel.name}" (${channel.id})`);
     } else {
-      console.warn(`[music-diag] auto-join skipped: ${activeChannels.length} occupied voice channels; refusing to interrupt them`);
-      return;
+      const voiceChannels = [...guild.channels.cache.values()].filter(item =>
+        item.type === ChannelType.GuildVoice,
+      );
+      const activeChannels = voiceChannels.filter(item =>
+        item.members.some(member => !member.user.bot),
+      );
+
+      if (activeChannels.length === 1) {
+        channel = activeChannels[0];
+      } else if (activeChannels.length === 0) {
+        const candidates = voiceChannels
+          .filter(item =>
+            item.members.size === 0
+            && !/afk|away|sleep|сон|неактив/i.test(item.name)
+            && item.permissionsFor(guild.members.me)?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]),
+          )
+          .sort((a, b) => a.rawPosition - b.rawPosition);
+        channel = candidates[0];
+        if (!channel) {
+          console.warn('[music-diag] auto-join skipped: no empty non-AFK voice channel with Connect+Speak permissions');
+          return;
+        }
+        console.log(`[music-diag] no humans online; using empty voice channel "${channel.name}" (${channel.id})`);
+      } else {
+        console.warn(`[music-diag] auto-join skipped: ${activeChannels.length} occupied voice channels; refusing to interrupt them`);
+        return;
+      }
     }
     if (this.distube.getQueue(guild.id)) {
       console.warn('[music-diag] auto-join skipped: a music queue is already active');
