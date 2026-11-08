@@ -1,4 +1,4 @@
-![Логотип Valve](https://upload.wikimedia.org/wikipedia/commons/thumb/Valve_logo.svg/1200px-Valve_logo.svg.png)
+![Логотип Valve](https://cdn.akamai.steamstatic.com/steam/apps/593110/header.jpg)
 
 **P3W  /  ИГРОВАЯ ИНДУСТРИЯ** · 9 НОЯБРЯ 2026
 
@@ -41,4 +41,4 @@ Valve обновила рекомендации перед отправкой и
 
 **Источники:** [Valve — Updates to the Pre-Release Review Process](https://steamcommunity.com/groups/steamworks/announcements/detail/556947433188694805) · [The Verge — Valve is making changes to deal with a significant increase in Steam submissions](https://www.theverge.com/games/1025722/valve-steam-game-increase-submissions) · [Game Developer — Valve warns of slower Steam approvals](https://www.gamedeveloper.com/business/valve-warns-of-slower-steam-approval-process-due-to-flood-of-new-games)
 
-<sub>Иллюстрация: логотип Valve.</sub>
+<sub>Иллюстрация: официальный баннер Steamworks.</sub>
