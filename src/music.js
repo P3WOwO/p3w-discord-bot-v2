@@ -62,6 +62,7 @@ const EMPTY_CHANNEL_LEAVE_MS = 2 * 60_000;
 const IDLE_LEAVE_MS = 3 * 60_000;
 const QUEUE_PAGE_SIZE = 10;
 const VOLUME_STEP = 10;
+const VOLUME_MAX = 200;
 const PLAYBACK_CHECK_MS = 4000;
 const SELF_TEST_VIDEO = 'https://www.youtube.com/watch?v=jNQXAC9IVRw';
 const AUDIUS_API_BASE = (process.env.AUDIUS_API_BASE || 'https://discoveryprovider.audius.co/v1').replace(/\/+$/, '');
@@ -1182,7 +1183,7 @@ function buildCommands() {
     new SlashCommandBuilder()
       .setName('volume')
       .setDescription('Изменить громкость музыки')
-      .addIntegerOption(o => o.setName('percent').setDescription('Громкость от 1 до 100').setRequired(true).setMinValue(1).setMaxValue(100))
+      .addIntegerOption(o => o.setName('percent').setDescription('Громкость от 1 до 200; выше 100 — усиление с возможным искажением').setRequired(true).setMinValue(1).setMaxValue(VOLUME_MAX))
       .toJSON(),
     new SlashCommandBuilder()
       .setName('loop')
@@ -1194,7 +1195,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName('leave').setDescription('Остановить музыку и отключить P3W от войса').toJSON(),
     new SlashCommandBuilder()
       .setName('musictest')
-      .setDescription('Проверить YouTube, SoundCloud, Spotify, Audius, Яндекс Музыку и голосовой вывод')
+      .setDescription('Проверить доступность источников YouTube, SoundCloud, Spotify, Audius и Яндекс Музыки')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .toJSON(),
   ];
@@ -1217,26 +1218,6 @@ class MusicModule {
     this.#createDistube();
     this.#bindEvents();
 
-    // Одноразовая автодиагностика по явному флагу Render. Ждём реальной готовности
-    // клиента опросом, чтобы не зависеть от порядка регистрации ClientReady listeners.
-    console.log(`[music-diag] MUSIC_DIAG_AUTOJOIN=${process.env.MUSIC_DIAG_AUTOJOIN || 'unset'}`);
-    if (process.env.MUSIC_DIAG_AUTOJOIN === 'true') {
-      const waitForReady = () => {
-        if (!client.isReady()) {
-          const retry = setTimeout(waitForReady, 1000);
-          retry.unref?.();
-          return;
-        }
-        console.log('[music-diag] Discord client ready; startup voice test scheduled');
-        setTimeout(() => {
-          this.#runStartupVoiceDiagnostic().catch(err => {
-            console.error('[music-diag] startup voice test failed:', describeMusicError(err));
-          });
-        }, 8000);
-      };
-      const initial = setTimeout(waitForReady, 1000);
-      initial.unref?.();
-    }
   }
 
   // ───── создание DisTube ─────
@@ -1571,145 +1552,6 @@ class MusicModule {
     return lines;
   }
 
-  // Автоматическая проверка после деплоя. Подключается только если в GUILD_ID
-  // сейчас ровно один занятый обычный voice-канал — не выбирает случайных людей.
-  async #runStartupVoiceDiagnostic() {
-    const providerDiagnostics = await this.runDiagnostics();
-    for (const line of providerDiagnostics) console.log('[music-diag][provider] ' + line);
-
-    const guildId = this.config.GUILD_ID;
-    const guild = guildId ? this.client.guilds.cache.get(guildId) : null;
-    if (!guild) {
-      console.warn('[music-diag] auto-join skipped: configured GUILD_ID is not cached');
-      return;
-    }
-
-    const forcedChannelId = process.env.MUSIC_DIAG_CHANNEL_ID;
-    let channel;
-    if (forcedChannelId) {
-      channel = guild.channels.cache.get(forcedChannelId)
-        || await guild.channels.fetch(forcedChannelId).catch(() => null);
-      if (!channel || channel.type !== ChannelType.GuildVoice) {
-        console.warn(`[music-diag] auto-join skipped: MUSIC_DIAG_CHANNEL_ID ${forcedChannelId} is not a cached/fetchable voice channel`);
-        return;
-      }
-      const permissions = channel.permissionsFor(guild.members.me);
-      if (!permissions?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
-        console.warn(`[music-diag] auto-join skipped: missing Connect/Speak permission in configured channel ${forcedChannelId}`);
-        return;
-      }
-      console.log(`[music-diag] using configured voice channel "${channel.name}" (${channel.id})`);
-    } else {
-      const voiceChannels = [...guild.channels.cache.values()].filter(item =>
-        item.type === ChannelType.GuildVoice,
-      );
-      const activeChannels = voiceChannels.filter(item =>
-        item.members.some(member => !member.user.bot),
-      );
-
-      if (activeChannels.length === 1) {
-        channel = activeChannels[0];
-      } else if (activeChannels.length === 0) {
-        const candidates = voiceChannels
-          .filter(item =>
-            item.members.size === 0
-            && !/afk|away|sleep|сон|неактив/i.test(item.name)
-            && item.permissionsFor(guild.members.me)?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]),
-          )
-          .sort((a, b) => a.rawPosition - b.rawPosition);
-        channel = candidates[0];
-        if (!channel) {
-          console.warn('[music-diag] auto-join skipped: no empty non-AFK voice channel with Connect+Speak permissions');
-          return;
-        }
-        console.log(`[music-diag] no humans online; using empty voice channel "${channel.name}" (${channel.id})`);
-      } else {
-        console.warn(`[music-diag] auto-join skipped: ${activeChannels.length} occupied voice channels; refusing to interrupt them`);
-        return;
-      }
-    }
-    if (this.distube.getQueue(guild.id)) {
-      console.warn('[music-diag] auto-join skipped: a music queue is already active');
-      return;
-    }
-
-    let voice;
-    let ffmpeg;
-    let playerError;
-    const stderr = [];
-    const onPlayerError = error => { playerError = error; };
-    try {
-      console.log(`[music-diag] connecting to occupied voice channel ${channel.id} (${channel.members.filter(m => !m.user.bot).size} human members)`);
-      voice = await this.ensureVoice(channel);
-      await entersState(voice.connection, VoiceConnectionStatus.Ready, 20_000);
-      console.log('[music-diag] voice connection is READY');
-
-      const song = await this.soundcloud.resolve(MUSIC_DIAG_SOUNDCLOUD_URL, {
-        member: guild.members.me || undefined,
-      });
-      const streamUrl = await this.soundcloud.getStreamURL(song);
-      console.log('[music-diag] SoundCloud URL resolved: ' + song.name + ' · input=' + safeStreamUrl(song.url));
-      console.log('[music-diag] selected playback: ' + (getNote(song) || 'native SoundCloud stream') + ' · stream=' + safeStreamUrl(streamUrl));
-
-      ffmpeg = spawn(this.ffmpegPath, [
-        '-hide_banner', '-loglevel', 'info', '-nostdin', '-rw_timeout', '15000000',
-        '-i', streamUrl,
-        '-vn', '-ac', '2', '-ar', '48000', '-t', '5',
-        '-f', 's16le', 'pipe:1',
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-      ffmpeg.stderr.on('data', chunk => {
-        const line = String(chunk).trim();
-        if (line) {
-          stderr.push(line);
-          if (stderr.length > 20) stderr.shift();
-          console.warn('[music-diag][ffmpeg]', clampText(line, 500));
-        }
-      });
-      const ffmpegClosed = new Promise(resolve => {
-        ffmpeg.once('close', (code, signal) => resolve({ code, signal }));
-      });
-
-      voice.audioPlayer.on('error', onPlayerError);
-      const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-      voice.audioPlayer.play(resource);
-      await entersState(voice.audioPlayer, AudioPlayerStatus.Playing, 15_000);
-      console.log('[music-diag] audio player entered PLAYING; waiting for real PCM/Opus frames');
-
-      const processResult = await Promise.race([
-        ffmpegClosed,
-        sleep(9000).then(() => null),
-      ]);
-      const playedMs = resource.playbackDuration || 0;
-
-      if (playerError) throw playerError;
-      if (ffmpeg.signalCode === 'SIGSEGV' || processResult?.signal === 'SIGSEGV') {
-        throw new Error('FFmpeg crashed with SIGSEGV while decoding the selected SoundCloud/fallback audio');
-      }
-      if (processResult && processResult.code !== 0) {
-        throw new Error(`FFmpeg exited with code ${processResult.code}: ${stderr.join(' | ')}`);
-      }
-      if (playedMs < 1500) {
-        throw new Error(`voice player produced only ${playedMs} ms of playback; expected at least 1500 ms`);
-      }
-      console.log(`[music-diag] PASS: SoundCloud URL → selected source/fallback → FFmpeg → PCM → Opus → Discord voice; playedMs=${playedMs}, ffmpegExit=${processResult?.code ?? 'still running'}`);
-    } catch (err) {
-      console.error('[music-diag] FAIL:', describeMusicError(err), {
-        ffmpegExit: ffmpeg?.exitCode ?? null,
-        ffmpegSignal: ffmpeg?.signalCode ?? null,
-        stderr: stderr.join(' | '),
-      });
-    } finally {
-      if (voice?.audioPlayer) {
-        voice.audioPlayer.off('error', onPlayerError);
-        if (voice.audioPlayer.state.status !== AudioPlayerStatus.Idle) voice.audioPlayer.stop(true);
-      }
-      if (ffmpeg && ffmpeg.exitCode === null) ffmpeg.kill('SIGTERM');
-      try { this.distube.voices.leave(guild.id); } catch { /* already left */ }
-      console.log('[music-diag] voice test finished; bot left the channel');
-    }
-  }
-
   // ───── slash-команды ─────
 
   async #handleCommand(interaction) {
@@ -1919,7 +1761,7 @@ class MusicModule {
       case 'voldown':
       case 'volup': {
         const delta = action === 'volup' ? VOLUME_STEP : -VOLUME_STEP;
-        queue.setVolume(clamp(queue.volume + delta, 1, 100));
+        queue.setVolume(clamp(queue.volume + delta, 1, VOLUME_MAX));
         return interaction.update(renderPanel(queue));
       }
       case 'queue':
