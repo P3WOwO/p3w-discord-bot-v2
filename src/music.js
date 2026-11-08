@@ -18,6 +18,15 @@
 
 const http = require('http');
 const { randomBytes } = require('crypto');
+const { spawn, spawnSync } = require('node:child_process');
+const {
+  createAudioResource,
+  entersState,
+  StreamType,
+  VoiceConnectionStatus,
+  AudioPlayerStatus,
+} = require('@discordjs/voice');
+const { OpusEncoder } = require('@discordjs/opus');
 const { DisTube, RepeatMode } = require('distube');
 const { YouTubePlugin, YouTubeSong } = require('@distube/youtube');
 const { Quality, parseVideoId, parsePlaylistId } = require('@distube/ytdl-core');
@@ -34,6 +43,7 @@ const {
   PermissionFlagsBits,
   MessageFlags,
   Events,
+  ChannelType,
 } = require('discord.js');
 const { clampText } = require('./utils');
 
@@ -51,6 +61,7 @@ const QUEUE_PAGE_SIZE = 10;
 const VOLUME_STEP = 10;
 const PLAYBACK_CHECK_MS = 4000;
 const SELF_TEST_VIDEO = 'https://www.youtube.com/watch?v=jNQXAC9IVRw';
+const MUSIC_DIAG_SOUNDCLOUD_URL = 'https://soundcloud.com/overtonightofficial/mirrors-demo';
 
 const MUSIC_COMMANDS = new Set([
   'play', 'skip', 'pause', 'resume', 'stop', 'queue', 'nowplaying',
@@ -793,21 +804,37 @@ class MusicModule {
     this.#createDistube();
     this.#bindEvents();
 
+    // Одноразовая автодиагностика по явному флагу Render. Если в основном сервере
+    // ровно один занятый voice-канал, бот подключится, передаст 5 секунд SoundCloud
+    // и выйдет. Если каналов несколько или нет — никого не трогаем.
+    if (process.env.MUSIC_DIAG_AUTOJOIN === 'true') {
+      client.once(Events.ClientReady, () => {
+        const timer = setTimeout(() => {
+          this.#runStartupVoiceDiagnostic().catch(err => {
+            console.error('[music-diag] startup voice test failed:', describeMusicError(err));
+          });
+        }, 12_000);
+        timer.unref?.();
+      });
+    }
   }
 
   // ───── создание DisTube ─────
 
   #createDistube() {
-    // Используем актуальный FFmpeg 6.1.1 из ffmpeg-static; старый installer build падал с SIGSEGV на Render.
-    let ffmpegPath = null;
-    try {
-      ffmpegPath = require('ffmpeg-static');
-      if (typeof ffmpegPath !== 'string' || !ffmpegPath) ffmpegPath = null;
-    } catch (err) {
-      console.warn('ffmpeg-static unavailable, trying system ffmpeg:', err?.message || err);
+    // Native Node runtime Render (Debian 12) already includes system FFmpeg.
+    // Do not use ffmpeg-static: its Linux binary is not reliably version-pinned.
+    this.ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+    const ffmpegVersion = spawnSync(this.ffmpegPath, ['-version'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    if (ffmpegVersion.error || ffmpegVersion.status !== 0) {
+      console.error('[music-diag] system FFmpeg unavailable:', ffmpegVersion.error?.message || ffmpegVersion.stderr);
+    } else {
+      console.log(`🎛️ FFmpeg binary: ${this.ffmpegPath} · ${String(ffmpegVersion.stdout).split('\n')[0]}`);
     }
-    if (!ffmpegPath) ffmpegPath = 'ffmpeg';
-    console.log(`🎛️ FFmpeg binary: ${ffmpegPath}`);
     const cookie = this.config.YT_COOKIE;
 
     this.youtube = new P3WYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);
@@ -830,7 +857,7 @@ class MusicModule {
     this.distube = new DisTube(this.client, {
       plugins,
       emitNewSongOnly: true,
-      ffmpeg: { path: ffmpegPath || 'ffmpeg' },
+      ffmpeg: { path: this.ffmpegPath },
     });
   }
 
@@ -982,6 +1009,40 @@ class MusicModule {
       }
     };
 
+    await check('FFmpeg: системный бинарник', async () => {
+      const result = spawnSync(this.ffmpegPath, ['-version'], {
+        encoding: 'utf8',
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+      });
+      if (result.error || result.status !== 0) {
+        throw new Error(result.error?.message || result.stderr || 'FFmpeg exited with status ' + result.status);
+      }
+      return String(result.stdout).split('\n')[0].trim();
+    });
+
+    await check('FFmpeg: кодирование Opus', async () => {
+      const result = spawnSync(this.ffmpegPath, [
+        '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.3',
+        '-ac', '2', '-ar', '48000', '-c:a', 'libopus', '-f', 'ogg', 'pipe:1',
+      ], { encoding: 'buffer', timeout: 10000, maxBuffer: 2 * 1024 * 1024 });
+      if (result.error || result.status !== 0 || !result.stdout?.length) {
+        throw new Error(result.error?.message || result.stderr?.toString() || 'FFmpeg Opus encode failed');
+      }
+      return `${result.stdout.length} bytes Ogg/Opus`;
+    });
+
+    await check('Opus: native encode/decode', async () => {
+      const encoder = new OpusEncoder(48000, 2);
+      const packet = encoder.encode(Buffer.alloc(3840));
+      const decoded = encoder.decode(packet);
+      if (!packet.length || decoded.length !== 3840) {
+        throw new Error(`invalid Opus frame: encoded=${packet.length}, decoded=${decoded.length}`);
+      }
+      return `${packet.length} bytes packet · ${decoded.length} bytes PCM`;
+    });
+
     const ytdl = this.youtube.ytdl;
     await check('YouTube: поиск', async () => {
       const [first] = await ytdl.search('never gonna give you up', { limit: 1 });
@@ -1033,6 +1094,109 @@ class MusicModule {
 
     lines.push(this.config.YT_COOKIE ? 'ℹ️ YT_COOKIE задан' : 'ℹ️ YT_COOKIE не задан');
     return lines;
+  }
+
+  // Автоматическая проверка после деплоя. Подключается только если в GUILD_ID
+  // сейчас ровно один занятый обычный voice-канал — не выбирает случайных людей.
+  async #runStartupVoiceDiagnostic() {
+    const guildId = this.config.GUILD_ID;
+    const guild = guildId ? this.client.guilds.cache.get(guildId) : null;
+    if (!guild) {
+      console.warn('[music-diag] auto-join skipped: configured GUILD_ID is not cached');
+      return;
+    }
+
+    const activeChannels = [...guild.channels.cache.values()].filter(channel =>
+      channel.type === ChannelType.GuildVoice
+      && channel.members.some(member => !member.user.bot),
+    );
+
+    if (activeChannels.length !== 1) {
+      console.warn(`[music-diag] auto-join skipped: expected exactly one occupied voice channel, found ${activeChannels.length}`);
+      return;
+    }
+
+    const channel = activeChannels[0];
+    if (this.distube.getQueue(guild.id)) {
+      console.warn('[music-diag] auto-join skipped: a music queue is already active');
+      return;
+    }
+
+    let voice;
+    let ffmpeg;
+    let playerError;
+    const stderr = [];
+    const onPlayerError = error => { playerError = error; };
+    try {
+      console.log(`[music-diag] connecting to occupied voice channel ${channel.id} (${channel.members.filter(m => !m.user.bot).size} human members)`);
+      voice = await this.ensureVoice(channel);
+      await entersState(voice.connection, VoiceConnectionStatus.Ready, 20_000);
+      console.log('[music-diag] voice connection is READY');
+
+      const song = await this.soundcloud.resolve(MUSIC_DIAG_SOUNDCLOUD_URL, {
+        member: guild.members.me || undefined,
+      });
+      const streamUrl = await this.soundcloud.getStreamURL(song);
+      console.log(`[music-diag] SoundCloud resolved: ${song.name}`);
+
+      ffmpeg = spawn(this.ffmpegPath, [
+        '-hide_banner', '-loglevel', 'warning', '-nostdin',
+        '-i', streamUrl,
+        '-vn', '-ac', '2', '-ar', '48000', '-t', '5',
+        '-f', 's16le', 'pipe:1',
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      ffmpeg.stderr.on('data', chunk => {
+        const line = String(chunk).trim();
+        if (line) {
+          stderr.push(line);
+          if (stderr.length > 8) stderr.shift();
+          console.warn('[music-diag][ffmpeg]', clampText(line, 500));
+        }
+      });
+      const ffmpegClosed = new Promise(resolve => {
+        ffmpeg.once('close', (code, signal) => resolve({ code, signal }));
+      });
+
+      voice.audioPlayer.on('error', onPlayerError);
+      const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
+      voice.audioPlayer.play(resource);
+      await entersState(voice.audioPlayer, AudioPlayerStatus.Playing, 15_000);
+      console.log('[music-diag] audio player entered PLAYING; waiting for real PCM/Opus frames');
+
+      await sleep(3500);
+      const playedMs = resource.playbackDuration || 0;
+      const processResult = await Promise.race([
+        ffmpegClosed,
+        sleep(2500).then(() => null),
+      ]);
+
+      if (playerError) throw playerError;
+      if (ffmpeg.signalCode === 'SIGSEGV' || processResult?.signal === 'SIGSEGV') {
+        throw new Error('FFmpeg crashed with SIGSEGV while decoding SoundCloud audio');
+      }
+      if (processResult && processResult.code !== 0) {
+        throw new Error(`FFmpeg exited with code ${processResult.code}: ${stderr.join(' | ')}`);
+      }
+      if (playedMs < 1500) {
+        throw new Error(`voice player produced only ${playedMs} ms of playback; expected at least 1500 ms`);
+      }
+      console.log(`[music-diag] PASS: SoundCloud → system FFmpeg → PCM → Opus → Discord voice; playedMs=${playedMs}, ffmpegExit=${processResult?.code ?? 'still running'}`);
+    } catch (err) {
+      console.error('[music-diag] FAIL:', describeMusicError(err), {
+        ffmpegExit: ffmpeg?.exitCode ?? null,
+        ffmpegSignal: ffmpeg?.signalCode ?? null,
+        stderr: stderr.join(' | '),
+      });
+    } finally {
+      if (voice?.audioPlayer) {
+        voice.audioPlayer.off('error', onPlayerError);
+        if (voice.audioPlayer.state.status !== AudioPlayerStatus.Idle) voice.audioPlayer.stop(true);
+      }
+      if (ffmpeg && ffmpeg.exitCode === null) ffmpeg.kill('SIGTERM');
+      try { this.distube.voices.leave(guild.id); } catch { /* already left */ }
+      console.log('[music-diag] voice test finished; bot left the channel');
+    }
   }
 
   // ───── slash-команды ─────
