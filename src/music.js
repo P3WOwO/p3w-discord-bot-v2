@@ -869,8 +869,9 @@ class P3WYouTubePlugin extends YouTubePlugin {
     const bundledYtDlp = path.join(
       __dirname,
       '..',
-      'vendor',
-      'yt-dlp',
+      'node_modules',
+      '.cache',
+      'p3w-yt-dlp',
       process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp',
     );
     this.ytdlpPath = process.env.YT_DLP_PATH || bundledYtDlp;
