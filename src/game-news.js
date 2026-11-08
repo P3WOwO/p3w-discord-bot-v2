@@ -4,7 +4,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  AttachmentBuilder,
 } = require('discord.js');
 const { isIP } = require('node:net');
 
@@ -198,13 +197,12 @@ async function downloadNewsImage(imageUrl) {
     throw Object.assign(new Error('Файл image_url не прошёл проверку формата изображения.'), { statusCode: 422 });
   }
 
-  const filename = 'p3w-news-image.' + extension;
+  // The file is validated here; Discord receives the direct HTTPS image
+  // URL in the embed below. This avoids relying on attachment:// resolution.
   return {
-    attachment: new AttachmentBuilder(buffer, {
-      name: filename,
-      description: 'Изображение к игровой новости P3W',
-    }),
-    filename,
+    filename: 'p3w-news-image.' + extension,
+    contentType: response.headers.get('content-type') || '',
+    byteLength: buffer.length,
   };
 }
 
@@ -357,17 +355,15 @@ function buildGameNewsComponents(raw) {
 async function buildGameNewsMessage(raw) {
   const item = validateGameNewsPayload(raw);
   const embeds = [];
-  const files = [];
 
-  // Upload artwork with the message and use attachment:// so Discord receives
-  // the actual image bytes instead of having to fetch a remote URL itself.
+  // Verify the HTTPS resource is a real image, then use its direct public URL.
+  // Discord renders HTTPS embed images itself; no attachment:// indirection.
   if (item.imageUrl) {
-    const image = await downloadNewsImage(item.imageUrl);
-    files.push(image.attachment);
+    await downloadNewsImage(item.imageUrl);
     embeds.push(
       new EmbedBuilder()
         .setColor(getEmbedColor(item))
-        .setImage('attachment://' + image.filename)
+        .setImage(item.imageUrl)
     );
   }
 
@@ -375,7 +371,6 @@ async function buildGameNewsMessage(raw) {
 
   return {
     embeds,
-    ...(files.length ? { files } : {}),
     components: buildGameNewsComponents(item),
     allowedMentions: { parse: [] },
   };
