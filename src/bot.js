@@ -642,6 +642,21 @@ class DiscordBot {
       throw Object.assign(new Error('Выбранный канал недоступен. Настрой его заново командой /news channel.'), { statusCode: 404 });
     }
 
+    const roleNameByCategory = {
+      news: 'News',
+      sales: 'Sales',
+      free: 'Free',
+    };
+    const targetRoleName = roleNameByCategory[payload.category];
+    const guildRoles = await guild.roles.fetch().catch(() => null);
+    if (!guildRoles) {
+      throw Object.assign(new Error('Не удалось получить список ролей сервера для игровых уведомлений.'), { statusCode: 502 });
+    }
+    const targetRole = guildRoles.find(role => role.name.trim().toLowerCase() === targetRoleName.toLowerCase());
+    if (!targetRole) {
+      throw Object.assign(new Error('На сервере не найдена роль @' + targetRoleName + '. Проверь точное название роли.'), { statusCode: 409 });
+    }
+
     const permissions = channel.permissionsFor(this.client.user);
     const required = [
       PermissionFlagsBits.ViewChannel,
@@ -651,31 +666,46 @@ class DiscordBot {
     if (!permissions?.has(required)) {
       throw Object.assign(new Error('У P3W недостаточно прав в выбранном канале.'), { statusCode: 403 });
     }
+    if (!targetRole.mentionable && !permissions.has(PermissionFlagsBits.MentionEveryone)) {
+      throw Object.assign(
+        new Error('Роль @' + targetRoleName + ' нельзя упоминать. Включи для неё «Разрешить упоминать эту роль» или выдай P3W право Mention Everyone.'),
+        { statusCode: 403 },
+      );
+    }
 
     const messageOptions = await buildGameNewsMessage(payload);
-    const sentMessage = await channel.send(messageOptions);
+    // Explicitly allow only this one role mention. Everyone, users and all other roles stay suppressed.
+    messageOptions.content = targetRole.toString();
+    messageOptions.allowedMentions = {
+      parse: [],
+      roles: [targetRole.id],
+      repliedUser: false,
+    };
 
-    // Fetch the persisted Discord message before confirming an image upload.
-    // This avoids trusting only the immediate create-message response.
+    const sentMessage = await channel.send(messageOptions);
     const message = await sentMessage.fetch();
-    const attachmentList = [...message.attachments.values()];
-    const imageUploaded = attachmentList.some(attachment =>
-      String(attachment.contentType || '').toLowerCase().startsWith('image/')
-      || /\.(?:png|jpe?g|webp|gif)$/i.test(String(attachment.name || '')),
-    );
+    const rolePinged = message.mentions.roles.has(targetRole.id);
     const imageEmbed = message.embeds.some(embed =>
       /^https:\/\//i.test(String(embed.image?.url || '')),
     );
 
     console.info('Game news delivery verification:', JSON.stringify({
       messageId: message.id,
+      category: payload.category,
+      roleName: targetRole.name,
+      roleId: targetRole.id,
+      rolePinged,
       requestedImage: Boolean(payload.imageUrl),
-      attachmentCount: attachmentList.length,
-      attachmentNames: attachmentList.map(attachment => attachment.name),
       imageEmbedUrls: message.embeds.map(embed => embed.image?.url || null).filter(Boolean),
       imageEmbed,
     }));
 
+    if (!rolePinged) {
+      throw Object.assign(
+        new Error('Сообщение отправлено, но Discord не подтвердил упоминание роли @' + targetRoleName + '.'),
+        { statusCode: 502 },
+      );
+    }
     if (payload.imageUrl && !imageEmbed) {
       throw Object.assign(
         new Error('Discord did not confirm an HTTPS image embed.'),
@@ -687,7 +717,10 @@ class DiscordBot {
     await this.stateStore.save();
     return {
       sent: true,
-      image_uploaded: imageUploaded,
+      category: payload.category,
+      role_pinged: rolePinged,
+      role_name: targetRole.name,
+      role_id: targetRole.id,
       image_embed: imageEmbed,
       channel_id: channel.id,
       message_id: message.id,

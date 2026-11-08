@@ -63,6 +63,22 @@ function validateGameNewsPayload(raw) {
   const imageUrl = validHttpUrl(readField(raw, 'image_url', 'imageUrl'), 'image_url');
   const sourceUrl = validHttpUrl(readField(raw, 'source_url', 'sourceUrl'), 'source_url');
   const expiresAt = clean(readField(raw, 'expires_at', 'expiresAt'), 64);
+  const categoryInput = clean(readField(raw, 'category', 'type'), 24).toLowerCase();
+  const categoryAliases = {
+    news: 'news', industry: 'news',
+    sale: 'sales', sales: 'sales', discount: 'sales', discounts: 'sales',
+    free: 'free', giveaway: 'free', giveaways: 'free', freebies: 'free',
+  };
+  let category = categoryAliases[categoryInput] || '';
+  if (categoryInput && !category) {
+    throw Object.assign(new Error('Поле category должно быть news, sales или free.'), { statusCode: 400 });
+  }
+  if (!category) {
+    const freeSignal = /бесплат|free|giveaway|раздач|халява/i.test([title, price, discount, source].join(' '));
+    category = freeSignal
+      ? 'free'
+      : ((price || oldPrice || discount || expiresAt || regionalPrices.length) ? 'sales' : 'news');
+  }
   const regionalPricesInput = readField(raw, 'regional_prices', 'regionalPrices');
   if (regionalPricesInput != null && !Array.isArray(regionalPricesInput)) {
     throw Object.assign(new Error('Поле regional_prices должно быть массивом цен.'), { statusCode: 400 });
@@ -89,7 +105,7 @@ function validateGameNewsPayload(raw) {
   const suppliedId = clean(raw.id, 160);
   const id = suppliedId || crypto.createHash('sha256').update(title + '\n' + url).digest('hex');
 
-  return { id, title, url, description, price, oldPrice, discount, source, imageUrl, sourceUrl, expiresAt, regionalPrices };
+  return { id, title, url, description, price, oldPrice, discount, source, imageUrl, sourceUrl, expiresAt, regionalPrices, category };
 }
 
 
