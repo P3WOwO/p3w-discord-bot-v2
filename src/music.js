@@ -1218,6 +1218,26 @@ class MusicModule {
     this.#createDistube();
     this.#bindEvents();
 
+    // One-shot provider diagnostics can run on Render without joining or interrupting voice.
+    console.log('[music-diag] MUSIC_DIAG_RUN_ONCE=' + (process.env.MUSIC_DIAG_RUN_ONCE || 'false'));
+    if (process.env.MUSIC_DIAG_RUN_ONCE === 'true') {
+      const waitForReady = () => {
+        if (!this.client.isReady()) {
+          const retry = setTimeout(waitForReady, 1000);
+          retry.unref?.();
+          return;
+        }
+        const timer = setTimeout(() => {
+          this.runDiagnostics()
+            .then(lines => lines.forEach(line => console.log('[music-diag][provider] ' + line)))
+            .catch(error => console.error('[music-diag] provider diagnostics crashed:', describeMusicError(error)));
+        }, 5000);
+        timer.unref?.();
+      };
+      const initial = setTimeout(waitForReady, 1000);
+      initial.unref?.();
+    }
+
   }
 
   // ───── создание DisTube ─────
@@ -1525,25 +1545,27 @@ class MusicModule {
       lines.push('⏭️ SoundCloud: поток — пропущен, поиск не дал результатов');
     }
 
-    await check('Spotify: metadata + подбор воспроизводимого источника', async () => {
-      const spotifySong = await this.spotify.resolve(MUSIC_DIAG_SPOTIFY_URL, {});
+    await check('Spotify: metadata + подбор воспроизводимого источника (DisTube v5)', async () => {
+      const spotifySong = await this.spotify.resolve(MUSIC_DIAG_SPOTIFY_URL, {
+        member: this.client.guilds.cache.first()?.members?.me || undefined,
+      });
       if (!spotifySong?.name) throw new Error('Spotify did not return track metadata');
       const query = await this.spotify.createSearchQuery(spotifySong);
       let matchedSong = null;
       for (const provider of [this.youtube, this.soundcloud, this.audius]) {
         try {
-          matchedSong = await provider.searchSong(query, { member: spotifySong.member });
-          if (matchedSong) break;
+          const candidate = await provider.searchSong(query, { member: spotifySong.member });
+          if (candidate) {
+            matchedSong = candidate;
+            const url = await candidate.plugin.getStreamURL(candidate);
+            const probe = await probeAudioUrl(url);
+            return spotifySong.name + ' → ' + candidate.name + ' (' + sourceLabel(candidate.source) + ') · ' + probe.bytes + ' bytes';
+          }
         } catch (error) {
           console.warn('[spotify-fallback] ' + provider.constructor.name + ': ' + briefError(error));
         }
       }
-      if (!matchedSong?.plugin?.getStreamURL) {
-        throw new Error('Spotify metadata loaded, but YouTube, SoundCloud and Audius found no playable match');
-      }
-      const url = await matchedSong.plugin.getStreamURL(matchedSong);
-      const probe = await probeAudioUrl(url);
-      return spotifySong.name + ' → ' + matchedSong.name + ' (' + sourceLabel(matchedSong.source) + ') · ' + probe.bytes + ' bytes';
+      throw new Error('Spotify metadata loaded, but YouTube, SoundCloud and Audius found no playable match');
     });
 
     if (this.yandex) {
