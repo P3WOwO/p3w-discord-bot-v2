@@ -23,6 +23,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate game news JavaScript syntax
+        run: node --check src/game-news.js && node --check src/bot.js
+
       - name: Forward new game news files
         env:
           P3W_API_URL: ${{ secrets.P3W_API_URL }}
@@ -54,11 +57,21 @@ jobs:
             [[ -n "${file}" ]] || continue
             [[ -f "${file}" ]] || continue
             echo "Forwarding ${file} to P3W..."
-            curl --fail-with-body --silent --show-error \
+            response="$(curl --fail-with-body --silent --show-error \
               --connect-timeout 10 --max-time 45 \
               -X POST "${P3W_API_URL}/api/game-news" \
               -H "Authorization: Bearer ${GAME_NEWS_API_KEY}" \
               -H "Content-Type: application/json" \
-              --data-binary "@${file}"
-            echo
+              --data-binary "@${file}")"
+            echo "${response}"
+
+            if jq -e '.image_url != null and .image_url != ""' "${file}" >/dev/null; then
+              if ! jq -e '.sent == true and .image_uploaded == true and .image_embed == true' <<< "${response}" >/dev/null; then
+                echo "::error::P3W did not confirm that the news image was uploaded and embedded."
+                exit 1
+              fi
+            elif ! jq -e '.sent == true' <<< "${response}" >/dev/null; then
+              echo "::error::P3W did not confirm that the news message was sent."
+              exit 1
+            fi
           done <<< "${changed_files}"
