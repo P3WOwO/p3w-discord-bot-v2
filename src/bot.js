@@ -60,66 +60,6 @@ function formatImageError(err) {
   return `❌ Ошибка генерации: ${clampText(raw, 1800)}`;
 }
 
-function describeMusicError(err, depth = 0) {
-  if (!err || depth > 5) return undefined;
-  const result = {
-    name: err.name,
-    code: err.code,
-    message: String(err.message || err),
-  };
-
-  if (err.cause && depth < 5) result.cause = describeMusicError(err.cause, depth + 1);
-  if (err.originalError && depth < 5) result.originalError = describeMusicError(err.originalError, depth + 1);
-  if (Array.isArray(err.errors) && depth < 5) {
-    result.errors = err.errors.slice(0, 8).map(item => describeMusicError(item, depth + 1));
-  }
-  if (Array.isArray(err.attempts)) {
-    result.attempts = err.attempts.slice(0, 12).map(item => ({
-      client: item.client,
-      step: item.step,
-      code: item.code,
-      reason: item.reason,
-      signedIn: item.signedIn,
-      cause: item.cause ? String(item.cause).slice(0, 800) : undefined,
-    }));
-  }
-  if (depth === 0 && err.stack) result.stack = String(err.stack).slice(0, 5000);
-  return result;
-}
-
-function formatMusicError(err) {
-  const raw = String(err?.message || err || 'unknown_error');
-  const code = String(err?.code || raw);
-  const cause = String(err?.cause?.message || err?.originalError?.message || '');
-
-  if (/NO_RESULT|NOT_FOUND/i.test(code)) {
-    return '❌ Не удалось найти трек. Проверь ссылку или попробуй другое название.';
-  }
-  if (/BOT_CHECK|SIGN_IN|LOGIN_REQUIRED/i.test(`${code} ${raw} ${cause}`)) {
-    return '❌ YouTube требует подтверждение, что запросы идут не от бота. Для этого можно подключить отдельный YT_COOKIE через секрет Render.';
-  }
-  if (/AGE_RESTRICTED|UNAVAILABLE/i.test(code)) {
-    return '❌ Этот трек недоступен: возможно, он приватный, ограничен по региону или требует входа в аккаунт.';
-  }
-  if (/RATE_LIMITED/i.test(code)) {
-    return '❌ Источник временно ограничил запросы. Попробуй немного позже.';
-  }
-  if (code === 'VOICE_SERVER_MUTED') {
-    return '🔇 P3W заглушён модератором на уровне сервера. Нажмите правой кнопкой по P3W в списке участников войса и снимите «Отключить микрофон» (Server Mute), затем повторите /play.';
-  }
-  if (code === 'VOICE_SELF_UNDEAF_FAILED') {
-    return '🎧 Не удалось отключить режим deafened у P3W. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
-  }
-  if (code === 'VOICE_SELF_UNMUTE_FAILED') {
-    return '🔇 Не удалось снять самозаглушение P3W. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
-  }
-  if (/VOICE_ALREADY_CREATED|VOICE_CHANNEL_DIFFERENT|QUEUE_EXIST/i.test(code)) {
-    return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
-  }
-  const detail = cause && cause !== raw ? ` · ${cause}` : '';
-  return `❌ Не удалось запустить музыку: ${clampText(raw + detail, 350)}`;
-}
-
 function buildRandomStatus() {
   return `${pickRandom(STATUS_VERBS)} ${pickRandom(STATUS_NOUNS)}`;
 }
@@ -149,26 +89,6 @@ class DiscordBot {
     this.httpServer = null;
     this.mod = new Moderation();
     this.music = createMusic(this.client, this.config);
-    this.music.on('playSong', (queue, song) => {
-      const title = clampText(String(song.name || song.url || 'Без названия'), 180);
-      const link = song.url ? `\n${song.url}` : '';
-      queue.textChannel?.send({
-        content: `🎵 Сейчас играет: **${title}**${link}`,
-        allowedMentions: { parse: [] },
-      }).catch(err => console.error('Music announcement error:', err));
-    });
-    this.music.on('error', (error, queue, song) => {
-      console.error('Music playback error:', JSON.stringify({
-        guildId: queue?.id,
-        song: song?.name,
-        source: song?.plugin?.constructor?.name || song?.source,
-        error: describeMusicError(error),
-      }, null, 2));
-      queue?.textChannel?.send({
-        content: formatMusicError(error),
-        allowedMentions: { parse: [] },
-      }).catch(err => console.error('Music error announcement failed:', err));
-    });
     this.cooldowns = new Map(); // `\${kind}:\${userId}` -> timestamp
     this.busyChannels = new Set();
   }
@@ -321,44 +241,7 @@ class DiscordBot {
         .addStringOption(option => option.setName('text').setDescription('Что нарисовать').setRequired(true))
         .addStringOption(option => option.setName('ratio').setDescription('Соотношение сторон').setRequired(false))
         .toJSON(),
-      new SlashCommandBuilder()
-        .setName('play')
-        .setDescription('Включить музыку по ссылке или названию')
-        .addStringOption(option => option.setName('query').setDescription('YouTube, SoundCloud, Spotify или название трека').setRequired(true).setMaxLength(500))
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('skip')
-        .setDescription('Пропустить текущий трек')
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('pause')
-        .setDescription('Приостановить музыку')
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('resume')
-        .setDescription('Продолжить музыку')
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('stop')
-        .setDescription('Остановить музыку и очистить очередь')
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('queue')
-        .setDescription('Показать очередь музыки')
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('nowplaying')
-        .setDescription('Показать текущий трек')
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('volume')
-        .setDescription('Изменить громкость музыки')
-        .addIntegerOption(option => option.setName('percent').setDescription('Громкость от 1 до 100').setRequired(true).setMinValue(1).setMaxValue(100))
-        .toJSON(),
-      new SlashCommandBuilder()
-        .setName('leave')
-        .setDescription('Остановить музыку и отключить P3W от войса')
-        .toJSON(),
+      ...this.music.commandsJSON,
       new SlashCommandBuilder()
         .setName('time')
         .setDescription('Показать время в войсе')
@@ -660,278 +543,6 @@ class DiscordBot {
   }
 
 
-  async ensureMusicVoice(channel) {
-    const voice = await this.music.voices.join(channel);
-
-    // Some @discordjs/voice versions default selfMute to true.
-    // A music bot must send audio, so explicitly clear self-mute before playback.
-    // DisTube defaults selfDeaf to true; music bots should join undeafened.
-    const undeafenRequested = voice.setSelfDeaf(false);
-    if (!undeafenRequested && voice.selfDeaf) {
-      throw Object.assign(new Error('P3W could not clear its self-deaf state'), {
-        code: 'VOICE_SELF_UNDEAF_FAILED',
-      });
-    }
-
-    const unmuteRequested = voice.setSelfMute(false);
-    if (!unmuteRequested && voice.selfMute) {
-      throw Object.assign(new Error('P3W could not clear its self-mute state'), {
-        code: 'VOICE_SELF_UNMUTE_FAILED',
-      });
-    }
-
-    // A server mute is different from self-mute and cannot be cleared by the bot itself.
-    const botMember = channel.guild.members.me;
-    if (botMember?.voice?.serverMute) {
-      throw Object.assign(new Error('P3W is server-muted by a moderator'), {
-        code: 'VOICE_SERVER_MUTED',
-      });
-    }
-
-    return voice;
-  }
-
-  async resolveSpotifyViaSoundCloud(query, member) {
-    const spotifyPlugin = this.music.plugins.find(plugin => plugin.constructor?.name === 'SpotifyPlugin');
-    const soundCloudPlugin = this.music.plugins.find(plugin => plugin.constructor?.name === 'SoundCloudPlugin');
-    if (!spotifyPlugin || !soundCloudPlugin) return null;
-
-    let isSpotifyUrl = false;
-    try {
-      isSpotifyUrl = await spotifyPlugin.validate(query);
-    } catch (err) {
-      console.warn('Spotify URL validation failed:', err?.message || err);
-    }
-    if (!isSpotifyUrl) return null;
-
-    const spotifyItem = await spotifyPlugin.resolve(query, { member });
-    const spotifySongs = Array.isArray(spotifyItem.songs)
-      ? spotifyItem.songs.slice(0, 30)
-      : [spotifyItem];
-    const matchedSongs = [];
-    const missedSongs = [];
-
-    // Spotify provides metadata, not audio. Search SoundCloud first so a Spotify
-    // link does not depend on YouTube's player solver when a matching SC track exists.
-    for (const spotifySong of spotifySongs) {
-      const searchQuery = [spotifySong.name, spotifySong.uploader?.name]
-        .filter(Boolean)
-        .join(' ')
-        .trim();
-      if (!searchQuery) {
-        missedSongs.push(spotifySong.name || 'unknown');
-        continue;
-      }
-
-      try {
-        const candidates = await soundCloudPlugin.search(searchQuery, undefined, 5, { member });
-        const targetDuration = Number(spotifySong.duration || 0);
-        const ranked = candidates
-          .filter(candidate => candidate && candidate.url)
-          .map(candidate => ({
-            candidate,
-            difference: targetDuration > 0 && candidate.duration > 0
-              ? Math.abs(candidate.duration - targetDuration)
-              : Number.POSITIVE_INFINITY,
-          }))
-          .filter(item => targetDuration <= 0 || item.difference <= 5)
-          .sort((a, b) => a.difference - b.difference);
-
-        if (ranked.length) {
-          matchedSongs.push(ranked[0].candidate);
-        } else {
-          missedSongs.push(spotifySong.name || searchQuery);
-        }
-      } catch (err) {
-        console.warn('Spotify -> SoundCloud lookup failed:', {
-          query: searchQuery,
-          error: describeMusicError(err),
-        });
-        missedSongs.push(spotifySong.name || searchQuery);
-      }
-    }
-
-    if (!matchedSongs.length) {
-      console.warn('Spotify -> SoundCloud fallback found no duration-matched tracks', {
-        query,
-        requestedTracks: spotifySongs.length,
-      });
-      return null;
-    }
-
-    if (matchedSongs.length === 1) {
-      return {
-        input: matchedSongs[0],
-        matched: 1,
-        requested: spotifySongs.length,
-      };
-    }
-
-    const playlist = await this.music.createCustomPlaylist(matchedSongs, {
-      member,
-      name: spotifyItem.name || 'Spotify playlist (SoundCloud matches)',
-      source: 'spotify-soundcloud',
-      url: query,
-    });
-    return {
-      input: playlist,
-      matched: matchedSongs.length,
-      requested: spotifySongs.length,
-    };
-  }
-
-  async handleMusicCommand(interaction) {
-    const action = interaction.commandName;
-    const guildId = interaction.guildId;
-    const memberVoice = interaction.member?.voice?.channel;
-    let queue = this.music.getQueue(guildId);
-
-    if (action === 'play') {
-      if (!memberVoice) {
-        return interaction.reply({ content: '❌ Сначала зайди в голосовой канал.', ephemeral: true });
-      }
-
-      const permissions = memberVoice.permissionsFor(this.client.user);
-      if (!permissions?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
-        return interaction.reply({ content: '❌ У P3W нет прав подключаться и говорить в этом голосовом канале.', ephemeral: true });
-      }
-
-      if (queue && queue.voiceChannel?.id !== memberVoice.id) {
-        return interaction.reply({ content: '❌ P3W уже играет в другом голосовом канале. Используй /leave, чтобы переместить его.', ephemeral: true });
-      }
-
-      const query = interaction.options.getString('query', true).trim();
-      if (/^https?:\/\/(?:(?:www|m)\.)?music\.yandex\./i.test(query)
-        && (!this.config.YANDEX_MUSIC_OAUTH_TOKEN || !this.config.YANDEX_MUSIC_UID)) {
-        return interaction.reply({
-          content: 'ℹ️ Поддержка Яндекс Музыки уже добавлена, но не подключён аккаунт. В Render добавь секреты YANDEX_MUSIC_OAUTH_TOKEN и YANDEX_MUSIC_UID (из одного аккаунта), затем перезапусти бота.',
-          ephemeral: true,
-        });
-      }
-      const requester = interaction.guild.members.cache.get(interaction.user.id)
-        || await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-      await interaction.deferReply();
-      try {
-        // Establish and verify an unmuted voice session before asking DisTube to play.
-        await this.ensureMusicVoice(memberVoice);
-        const spotifyFallback = await this.resolveSpotifyViaSoundCloud(query, requester || undefined);
-        const playInput = spotifyFallback?.input || query;
-
-        await this.music.play(memberVoice, playInput, {
-          textChannel: interaction.channel,
-          member: requester || undefined,
-        });
-
-        const fallbackNote = spotifyFallback
-          ? `\n🔁 Spotify → SoundCloud: ${spotifyFallback.matched}/${spotifyFallback.requested} совпадений по длительности`
-          : '';
-        return interaction.editReply({
-          content: `✅ Запрос добавлен. Сообщу сюда, когда трек начнёт играть.${fallbackNote}`,
-        });
-      } catch (err) {
-        console.error('Music play command error:', JSON.stringify({
-          guildId,
-          query,
-          error: describeMusicError(err),
-        }, null, 2));
-        return interaction.editReply({ content: formatMusicError(err) });
-      }
-    }
-
-    if (action === 'leave') {
-      const botVoiceChannel = interaction.guild.members.me?.voice?.channel;
-      if (!botVoiceChannel) {
-        this.music.voices.leave(guildId);
-        return interaction.reply({ content: 'ℹ️ P3W уже не подключён к голосовому каналу.', ephemeral: true });
-      }
-      if (!memberVoice || memberVoice.id !== botVoiceChannel.id) {
-        return interaction.reply({ content: '❌ Чтобы отключить P3W, зайди в тот же голосовой канал.', ephemeral: true });
-      }
-
-      await interaction.deferReply();
-      try {
-        queue = this.music.getQueue(guildId);
-        if (queue) await queue.stop();
-        this.music.voices.leave(guildId);
-        return interaction.editReply({ content: '👋 Отключился от голосового канала.' });
-      } catch (err) {
-        console.error('Music leave error:', err);
-        return interaction.editReply({ content: formatMusicError(err) });
-      }
-    }
-
-    if (!queue) {
-      return interaction.reply({ content: 'ℹ️ Сейчас ничего не играет. Запусти трек командой /play.', ephemeral: true });
-    }
-
-    if (!memberVoice || memberVoice.id !== queue.voiceChannel?.id) {
-      return interaction.reply({ content: '❌ Зайди в тот же голосовой канал, где сейчас находится P3W.', ephemeral: true });
-    }
-
-    if (action === 'queue') {
-      const songs = queue.songs.slice(0, 11);
-      const lines = songs.map((song, index) => {
-        const name = clampText(String(song.name || song.url || 'Без названия'), 110);
-        const duration = song.formattedDuration || 'LIVE';
-        return `${index === 0 ? '▶️ Сейчас' : `${index}.`} ${name} — ${duration}`;
-      });
-      if (queue.songs.length > songs.length) {
-        lines.push(`… и ещё ${queue.songs.length - songs.length} трек(ов)`);
-      }
-      return interaction.reply({
-        content: `**🎶 Очередь P3W**\n${lines.join('\n')}\n\nГромкость: ${queue.volume}%`,
-        allowedMentions: { parse: [] },
-      });
-    }
-
-    if (action === 'nowplaying') {
-      const song = queue.songs[0];
-      if (!song) return interaction.reply({ content: 'ℹ️ Сейчас ничего не играет.', ephemeral: true });
-      const title = clampText(String(song.name || song.url || 'Без названия'), 180);
-      const position = song.isLive ? 'Прямой эфир' : `${queue.formattedCurrentTime} / ${song.formattedDuration}`;
-      return interaction.reply({
-        content: `🎵 **Сейчас играет:** ${title}\n⏱ ${position}${song.url ? `\n${song.url}` : ''}`,
-        allowedMentions: { parse: [] },
-      });
-    }
-
-    if (action === 'skip') {
-      if (queue.songs.length < 2 && !queue.autoplay) {
-        return interaction.reply({ content: 'ℹ️ В очереди нет следующего трека.', ephemeral: true });
-      }
-      try {
-        await queue.skip();
-        return interaction.reply({ content: '⏭️ Трек пропущен.' });
-      } catch (err) {
-        console.error('Music skip error:', err);
-        return interaction.reply({ content: formatMusicError(err), ephemeral: true });
-      }
-    }
-
-    if (action === 'pause') {
-      if (queue.paused) return interaction.reply({ content: '⏸️ Музыка уже на паузе.', ephemeral: true });
-      await queue.pause();
-      return interaction.reply({ content: '⏸️ Музыка поставлена на паузу.' });
-    }
-
-    if (action === 'resume') {
-      if (!queue.paused) return interaction.reply({ content: '▶️ Музыка уже играет.', ephemeral: true });
-      await queue.resume();
-      return interaction.reply({ content: '▶️ Продолжаю воспроизведение.' });
-    }
-
-    if (action === 'stop') {
-      await queue.stop();
-      return interaction.reply({ content: '⏹️ Воспроизведение остановлено, очередь очищена.' });
-    }
-
-    if (action === 'volume') {
-      const percent = interaction.options.getInteger('percent', true);
-      queue.setVolume(percent);
-      return interaction.reply({ content: `🔊 Громкость установлена на ${percent}%.` });
-    }
-  }
-
   async handleNewsCommand(interaction) {
     const guildId = interaction.guildId;
     const action = interaction.options.getSubcommand();
@@ -1123,6 +734,9 @@ class DiscordBot {
       return this.mod.handleCommand(interaction);
     }
 
+    // Музыка: слэш-команды, кнопки панели и выпадающие списки обрабатывает модуль music.js.
+    if (this.music.handles(interaction)) return this.music.handleInteraction(interaction);
+
     if (!interaction.isChatInputCommand()) return;
 
     if (!interaction.guildId) {
@@ -1174,10 +788,6 @@ class DiscordBot {
       }
     }
 
-    if (['play', 'skip', 'pause', 'resume', 'stop', 'queue', 'nowplaying', 'volume', 'leave'].includes(interaction.commandName)) {
-      return this.handleMusicCommand(interaction);
-    }
-
     if (interaction.commandName === 'time' || interaction.commandName === 'user') {
       const target = interaction.options.getUser('user') || interaction.user;
       return this.handleVoiceTime(interaction, target);
@@ -1222,7 +832,7 @@ class DiscordBot {
       }
       await interaction.deferReply();
       try {
-        await this.ensureMusicVoice(voiceChannel);
+        await this.music.ensureVoice(voiceChannel);
         return interaction.editReply({ content: `✅ Зашёл в ${voiceChannel}.` });
       } catch (err) {
         console.error('jtm error:', err);
@@ -1357,26 +967,8 @@ class DiscordBot {
     this.client.on('voiceStateUpdate', (oldState, newState) => {
       if (!oldState.guild || (this.config.GUILD_ID && oldState.guild.id !== this.config.GUILD_ID)) return;
 
-      // If Discord reports our own bot as self-muted, clear it while it is in voice.
-      // A server mute is moderator-controlled and is reported without trying to bypass it.
-      if (newState.id === this.client.user?.id) {
-        if (newState.serverMute && newState.channelId) {
-          console.error('P3W is server-muted in voice; a moderator must unmute the bot.');
-        } else if (newState.selfDeaf && newState.channelId) {
-          const voice = this.music.voices.get(newState.guild.id);
-          if (voice) {
-            voice.setSelfDeaf(false);
-            console.warn('P3W self-deaf detected; requested self-undeafen.');
-          }
-        } else if (newState.selfMute && newState.channelId) {
-          const voice = this.music.voices.get(newState.guild.id);
-          if (voice) {
-            voice.setSelfMute(false);
-            console.warn('P3W self-mute detected; requested self-unmute.');
-          }
-        }
-        return;
-      }
+      // Музыкальный модуль следит за состоянием самого бота (mute/deaf) и за пустым каналом.
+      if (this.music.onVoiceStateUpdate(oldState, newState)) return;
       if (oldState.member?.user?.bot) return;
 
       const userId = oldState.id;
@@ -1435,11 +1027,7 @@ class DiscordBot {
       this.timers.forEach(timer => clearInterval(timer));
       await this.checkpointVoiceSessions(true);
       await this.stateStore.save();
-      for (const guild of this.client.guilds.cache.values()) {
-        const queue = this.music.getQueue(guild.id);
-        if (queue) await queue.stop().catch(err => console.error('Music shutdown queue error:', err));
-        this.music.voices.leave(guild.id);
-      }
+      await this.music.shutdown();
       if (this.httpServer) this.httpServer.close(() => {});
       if (this.client?.destroy) await this.client.destroy();
     } catch (e) {
