@@ -18,6 +18,8 @@
  */
 
 const http = require('http');
+const https = require('node:https');
+const { pipeline } = require('node:stream/promises');
 const { randomBytes } = require('crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -79,6 +81,44 @@ function safeStreamUrl(value) {
   } catch {
     return '[invalid-url]';
   }
+}
+
+function executableNameForPlatform() {
+  return process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+}
+
+function getYtDlpVersion(binaryPath) {
+  const result = spawnSync(binaryPath, ['--version'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) return '';
+  return String(result.stdout || '').trim();
+}
+
+async function downloadHttpsFile(url, destination, redirects = 0) {
+  if (redirects > 8) throw new Error('Too many redirects downloading yt-dlp');
+  await new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: { 'User-Agent': 'P3W-yt-dlp-runtime/1.0' },
+    }, response => {
+      if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+        response.resume();
+        downloadHttpsFile(new URL(response.headers.location, url).toString(), destination, redirects + 1)
+          .then(resolve, reject);
+        return;
+      }
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`yt-dlp download returned HTTP ${response.statusCode}`));
+        return;
+      }
+      pipeline(response, fs.createWriteStream(destination)).then(resolve, reject);
+    });
+    request.setTimeout(180_000, () => request.destroy(new Error('yt-dlp download timed out')));
+    request.on('error', reject);
+  });
 }
 
 // yt-dlp expects a Netscape cookie jar, while YT_COOKIE is normally a Cookie header.
@@ -865,37 +905,71 @@ class P3WYouTubePlugin extends YouTubePlugin {
     this.soundcloud = null;
     this.fallback = null; // AudiusPlugin, подставляется после создания
     this.cookieHeader = options?.ytdlOptions?.cookie || process.env.YT_COOKIE || '';
-
-    const bundledYtDlp = path.join(
-      __dirname,
-      '..',
-      'vendor',
-      'yt-dlp',
-      process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp',
-    );
-    this.ytdlpPath = process.env.YT_DLP_PATH || bundledYtDlp;
-    let probe = spawnSync(this.ytdlpPath, ['--version'], {
-      encoding: 'utf8',
-      timeout: 5000,
-      windowsHide: true,
+    const executableName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+    this.ytdlpPath = process.env.YT_DLP_PATH
+      || path.join(os.tmpdir(), 'p3w-yt-dlp', executableName);
+    this.ytdlpAvailable = false;
+    this.ytdlpVersion = '';
+    this.ytdlpReady = this.#ensureYtDlp().catch(error => {
+      this.ytdlpAvailable = false;
+      console.warn('[music-diag] yt-dlp backup extractor unavailable:', clampText(error?.message || String(error), 800));
+      return false;
     });
-    if ((probe.error || probe.status !== 0) && !process.env.YT_DLP_PATH) {
-      const systemProbe = spawnSync('yt-dlp', ['--version'], {
-        encoding: 'utf8',
-        timeout: 5000,
-        windowsHide: true,
-      });
-      if (!systemProbe.error && systemProbe.status === 0) {
-        this.ytdlpPath = 'yt-dlp';
-        probe = systemProbe;
-      }
+  }
+
+  async #ensureYtDlp() {
+    const targetVersion = process.env.YT_DLP_VERSION || '2026.10.26';
+    if (process.env.YT_DLP_PATH) {
+      const version = getYtDlpVersion(this.ytdlpPath);
+      if (!version) throw new Error('YT_DLP_PATH does not point to a working yt-dlp executable');
+      this.ytdlpVersion = version;
+      this.ytdlpAvailable = true;
+      console.log(`✅ YouTube backup extractor: yt-dlp ${version} (custom path)`);
+      return true;
     }
-    this.ytdlpAvailable = !probe.error && probe.status === 0;
-    this.ytdlpVersion = this.ytdlpAvailable ? String(probe.stdout || '').trim() : '';
-    if (this.ytdlpAvailable) {
-      console.log(`✅ YouTube backup extractor: yt-dlp ${this.ytdlpVersion}`);
-    } else {
-      console.warn('[music-diag] yt-dlp backup extractor is not installed');
+
+    const existingVersion = getYtDlpVersion(this.ytdlpPath);
+    if (existingVersion === targetVersion) {
+      this.ytdlpVersion = existingVersion;
+      this.ytdlpAvailable = true;
+      console.log(`✅ YouTube backup extractor: yt-dlp ${existingVersion} (runtime cache)`);
+      return true;
+    }
+
+    const assets = {
+      'linux-x64': 'yt-dlp_linux',
+      'linux-arm64': 'yt-dlp_linux_aarch64',
+      'win32-x64': 'yt-dlp.exe',
+      'darwin-x64': 'yt-dlp_macos',
+      'darwin-arm64': 'yt-dlp_macos',
+    };
+    const asset = assets[`${process.platform}-${process.arch}`];
+    if (!asset) throw new Error(`No yt-dlp binary for ${process.platform}/${process.arch}`);
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p3w-yt-dlp-install-'));
+    const tempPath = path.join(tempDir, executableNameForPlatform());
+    const url = `https://github.com/yt-dlp/yt-dlp/releases/download/${targetVersion}/${asset}`;
+    try {
+      console.log(`[music-diag] downloading yt-dlp ${targetVersion} at runtime...`);
+      await downloadHttpsFile(url, tempPath);
+      if (process.platform !== 'win32') fs.chmodSync(tempPath, 0o755);
+      const downloadedVersion = getYtDlpVersion(tempPath);
+      if (downloadedVersion !== targetVersion) {
+        throw new Error(`yt-dlp version mismatch: expected ${targetVersion}, got ${downloadedVersion || 'unavailable'}`);
+      }
+      fs.mkdirSync(path.dirname(this.ytdlpPath), { recursive: true });
+      fs.copyFileSync(tempPath, this.ytdlpPath);
+      if (process.platform !== 'win32') fs.chmodSync(this.ytdlpPath, 0o755);
+      const installedVersion = getYtDlpVersion(this.ytdlpPath);
+      if (installedVersion !== targetVersion) {
+        throw new Error('yt-dlp runtime executable could not be started after installation');
+      }
+      this.ytdlpVersion = installedVersion;
+      this.ytdlpAvailable = true;
+      console.log(`✅ YouTube backup extractor: yt-dlp ${installedVersion}`);
+      return true;
+    } finally {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* cleanup */ }
     }
   }
 
@@ -1013,6 +1087,7 @@ class P3WYouTubePlugin extends YouTubePlugin {
       return await this.#prepareWithYtdlCore(song);
     } catch (error) {
       primaryError = error;
+      if (this.ytdlpReady) await this.ytdlpReady;
       if (!this.ytdlpAvailable) throw error;
       console.warn('[youtube-fallback] ytdl-core failed; trying yt-dlp:', briefError(error));
     }

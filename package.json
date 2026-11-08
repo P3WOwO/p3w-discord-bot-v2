@@ -6,8 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node index.js",
-    "test:ffmpeg-install": "node scripts/install-ffmpeg.js",
-    "postinstall": "node scripts/install-yt-dlp.js"
+    "test:ffmpeg-install": "node scripts/install-ffmpeg.js"
   },
   "engines": {
     "node": ">=22.22.2 <25"
