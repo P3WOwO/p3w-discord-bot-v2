@@ -804,18 +804,25 @@ class MusicModule {
     this.#createDistube();
     this.#bindEvents();
 
-    // Одноразовая автодиагностика по явному флагу Render. Если в основном сервере
-    // ровно один занятый voice-канал, бот подключится, передаст 5 секунд SoundCloud
-    // и выйдет. Если каналов несколько или нет — никого не трогаем.
+    // Одноразовая автодиагностика по явному флагу Render. Ждём реальной готовности
+    // клиента опросом, чтобы не зависеть от порядка регистрации ClientReady listeners.
+    console.log(`[music-diag] MUSIC_DIAG_AUTOJOIN=${process.env.MUSIC_DIAG_AUTOJOIN || 'unset'}`);
     if (process.env.MUSIC_DIAG_AUTOJOIN === 'true') {
-      client.once(Events.ClientReady, () => {
-        const timer = setTimeout(() => {
+      const waitForReady = () => {
+        if (!client.isReady()) {
+          const retry = setTimeout(waitForReady, 1000);
+          retry.unref?.();
+          return;
+        }
+        console.log('[music-diag] Discord client ready; startup voice test scheduled');
+        setTimeout(() => {
           this.#runStartupVoiceDiagnostic().catch(err => {
             console.error('[music-diag] startup voice test failed:', describeMusicError(err));
           });
-        }, 12_000);
-        timer.unref?.();
-      });
+        }, 8000);
+      };
+      const initial = setTimeout(waitForReady, 1000);
+      initial.unref?.();
     }
   }
 
@@ -1164,12 +1171,11 @@ class MusicModule {
       await entersState(voice.audioPlayer, AudioPlayerStatus.Playing, 15_000);
       console.log('[music-diag] audio player entered PLAYING; waiting for real PCM/Opus frames');
 
-      await sleep(3500);
-      const playedMs = resource.playbackDuration || 0;
       const processResult = await Promise.race([
         ffmpegClosed,
-        sleep(2500).then(() => null),
+        sleep(9000).then(() => null),
       ]);
+      const playedMs = resource.playbackDuration || 0;
 
       if (playerError) throw playerError;
       if (ffmpeg.signalCode === 'SIGSEGV' || processResult?.signal === 'SIGSEGV') {
