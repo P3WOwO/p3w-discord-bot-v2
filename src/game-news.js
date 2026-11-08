@@ -68,7 +68,7 @@ function validateGameNewsPayload(raw) {
   if (regionalPricesInput != null && !Array.isArray(regionalPricesInput)) {
     throw Object.assign(new Error('Поле regional_prices должно быть массивом цен.'), { statusCode: 400 });
   }
-  const regionalPrices = (regionalPricesInput || []).slice(0, 6).map((entry, index) => {
+  const regionalPrices = (regionalPricesInput || []).slice(0, 8).map((entry, index) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       throw Object.assign(new Error('Некорректная цена в regional_prices, позиция ' + (index + 1) + '.'), { statusCode: 400 });
     }
@@ -80,13 +80,7 @@ function validateGameNewsPayload(raw) {
     if (!region || !/^[A-Z]{3}$/.test(currency) || !regionalPrice) {
       throw Object.assign(new Error('Для каждой региональной цены нужны region, ISO-код валюты и price.'), { statusCode: 400 });
     }
-    return {
-      region,
-      currency,
-      price: regionalPrice,
-      oldPrice: regionalOldPrice,
-      discount: regionalDiscount,
-    };
+    return { region, currency, price: regionalPrice, oldPrice: regionalOldPrice, discount: regionalDiscount };
   });
 
   if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) {
@@ -221,7 +215,8 @@ function getEmbedColor(item) {
   if (source.includes('gog')) return 0x86328a;
   if (source.includes('prime')) return 0x00a8e0;
   if (source.includes('xbox')) return 0x107c10;
-  if (/бесплатно|free/i.test(item.price) || /-100%/.test(item.discount) || item.regionalPrices.some(entry => /-100%/.test(entry.discount))) return 0x2ecc71;
+  if (/бесплатно|free/i.test(item.price) || /-100%/.test(item.discount)
+    || item.regionalPrices.some(entry => /-100%/.test(entry.discount))) return 0x2ecc71;
   return 0x5865f2;
 }
 
@@ -292,103 +287,20 @@ function buildGameNewsEmbed(raw) {
 
   if (item.regionalPrices.length) {
     const currencySymbols = {
-      USD: '
-  if (item.expiresAt) {
-    const timestamp = Math.floor(Date.parse(item.expiresAt) / 1000);
-    fields.push({
-      name: '⏳ ЗАБРАТЬ ДО',
-      value: '<t:' + timestamp + ':D>\n<t:' + timestamp + ':R>',
-      inline: true,
-    });
-  }
-
-  if (fields.length) embed.addFields(fields);
-  embed.setFooter({ text: 'P3W  •  ИГРОВЫЕ НОВОСТИ' });
-  return embed;
-}
-
-function buildGameNewsComponents(raw) {
-  const item = validateGameNewsPayload(raw);
-  const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount)
-    || item.regionalPrices.some(entry => /-100%/.test(entry.discount));
-  const isOffer = Boolean(item.price || item.oldPrice || item.discount || item.expiresAt || item.regionalPrices.length);
-  const actionLabel = isFree
-    ? 'Забрать бесплатно'
-    : (isOffer ? 'Открыть предложение' : 'Читать новость');
-
-  const buttons = [
-    new ButtonBuilder()
-      .setStyle(ButtonStyle.Link)
-      .setLabel(actionLabel)
-      .setURL(item.url),
-  ];
-
-  if (item.sourceUrl && item.sourceUrl !== item.url) {
-    buttons.push(
-      new ButtonBuilder()
-        .setStyle(ButtonStyle.Link)
-        .setLabel('Официальный источник')
-        .setURL(item.sourceUrl),
-    );
-  }
-
-  return [new ActionRowBuilder().addComponents(buttons)];
-}
-
-async function buildGameNewsMessage(raw) {
-  const item = validateGameNewsPayload(raw);
-  const embeds = [];
-  const files = [];
-
-  // Upload artwork with the message and use attachment:// so Discord receives
-  // the actual image bytes instead of having to fetch a remote URL itself.
-  if (item.imageUrl) {
-    const image = await downloadNewsImage(item.imageUrl);
-    files.push(image.attachment);
-    embeds.push(
-      new EmbedBuilder()
-        .setColor(getEmbedColor(item))
-        .setImage('attachment://' + image.filename)
-    );
-  }
-
-  embeds.push(buildGameNewsEmbed(item));
-
-  return {
-    embeds,
-    ...(files.length ? { files } : {}),
-    components: buildGameNewsComponents(item),
-    allowedMentions: { parse: [] },
-  };
-}
-
-module.exports = {
-  validateGameNewsPayload,
-  buildGameNewsEmbed,
-  buildGameNewsComponents,
-  buildGameNewsMessage,
-  normalizeDescription,
-};
-, UAH: '₴', KZT: '₸', RUB: '₽', EUR: '€',
-      BYN: 'Br ', GBP: '£', PLN: 'zł ',
+      USD: '$', UAH: '₴', KZT: '₸', RUB: '₽', EUR: '€',
+      BYN: 'Br ', GBP: '£', PLN: 'zł ', TRY: '₺',
     };
     const formatMoney = (amount, currency) => {
       const symbol = currencySymbols[currency];
       return symbol ? symbol + amount : amount + ' ' + currency;
     };
     const lines = item.regionalPrices.map(entry => {
-      const previous = entry.oldPrice
-        ? '~~' + formatMoney(entry.oldPrice, entry.currency) + '~~ → '
-        : '';
+      const previous = entry.oldPrice ? '~~' + formatMoney(entry.oldPrice, entry.currency) + '~~ → ' : '';
       const current = '**' + formatMoney(entry.price, entry.currency) + '**';
       const discountLabel = entry.discount ? ' · ' + entry.discount : '';
       return entry.region + ' — ' + previous + current + discountLabel;
     });
-    fields.push({
-      name: '🌍 ЦЕНЫ ПО РЕГИОНАМ',
-      value: lines.join('\n').slice(0, 1024),
-      inline: false,
-    });
+    fields.push({ name: '🌍 ЦЕНЫ ПО РЕГИОНАМ', value: lines.join('\\n').slice(0, 1024), inline: false });
   } else {
     if (item.price || item.oldPrice) {
       const priceParts = [];
@@ -416,8 +328,9 @@ module.exports = {
 
 function buildGameNewsComponents(raw) {
   const item = validateGameNewsPayload(raw);
-  const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount);
-  const isOffer = Boolean(item.price || item.oldPrice || item.discount || item.expiresAt);
+  const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount)
+    || item.regionalPrices.some(entry => /-100%/.test(entry.discount));
+  const isOffer = Boolean(item.price || item.oldPrice || item.discount || item.expiresAt || item.regionalPrices.length);
   const actionLabel = isFree
     ? 'Забрать бесплатно'
     : (isOffer ? 'Открыть предложение' : 'Читать новость');
