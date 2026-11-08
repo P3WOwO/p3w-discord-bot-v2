@@ -221,7 +221,7 @@ function getEmbedColor(item) {
   if (source.includes('gog')) return 0x86328a;
   if (source.includes('prime')) return 0x00a8e0;
   if (source.includes('xbox')) return 0x107c10;
-  if (/бесплатно|free/i.test(item.price) || /-100%/.test(item.discount)) return 0x2ecc71;
+  if (/бесплатно|free/i.test(item.price) || /-100%/.test(item.discount) || item.regionalPrices.some(entry => /-100%/.test(entry.discount))) return 0x2ecc71;
   return 0x5865f2;
 }
 
@@ -309,8 +309,9 @@ function buildGameNewsEmbed(raw) {
 
 function buildGameNewsComponents(raw) {
   const item = validateGameNewsPayload(raw);
-  const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount);
-  const isOffer = Boolean(item.price || item.oldPrice || item.discount || item.expiresAt);
+  const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount)
+    || item.regionalPrices.some(entry => /-100%/.test(entry.discount));
+  const isOffer = Boolean(item.price || item.oldPrice || item.discount || item.expiresAt || item.regionalPrices.length);
   const actionLabel = isFree
     ? 'Забрать бесплатно'
     : (isOffer ? 'Открыть предложение' : 'Читать новость');
