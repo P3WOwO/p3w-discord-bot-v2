@@ -64,6 +64,30 @@ function validateGameNewsPayload(raw) {
   const imageUrl = validHttpUrl(readField(raw, 'image_url', 'imageUrl'), 'image_url');
   const sourceUrl = validHttpUrl(readField(raw, 'source_url', 'sourceUrl'), 'source_url');
   const expiresAt = clean(readField(raw, 'expires_at', 'expiresAt'), 64);
+  const regionalPricesInput = readField(raw, 'regional_prices', 'regionalPrices');
+  if (regionalPricesInput != null && !Array.isArray(regionalPricesInput)) {
+    throw Object.assign(new Error('Поле regional_prices должно быть массивом цен.'), { statusCode: 400 });
+  }
+  const regionalPrices = (regionalPricesInput || []).slice(0, 6).map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw Object.assign(new Error('Некорректная цена в regional_prices, позиция ' + (index + 1) + '.'), { statusCode: 400 });
+    }
+    const region = clean(entry.region, 48);
+    const currency = clean(entry.currency, 3).toUpperCase();
+    const regionalPrice = clean(entry.price, 48);
+    const regionalOldPrice = clean(readField(entry, 'old_price', 'oldPrice'), 48);
+    const regionalDiscount = clean(entry.discount, 24);
+    if (!region || !/^[A-Z]{3}$/.test(currency) || !regionalPrice) {
+      throw Object.assign(new Error('Для каждой региональной цены нужны region, ISO-код валюты и price.'), { statusCode: 400 });
+    }
+    return {
+      region,
+      currency,
+      price: regionalPrice,
+      oldPrice: regionalOldPrice,
+      discount: regionalDiscount,
+    };
+  });
 
   if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) {
     throw Object.assign(new Error('Поле expires_at должно содержать дату ISO 8601.'), { statusCode: 400 });
@@ -72,7 +96,7 @@ function validateGameNewsPayload(raw) {
   const suppliedId = clean(raw.id, 160);
   const id = suppliedId || crypto.createHash('sha256').update(title + '\n' + url).digest('hex');
 
-  return { id, title, url, description, price, oldPrice, discount, source, imageUrl, sourceUrl, expiresAt };
+  return { id, title, url, description, price, oldPrice, discount, source, imageUrl, sourceUrl, expiresAt, regionalPrices };
 }
 
 
@@ -266,14 +290,114 @@ function buildGameNewsEmbed(raw) {
     });
   }
 
-  if (item.price || item.oldPrice) {
-    const priceParts = [];
-    if (item.oldPrice) priceParts.push('~~' + item.oldPrice + '~~');
-    if (item.price) priceParts.push('**' + item.price + '**');
-    fields.push({ name: '💰 ЦЕНА', value: priceParts.join(' → ') || '—', inline: true });
+  if (item.regionalPrices.length) {
+    const currencySymbols = {
+      USD: '
+  if (item.expiresAt) {
+    const timestamp = Math.floor(Date.parse(item.expiresAt) / 1000);
+    fields.push({
+      name: '⏳ ЗАБРАТЬ ДО',
+      value: '<t:' + timestamp + ':D>\n<t:' + timestamp + ':R>',
+      inline: true,
+    });
   }
-  if (item.discount) {
-    fields.push({ name: '🏷️ СКИДКА', value: '**' + item.discount + '**', inline: true });
+
+  if (fields.length) embed.addFields(fields);
+  embed.setFooter({ text: 'P3W  •  ИГРОВЫЕ НОВОСТИ' });
+  return embed;
+}
+
+function buildGameNewsComponents(raw) {
+  const item = validateGameNewsPayload(raw);
+  const isFree = /бесплатно|free/i.test(item.price) || /-100%/.test(item.discount);
+  const isOffer = Boolean(item.price || item.oldPrice || item.discount || item.expiresAt);
+  const actionLabel = isFree
+    ? 'Забрать бесплатно'
+    : (isOffer ? 'Открыть предложение' : 'Читать новость');
+
+  const buttons = [
+    new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setLabel(actionLabel)
+      .setURL(item.url),
+  ];
+
+  if (item.sourceUrl && item.sourceUrl !== item.url) {
+    buttons.push(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('Официальный источник')
+        .setURL(item.sourceUrl),
+    );
+  }
+
+  return [new ActionRowBuilder().addComponents(buttons)];
+}
+
+async function buildGameNewsMessage(raw) {
+  const item = validateGameNewsPayload(raw);
+  const embeds = [];
+  const files = [];
+
+  // Upload artwork with the message and use attachment:// so Discord receives
+  // the actual image bytes instead of having to fetch a remote URL itself.
+  if (item.imageUrl) {
+    const image = await downloadNewsImage(item.imageUrl);
+    files.push(image.attachment);
+    embeds.push(
+      new EmbedBuilder()
+        .setColor(getEmbedColor(item))
+        .setImage('attachment://' + image.filename)
+    );
+  }
+
+  embeds.push(buildGameNewsEmbed(item));
+
+  return {
+    embeds,
+    ...(files.length ? { files } : {}),
+    components: buildGameNewsComponents(item),
+    allowedMentions: { parse: [] },
+  };
+}
+
+module.exports = {
+  validateGameNewsPayload,
+  buildGameNewsEmbed,
+  buildGameNewsComponents,
+  buildGameNewsMessage,
+  normalizeDescription,
+};
+, UAH: '₴', KZT: '₸', RUB: '₽', EUR: '€',
+      BYN: 'Br ', GBP: '£', PLN: 'zł ',
+    };
+    const formatMoney = (amount, currency) => {
+      const symbol = currencySymbols[currency];
+      return symbol ? symbol + amount : amount + ' ' + currency;
+    };
+    const lines = item.regionalPrices.map(entry => {
+      const previous = entry.oldPrice
+        ? '~~' + formatMoney(entry.oldPrice, entry.currency) + '~~ → '
+        : '';
+      const current = '**' + formatMoney(entry.price, entry.currency) + '**';
+      const discountLabel = entry.discount ? ' · ' + entry.discount : '';
+      return entry.region + ' — ' + previous + current + discountLabel;
+    });
+    fields.push({
+      name: '🌍 ЦЕНЫ ПО РЕГИОНАМ',
+      value: lines.join('\n').slice(0, 1024),
+      inline: false,
+    });
+  } else {
+    if (item.price || item.oldPrice) {
+      const priceParts = [];
+      if (item.oldPrice) priceParts.push('~~' + item.oldPrice + '~~');
+      if (item.price) priceParts.push('**' + item.price + '**');
+      fields.push({ name: '💰 ЦЕНА', value: priceParts.join(' → ') || '—', inline: true });
+    }
+    if (item.discount) {
+      fields.push({ name: '🏷️ СКИДКА', value: '**' + item.discount + '**', inline: true });
+    }
   }
   if (item.expiresAt) {
     const timestamp = Math.floor(Date.parse(item.expiresAt) / 1000);
