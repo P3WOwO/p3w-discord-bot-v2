@@ -653,9 +653,37 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
   constructor(bridge) {
     super();
     this.bridge = bridge;
-    this.streamClient = new SoundCloudReadable();
+    // SoundCloud client ID discovery is an external network dependency.
+    // Initialize lazily so a SoundCloud outage cannot prevent P3W from booting.
+    this.streamClient = null;
+    this.streamClientPromise = null;
+    this.streamClientError = null;
     this.youtube = null;
     this.audius = null;
+  }
+
+  async #getStreamClient() {
+    if (this.streamClient) return this.streamClient;
+
+    if (!this.streamClientPromise) {
+      this.streamClientPromise = Promise.resolve()
+        .then(async () => {
+          const client = new SoundCloudReadable();
+          await client.ensureReady();
+          this.streamClient = client;
+          this.streamClientError = null;
+          console.log('✅ SoundCloud source initialized');
+          return client;
+        })
+        .catch(error => {
+          this.streamClientPromise = null;
+          this.streamClientError = error;
+          console.warn('[soundcloud] Source temporarily unavailable:', briefError(error));
+          throw error;
+        });
+    }
+
+    return this.streamClientPromise;
   }
 
   #toSong(track, options = {}) {
@@ -687,11 +715,11 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
 
   async resolve(url, options = {}) {
     try {
-      await this.streamClient.ensureReady();
-      const item = await this.streamClient.fetchItem(url);
+      const streamClient = await this.#getStreamClient();
+      const item = await streamClient.fetchItem(url);
       if (item?.kind === 'track') return this.#toSong(item, options);
       if (item?.kind === 'playlist') {
-        const playlist = await this.streamClient.getPlaylistDetails(url);
+        const playlist = await streamClient.getPlaylistDetails(url);
         const songs = (playlist.tracks || [])
           .filter(track => track?.id && track?.permalink_url && track?.title)
           .map(track => this.#toSong(track, options));
@@ -731,8 +759,16 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
   }
 
   async searchSong(query, options = {}, targetDuration = 0) {
-    await this.streamClient.ensureReady();
-    const results = await this.streamClient.search({ query, limit: 20, type: 'tracks' });
+    let streamClient;
+    try {
+      streamClient = await this.#getStreamClient();
+    } catch (error) {
+      if (this.audius) {
+        return this.audius.searchSong(query, options, targetDuration).catch(() => null);
+      }
+      return null;
+    }
+    const results = await streamClient.search({ query, limit: 20, type: 'tracks' });
     const candidates = (Array.isArray(results) ? results : [])
       .filter(track => track?.id && track?.permalink_url && track?.title);
     if (!candidates.length) return null;
@@ -752,10 +788,10 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
     return this.#toSong(selected, options);
   }
 
-  async #resolveHlsMediaPlaylist(streamUrl) {
+  async #resolveHlsMediaPlaylist(streamClient, streamUrl) {
     let mediaUrl = streamUrl;
     for (let depth = 0; depth < 3; depth++) {
-      const response = await this.streamClient.http.get(mediaUrl, {
+      const response = await streamClient.http.get(mediaUrl, {
         responseType: 'text',
         headers: {
           Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, */*',
@@ -826,9 +862,19 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
     const trackUrl = typeof song === 'string' ? song : song?.url;
     if (!trackUrl) throw new Error('SoundCloud track URL is missing');
 
+    let streamClient;
+    try {
+      streamClient = await this.#getStreamClient();
+    } catch (error) {
+      if (song && typeof song === 'object') {
+        return this.#fallbackStream(song, ['SoundCloud initialization: ' + briefError(error)]);
+      }
+      throw error;
+    }
+
     let track;
     try {
-      track = await this.streamClient.getTrackDetails(trackUrl);
+      track = await streamClient.getTrackDetails(trackUrl);
     } catch (error) {
       if (song && typeof song === 'object') {
         return this.#fallbackStream(song, ['SoundCloud metadata: ' + briefError(error)]);
@@ -836,7 +882,7 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
       throw error;
     }
     const songObject = typeof song === 'string' ? this.#toSong(track) : song;
-    const transcodings = this.streamClient._getSortedTranscodings(track);
+    const transcodings = streamClient._getSortedTranscodings(track);
     const failures = [];
     console.log('[soundcloud-stream] ' + (track.title || trackUrl) + ': transcodings=' + transcodings.length);
 
@@ -850,14 +896,14 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
       }
 
       try {
-        const streamUrl = await this.streamClient.getStreamUrl(transcoding.url);
+        const streamUrl = await streamClient.getStreamUrl(transcoding.url);
         let stream = null;
 
         if (protocol === 'hls') {
-          const mediaUrl = await this.#resolveHlsMediaPlaylist(streamUrl);
-          stream = await this.streamClient._createHlsStream(mediaUrl, 0, { track });
+          const mediaUrl = await this.#resolveHlsMediaPlaylist(streamClient, streamUrl);
+          stream = await streamClient._createHlsStream(mediaUrl, 0, { track });
         } else if (protocol === 'progressive') {
-          const response = await this.streamClient.http.get(streamUrl, {
+          const response = await streamClient.http.get(streamUrl, {
             responseType: 'stream',
             headers: { Referer: 'https://soundcloud.com/' },
           });
@@ -889,7 +935,13 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
   }
 
   async getRelatedSongs(song) {
-    const track = await this.streamClient.getTrackDetails(song.url).catch(() => null);
+    let streamClient;
+    try {
+      streamClient = await this.#getStreamClient();
+    } catch {
+      return [];
+    }
+    const track = await streamClient.getTrackDetails(song.url).catch(() => null);
     if (!track?.id) return [];
     const related = await this.streamClient.getRelatedTracks(track.id, { limit: 10 }).catch(() => []);
     return (related || []).filter(item => item?.permalink_url && item?.title).map(item => this.#toSong(item));

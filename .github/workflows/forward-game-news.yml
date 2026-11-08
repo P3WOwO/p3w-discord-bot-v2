@@ -8,6 +8,7 @@ on:
       - "game-news/queue/*.json"
       - "src/game-news.js"
       - "src/bot.js"
+      - "src/music.js"
 
 permissions:
   contents: read
@@ -26,7 +27,7 @@ jobs:
           fetch-depth: 0
 
       - name: Validate game news JavaScript syntax
-        run: node --check src/game-news.js && node --check src/bot.js
+        run: node --check src/game-news.js && node --check src/bot.js && node --check src/music.js
 
       - name: Forward new game news files
         env:
