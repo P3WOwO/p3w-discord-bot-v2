@@ -30,7 +30,8 @@ const {
   AudioPlayerStatus,
 } = require('@discordjs/voice');
 const { OpusEncoder } = require('@discordjs/opus');
-const { DisTube, RepeatMode, ExtractorPlugin, Song } = require('distube');
+const { DisTube, RepeatMode, ExtractorPlugin, Song, Playlist } = require('distube');
+const SoundCloudReadable = require('@zibot/scdl');
 const { YouTubePlugin, YouTubeSong } = require('@distube/youtube');
 const { Quality, parseVideoId, parsePlaylistId } = require('@distube/ytdl-core');
 const { SpotifyPlugin } = require('@distube/spotify');
@@ -90,6 +91,7 @@ const AUDIO_FILTERS = [
 
 const SOURCE_LABELS = {
   youtube: 'YouTube',
+  soundcloud: 'SoundCloud',
   audius: 'Audius',
   spotify: 'Spotify',
   yandex: 'Яндекс Музыка',
@@ -336,6 +338,9 @@ class StreamBridge {
   }
 
   register(stream, label) {
+    if (!this.server?.listening || !Number.isInteger(this.port) || this.port < 1) {
+      throw new Error('Music stream bridge is not listening; await bridge.start() before register()');
+    }
     const token = randomBytes(16).toString('hex');
     // Ошибка до подключения ffmpeg не должна ронять процесс.
     stream.on('error', err => {
@@ -514,56 +519,298 @@ class P3WAudiusPlugin extends ExtractorPlugin {
   }
 }
 
-// ───────────────────────────── YouTube-плагин с мостом и запасным вариантом ─────────────────────────────
+// ───────────────────────────── SoundCloud AAC-HLS + safe source fallback ─────────────────────────────
+
+class P3WSoundCloudPlugin extends ExtractorPlugin {
+  constructor(bridge) {
+    super();
+    this.bridge = bridge;
+    this.streamClient = new SoundCloudReadable();
+    this.youtube = null;
+    this.audius = null;
+  }
+
+  #toSong(track, options = {}) {
+    return new Song({
+      plugin: this,
+      source: 'soundcloud',
+      playFromSource: true,
+      id: String(track.id),
+      name: track.title || 'SoundCloud track',
+      url: track.permalink_url || track.permalink,
+      thumbnail: track.artwork_url || track.artwork?.url || undefined,
+      duration: Math.round((Number(track.duration) || 0) / 1000),
+      views: Number(track.playback_count) || 0,
+      uploader: {
+        name: track.user?.username || track.user?.name || 'SoundCloud',
+        url: track.user?.permalink_url || undefined,
+      },
+    }, options);
+  }
+
+  async validate(url) {
+    try {
+      const parsed = new URL(url);
+      return ['soundcloud.com', 'www.soundcloud.com', 'm.soundcloud.com', 'on.soundcloud.com', 'snd.sc'].includes(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  async resolve(url, options = {}) {
+    await this.streamClient.ensureReady();
+    const item = await this.streamClient.fetchItem(url);
+    if (item?.kind === 'track') return this.#toSong(item, options);
+    if (item?.kind === 'playlist') {
+      const playlist = await this.streamClient.getPlaylistDetails(url);
+      const songs = (playlist.tracks || [])
+        .filter(track => track?.id && track?.permalink_url && track?.title)
+        .map(track => this.#toSong(track, options));
+      if (!songs.length) {
+        throw Object.assign(new Error('SoundCloud playlist is empty or unavailable'), { code: 'SOUNDCLOUD_EMPTY_PLAYLIST' });
+      }
+      return new Playlist({
+        source: 'soundcloud',
+        songs,
+        id: String(playlist.id),
+        name: playlist.title || 'SoundCloud playlist',
+        url: playlist.permalink_url || url,
+        thumbnail: playlist.artwork_url || undefined,
+      }, options);
+    }
+    throw Object.assign(new Error('SoundCloud URL is not a public track or playlist'), { code: 'SOUNDCLOUD_NOT_SUPPORTED' });
+  }
+
+  async searchSong(query, options = {}, targetDuration = 0) {
+    await this.streamClient.ensureReady();
+    const results = await this.streamClient.search({ query, limit: 20, type: 'tracks' });
+    const candidates = (Array.isArray(results) ? results : [])
+      .filter(track => track?.id && track?.permalink_url && track?.title);
+    if (!candidates.length) return null;
+
+    let selected = candidates[0];
+    if (targetDuration > 0) {
+      const ranked = candidates
+        .map(track => ({ track, duration: (Number(track.duration) || 0) / 1000 }))
+        .filter(item => item.duration > 0)
+        .map(item => ({ ...item, diff: Math.abs(item.duration - targetDuration) }))
+        .sort((a, b) => a.diff - b.diff);
+      const best = ranked[0];
+      const tolerance = Math.max(12, Math.round(targetDuration * 0.08));
+      if (!best || best.diff > tolerance) return null;
+      selected = best.track;
+    }
+    return this.#toSong(selected, options);
+  }
+
+  async #resolveHlsMediaPlaylist(streamUrl) {
+    let mediaUrl = streamUrl;
+    for (let depth = 0; depth < 3; depth++) {
+      const response = await this.streamClient.http.get(mediaUrl, {
+        responseType: 'text',
+        headers: {
+          Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, */*',
+          Referer: 'https://soundcloud.com/',
+        },
+      });
+      const playlist = String(response.data || '');
+      if (!playlist.includes('#EXTM3U')) throw new Error('SoundCloud HLS endpoint did not return an M3U8 playlist');
+
+      const encryption = playlist.split(/\r?\n/).find(line =>
+        line.startsWith('#EXT-X-KEY:') && !/METHOD=NONE/i.test(line),
+      );
+      if (encryption) throw new Error('SoundCloud HLS manifest is encrypted; no supported clear-audio transcoding was offered');
+
+      if (!playlist.includes('#EXT-X-STREAM-INF')) return mediaUrl;
+      const lines = playlist.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const index = lines.findIndex(line => line.startsWith('#EXT-X-STREAM-INF'));
+      const variant = index >= 0 ? lines.slice(index + 1).find(line => line && !line.startsWith('#')) : null;
+      if (!variant) throw new Error('SoundCloud HLS master playlist has no media variant');
+      mediaUrl = new URL(variant, response.request?.res?.responseUrl || mediaUrl).toString();
+      if (depth === 2) throw new Error('SoundCloud HLS playlist nesting exceeds 3');
+    }
+    throw new Error('SoundCloud HLS playlist nesting exceeds 3');
+  }
+
+  async #fallbackStream(song, reasons) {
+    const query = buildFallbackQuery(song);
+    if (!query) throw new Error('SoundCloud stream unavailable and no fallback search query could be built');
+
+    if (this.youtube) {
+      try {
+        const candidate = await this.youtube.searchYouTubeOnly(query, { member: song.member }, song.duration);
+        if (candidate) {
+          const url = await this.youtube.getDirectStreamURL(candidate);
+          if (url) {
+            setNote(song, 'SoundCloud не отдал воспроизводимый поток: включена найденная версия с YouTube');
+            console.warn('[soundcloud-fallback] ' + song.name + ' → YouTube: ' + candidate.name);
+            return url;
+          }
+        }
+      } catch (error) {
+        reasons.push('YouTube mirror: ' + briefError(error));
+      }
+    }
+
+    if (this.audius) {
+      try {
+        const candidate = await this.audius.searchSong(query, { member: song.member }, song.duration);
+        if (candidate) {
+          const url = await this.audius.getStreamURL(candidate);
+          if (url) {
+            setNote(song, 'SoundCloud не отдал воспроизводимый поток: включена найденная версия с Audius');
+            console.warn('[soundcloud-fallback] ' + song.name + ' → Audius: ' + candidate.name);
+            return url;
+          }
+        }
+      } catch (error) {
+        reasons.push('Audius mirror: ' + briefError(error));
+      }
+    }
+
+    throw Object.assign(new Error(
+      'SoundCloud не предложил доступный аудиопоток. ' + reasons.slice(0, 5).join(' | '),
+    ), { code: 'SOUNDCLOUD_NO_PLAYABLE_STREAM' });
+  }
+
+  async getStreamURL(song) {
+    const trackUrl = typeof song === 'string' ? song : song?.url;
+    if (!trackUrl) throw new Error('SoundCloud track URL is missing');
+
+    const track = await this.streamClient.getTrackDetails(trackUrl);
+    const transcodings = this.streamClient._getSortedTranscodings(track);
+    const failures = [];
+    console.log('[soundcloud-stream] ' + (track.title || trackUrl) + ': transcodings=' + transcodings.length);
+
+    for (const transcoding of transcodings) {
+      const protocol = transcoding.format?.protocol;
+      const mime = transcoding.format?.mime_type || 'unknown';
+
+      if (protocol === 'cbc-encrypted-hls' || protocol === 'ctr-encrypted-hls' || /encrypted-hls/i.test(protocol || '')) {
+        failures.push(protocol + ' is DRM/encrypted and cannot be decoded as a clear stream');
+        continue;
+      }
+
+      try {
+        const streamUrl = await this.streamClient.getStreamUrl(transcoding.url);
+        let stream = null;
+
+        if (protocol === 'hls') {
+          const mediaUrl = await this.#resolveHlsMediaPlaylist(streamUrl);
+          stream = await this.streamClient._createHlsStream(mediaUrl, 0, { track });
+        } else if (protocol === 'progressive') {
+          const response = await this.streamClient.http.get(streamUrl, {
+            responseType: 'stream',
+            headers: { Referer: 'https://soundcloud.com/' },
+          });
+          stream = response.data;
+        } else {
+          throw new Error('Unsupported SoundCloud transcoding protocol: ' + (protocol || 'missing'));
+        }
+
+        if (!stream || typeof stream.pipe !== 'function') throw new Error('SoundCloud did not return a readable stream');
+        stream.on('error', error => console.warn('[soundcloud-stream] readable error:', error?.message || error));
+
+        await this.bridge.start();
+        const bridgeUrl = this.bridge.register(stream, 'SoundCloud · ' + (track.title || trackUrl));
+        console.log('[soundcloud-stream] selected ' + protocol + ' ' + mime + ' · bridge=' + safeStreamUrl(bridgeUrl));
+        return bridgeUrl;
+      } catch (error) {
+        const summary = protocol + ' ' + mime + ': ' + (error?.message || error);
+        failures.push(summary);
+        console.warn('[soundcloud-stream] transcoding failed:', summary);
+      }
+    }
+
+    if (typeof song === 'object' && song) {
+      return this.#fallbackStream(song, failures);
+    }
+    throw Object.assign(new Error('SoundCloud has no playable transcoding: ' + failures.join(' | ')), {
+      code: 'SOUNDCLOUD_NO_PLAYABLE_STREAM',
+    });
+  }
+
+  async getRelatedSongs(song) {
+    const track = await this.streamClient.getTrackDetails(song.url).catch(() => null);
+    if (!track?.id) return [];
+    const related = await this.streamClient.getRelatedTracks(track.id, { limit: 10 }).catch(() => []);
+    return (related || []).filter(item => item?.permalink_url && item?.title).map(item => this.#toSong(item));
+  }
+}
+
+// ───────────────────────────── YouTube-плагин с несколькими запасными источниками ─────────────────────────────
 
 class P3WYouTubePlugin extends YouTubePlugin {
   constructor(options, bridge) {
     super(options);
     this.bridge = bridge;
+    this.soundcloud = null;
     this.fallback = null; // AudiusPlugin, подставляется после создания
   }
 
-  // Ссылка на ролик: если YouTube не отдаёт данные, берём название через oEmbed и ищем на Audius.
+  async #findFallbackSong(query, options, targetDuration = 0) {
+    if (this.soundcloud) {
+      try {
+        const song = await this.soundcloud.searchSong(query, options || {}, targetDuration);
+        if (song) return song;
+      } catch (error) {
+        console.warn('SoundCloud fallback search failed:', briefError(error));
+      }
+    }
+    if (this.fallback) {
+      return this.fallback.searchSong(query, options || {}, targetDuration);
+    }
+    return null;
+  }
+
+  async searchYouTubeOnly(query, options = {}, targetDuration = 0) {
+    const song = await super.searchSong(query, options);
+    if (!song) return null;
+    if (targetDuration > 0 && song.duration > 0) {
+      const tolerance = Math.max(12, Math.round(targetDuration * 0.08));
+      if (Math.abs(song.duration - targetDuration) > tolerance) return null;
+    }
+    return song;
+  }
+
+  async getDirectStreamURL(song) {
+    if (!song?.url || !parseVideoId(song.url)) {
+      throw Object.assign(new Error('Cannot resolve YouTube video'), { code: 'CANNOT_RESOLVE_SONG' });
+    }
+    return this.#prepareStream(song);
+  }
+
   async resolve(url, options) {
     try {
       return await super.resolve(url, options);
     } catch (err) {
       const singleVideo = !parsePlaylistId(url) && parseVideoId(url);
-      if (!singleVideo || !this.fallback) throw err;
-      console.warn('YouTube resolve failed, trying Audius by title:', briefError(err));
+      if (!singleVideo) throw err;
+      console.warn('YouTube resolve failed, trying SoundCloud/Audius by title:', briefError(err));
       const title = await fetchOEmbedTitle(url);
       if (!title) throw err;
-      const song = await this.#findAudiusSong(title, options).catch(fallbackErr => {
-        console.warn('Audius fallback search failed:', briefError(fallbackErr));
-        return null;
-      });
+      const song = await this.#findFallbackSong(title, options || {});
       if (!song) throw err;
-      setNote(song, 'YouTube недоступен: проверенная версия найдена на Audius');
+      setNote(song, 'YouTube недоступен: найдена воспроизводимая версия из другого источника');
       return song;
     }
   }
 
-  // Текстовый запрос (и подбор трека для Spotify): сначала YouTube, при сбое — Audius.
   async searchSong(query, options) {
     try {
       const song = await super.searchSong(query, options);
       if (song) return song;
     } catch (err) {
-      console.warn('YouTube search failed, trying Audius:', briefError(err));
+      console.warn('YouTube search failed, trying SoundCloud/Audius:', briefError(err));
     }
-    if (!this.fallback) return null;
-    return this.#findAudiusSong(query, options).catch(err => {
-      console.warn('Audius search failed:', briefError(err));
+    if (!this.soundcloud && !this.fallback) return null;
+    return this.#findFallbackSong(query, options || {}).catch(err => {
+      console.warn('Music source fallback search failed:', briefError(err));
       return null;
     });
   }
 
-  async #findAudiusSong(query, options) {
-    return this.fallback.searchSong(query, options || {});
-  }
-
   async getStreamURL(song) {
-    // DisTube может позвать нас для трека другого источника (найденного запасным поиском).
     if (song.plugin && song.plugin !== this) return song.plugin.getStreamURL(song);
     if (!song.url || !parseVideoId(song.url)) {
       throw Object.assign(new Error('Cannot resolve YouTube video'), { code: 'CANNOT_RESOLVE_SONG' });
@@ -572,14 +819,40 @@ class P3WYouTubePlugin extends YouTubePlugin {
     try {
       return await this.#prepareStream(song);
     } catch (err) {
-      console.warn(`YouTube stream failed for "${song.name}":`, JSON.stringify(describeMusicError(err), null, 2));
-      try {
-        const alt = await this.#audiusStream(song);
-        if (alt) return alt;
-      } catch (fallbackErr) {
-        console.warn('Audius fallback failed:', briefError(fallbackErr));
+      console.warn('YouTube stream failed for "' + song.name + '":', JSON.stringify(describeMusicError(err), null, 2));
+      const query = buildFallbackQuery(song);
+      const failures = [];
+      if (query && this.soundcloud) {
+        try {
+          const match = await this.soundcloud.searchSong(query, { member: song.member }, song.duration);
+          if (match) {
+            const url = await this.soundcloud.getStreamURL(match);
+            if (url) {
+              setNote(song, 'YouTube не отдал звук: включена подходящая версия с SoundCloud или резервного источника');
+              return url;
+            }
+          }
+        } catch (fallbackError) {
+          failures.push('SoundCloud: ' + briefError(fallbackError));
+        }
       }
-      throw err;
+      if (query && this.fallback) {
+        try {
+          const match = await this.fallback.searchSong(query, { member: song.member }, song.duration);
+          if (match) {
+            const url = await this.fallback.getStreamURL(match);
+            if (url) {
+              setNote(song, 'YouTube не отдал звук: включена подходящая версия с Audius');
+              return url;
+            }
+          }
+        } catch (fallbackError) {
+          failures.push('Audius: ' + briefError(fallbackError));
+        }
+      }
+      throw Object.assign(new Error('YouTube stream failed; fallback providers failed: ' + failures.join(' | '), { cause: err }), {
+        code: 'MUSIC_ALL_SOURCES_FAILED',
+      });
     }
   }
 
@@ -598,35 +871,20 @@ class P3WYouTubePlugin extends YouTubePlugin {
       song.chapters = meta.chapters;
       song.storyboards = meta.storyboards;
     } catch {
-      // Метаданные не критичны для воспроизведения.
+      // Metadata is optional for playback.
     }
 
-    // Премьеры: ждём начала (но не дольше минуты).
     const wait = Number(info.playableAt) - Date.now();
     if (wait > 0) await sleep(Math.min(wait, 60_000));
 
     const stream = ytdl.download(info, {
       quality: Quality.HighestAudio,
       filter: AUDIO_FILTERS,
-      onRetry: event => console.warn(`YouTube re-resolve (${song.name}): attempt ${event.attempt}, ${event.client}, ${event.reason}`),
+      onRetry: event => console.warn('YouTube re-resolve (' + song.name + '): attempt ' + event.attempt + ', ' + event.client + ', ' + event.reason),
     });
     await primeStream(stream);
     await this.bridge.start();
     return this.bridge.register(stream, song.name);
-  }
-
-  async #audiusStream(song) {
-    if (!this.fallback) return null;
-    const query = buildFallbackQuery(song);
-    if (!query) return null;
-    const match = await this.#findAudiusSong(query, { member: song.member }, song.duration);
-    if (!match) return null;
-    const url = await this.fallback.getStreamURL(match);
-    if (!url) return null;
-    await this.bridge.start();
-    setNote(song, 'YouTube не отдал звук: проверенная версия играет с Audius');
-    console.log(`🔁 "${song.name}" → Audius "${match.name}" (поток проверен)`);
-    return url;
   }
 }
 
