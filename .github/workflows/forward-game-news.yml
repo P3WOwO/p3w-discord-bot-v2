@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - "game-news/queue/*.json"
+      - "src/game-news.js"
+      - "src/bot.js"
 
 permissions:
   contents: read
