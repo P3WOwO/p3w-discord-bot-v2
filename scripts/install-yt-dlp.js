@@ -12,7 +12,7 @@ const { spawnSync } = require('node:child_process');
 
 const VERSION = process.env.YT_DLP_VERSION || '2026.10.26';
 const ROOT = path.resolve(__dirname, '..');
-const VENDOR = path.join(ROOT, 'node_modules', '.cache', 'p3w-yt-dlp');
+const VENDOR = path.join(ROOT, 'vendor', 'yt-dlp');
 const BINARY_NAME = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
 const BINARY_PATH = path.join(VENDOR, BINARY_NAME);
 
