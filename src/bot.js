@@ -648,7 +648,6 @@ class DiscordBot {
       PermissionFlagsBits.SendMessages,
       PermissionFlagsBits.EmbedLinks,
     ];
-    if (payload.imageUrl) required.push(PermissionFlagsBits.AttachFiles);
     if (!permissions?.has(required)) {
       throw Object.assign(new Error('У P3W недостаточно прав в выбранном канале.'), { statusCode: 403 });
     }
@@ -664,20 +663,22 @@ class DiscordBot {
       String(attachment.contentType || '').toLowerCase().startsWith('image/')
       || /\.(?:png|jpe?g|webp|gif)$/i.test(String(attachment.name || '')),
     );
-    const imageEmbed = message.embeds.some(embed => Boolean(embed.image?.url));
+    const imageEmbed = message.embeds.some(embed =>
+      /^https:\/\//i.test(String(embed.image?.url || '')),
+    );
 
     console.info('Game news delivery verification:', JSON.stringify({
       messageId: message.id,
       requestedImage: Boolean(payload.imageUrl),
-      outgoingFileCount: messageOptions.files?.length || 0,
       attachmentCount: attachmentList.length,
       attachmentNames: attachmentList.map(attachment => attachment.name),
+      imageEmbedUrls: message.embeds.map(embed => embed.image?.url || null).filter(Boolean),
       imageEmbed,
     }));
 
-    if (payload.imageUrl && (!imageUploaded || !imageEmbed)) {
+    if (payload.imageUrl && !imageEmbed) {
       throw Object.assign(
-        new Error('Discord did not confirm both an uploaded image attachment and an image embed.'),
+        new Error('Discord did not confirm an HTTPS image embed.'),
         { statusCode: 502 },
       );
     }
