@@ -1228,10 +1228,12 @@ class MusicModule {
           return;
         }
         const timer = setTimeout(() => {
+          console.log('[music-diag] starting one-shot provider diagnostics without voice connection');
           this.runDiagnostics()
             .then(lines => lines.forEach(line => console.log('[music-diag][provider] ' + line)))
-            .catch(error => console.error('[music-diag] provider diagnostics crashed:', describeMusicError(error)));
-        }, 5000);
+            .catch(error => console.error('[music-diag] provider diagnostics crashed:', describeMusicError(error)))
+            .finally(() => { process.env.MUSIC_DIAG_RUN_ONCE = 'false'; });
+        }, 10000);
         timer.unref?.();
       };
       const initial = setTimeout(waitForReady, 1000);
@@ -1429,15 +1431,27 @@ class MusicModule {
 
   async runDiagnostics() {
     const lines = [];
-    const check = async (label, fn) => {
+    const check = async (label, fn, timeoutMs = 25_000) => {
       const started = Date.now();
+      let timeout;
+      console.log('[music-diag] starting: ' + label);
       try {
-        const detail = await fn();
+        const detail = await Promise.race([
+          fn(),
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('source check timed out after ' + timeoutMs + ' ms')), timeoutMs);
+            timeout.unref?.();
+          }),
+        ]);
         lines.push(`✅ ${label} — ${Date.now() - started} мс${detail ? ` · ${detail}` : ''}`);
+        console.log('[music-diag] passed: ' + label);
         return true;
       } catch (err) {
         lines.push(`❌ ${label} — ${clampText(briefError(err), 260)}`);
+        console.warn('[music-diag] failed: ' + label + ' · ' + briefError(err));
         return false;
+      } finally {
+        if (timeout) clearTimeout(timeout);
       }
     };
 
