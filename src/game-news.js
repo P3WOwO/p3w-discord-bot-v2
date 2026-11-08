@@ -300,7 +300,7 @@ function buildGameNewsEmbed(raw) {
       const discountLabel = entry.discount ? ' · ' + entry.discount : '';
       return entry.region + ' — ' + previous + current + discountLabel;
     });
-    fields.push({ name: '🌍 ЦЕНЫ ПО РЕГИОНАМ', value: lines.join('\\n').slice(0, 1024), inline: false });
+    fields.push({ name: '🌍 ЦЕНЫ ПО РЕГИОНАМ', value: lines.join('\n').slice(0, 1024), inline: false });
   } else {
     if (item.price || item.oldPrice) {
       const priceParts = [];
