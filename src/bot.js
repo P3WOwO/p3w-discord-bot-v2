@@ -648,6 +648,7 @@ class DiscordBot {
       PermissionFlagsBits.SendMessages,
       PermissionFlagsBits.EmbedLinks,
     ];
+    if (payload.imageUrl) required.push(PermissionFlagsBits.AttachFiles);
     if (!permissions?.has(required)) {
       throw Object.assign(new Error('У P3W недостаточно прав в выбранном канале.'), { statusCode: 403 });
     }
