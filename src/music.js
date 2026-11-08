@@ -1574,6 +1574,9 @@ class MusicModule {
   // Автоматическая проверка после деплоя. Подключается только если в GUILD_ID
   // сейчас ровно один занятый обычный voice-канал — не выбирает случайных людей.
   async #runStartupVoiceDiagnostic() {
+    const providerDiagnostics = await this.runDiagnostics();
+    for (const line of providerDiagnostics) console.log('[music-diag][provider] ' + line);
+
     const guildId = this.config.GUILD_ID;
     const guild = guildId ? this.client.guilds.cache.get(guildId) : null;
     if (!guild) {
