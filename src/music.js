@@ -802,15 +802,16 @@ class MusicModule {
   // ───── создание DisTube ─────
 
   #createDistube() {
-    // ffmpeg: пакет из npm (не качает бинарник с GitHub), затем ffmpeg-static, затем системный ffmpeg.
+    // Используем актуальный FFmpeg 6.1.1 из ffmpeg-static; старый installer build падал с SIGSEGV на Render.
     let ffmpegPath = null;
-    for (const name of ['@ffmpeg-installer/ffmpeg', 'ffmpeg-static']) {
-      try {
-        const mod = require(name);
-        ffmpegPath = typeof mod === 'string' ? mod : mod?.path;
-        if (ffmpegPath) break;
-      } catch { /* пакет не установлен */ }
+    try {
+      ffmpegPath = require('ffmpeg-static');
+      if (typeof ffmpegPath !== 'string' || !ffmpegPath) ffmpegPath = null;
+    } catch (err) {
+      console.warn('ffmpeg-static unavailable, trying system ffmpeg:', err?.message || err);
     }
+    if (!ffmpegPath) ffmpegPath = 'ffmpeg';
+    console.log(`🎛️ FFmpeg binary: ${ffmpegPath}`);
     const cookie = this.config.YT_COOKIE;
 
     this.youtube = new P3WYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);
