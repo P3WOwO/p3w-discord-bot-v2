@@ -1,4 +1,4 @@
-![Dishonored 2 — Dust District concept art, official Bethesda gallery](https://images.contentful.com/rporu91m20dc/4RZowMQTNmqMQs2c8Osuoy/fd7997a59ea5cdf51f4c2eae802b9b40/data.images.event.209.Dishonored2_DustDistrict_FULL.jpg)
+![Dishonored 2 — Dust District concept art, official Bethesda gallery](https://cdn.cloudflare.steamstatic.com/steam/apps/403640/header.jpg)
 
 **P3W  /  ИГРОВАЯ ИНДУСТРИЯ** · 9 НОЯБРЯ 2026 · 🧪 ТЕСТ ОФОРМЛЕНИЯ
 
@@ -35,4 +35,4 @@ Arkane Lyon создала Dishonored, Dishonored 2 и Deathloop и сейчас
 
 **Об игре и студии:** [Официальная страница Arkane Studios](https://www.arkane-studios.com/en) · [Анонс Marvel’s Blade от Bethesda](https://bethesda.net/en-AU/news/marvels-blade-announced)
 
-<sub>Иллюстрация: официальный концепт-арт Dishonored 2 из галереи Bethesda. Изображение используется как тематический баннер о студии Arkane.</sub>
+<sub>Иллюстрация: официальная обложка Dishonored 2 из Steam CDN. Игра разработана Arkane Lyon.</sub>
