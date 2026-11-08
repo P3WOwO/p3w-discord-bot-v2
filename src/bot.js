@@ -652,10 +652,20 @@ class DiscordBot {
       throw Object.assign(new Error('У P3W недостаточно прав в выбранном канале.'), { statusCode: 403 });
     }
 
-    const message = await channel.send(await buildGameNewsMessage(payload));
+    const messageOptions = await buildGameNewsMessage(payload);
+    const message = await channel.send(messageOptions);
+    const imageUploaded = Boolean(message.attachments?.size);
+    const imageEmbed = message.embeds.some(embed => Boolean(embed.image?.url));
+
     this.stateStore.markGameNewsSent(guildId, payload.id);
     await this.stateStore.save();
-    return { sent: true, channel_id: channel.id, message_id: message.id };
+    return {
+      sent: true,
+      image_uploaded: imageUploaded,
+      image_embed: imageEmbed,
+      channel_id: channel.id,
+      message_id: message.id,
+    };
   }
 
   async handleGameNewsRequest(req, res) {
