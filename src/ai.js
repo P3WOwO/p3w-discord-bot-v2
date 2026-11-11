@@ -38,6 +38,7 @@ async function askGemini({
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
   systemInstruction = '',
+  _tokenExpansionAttempt = false,
 }) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
 
@@ -105,6 +106,24 @@ async function askGemini({
       // Safety blocks must not be bypassed by switching to a weaker model.
       if (blockReason || ['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
         return 'Не могу ответить на это.';
+      }
+      if (finishReason === 'MAX_TOKENS' && answer && !_tokenExpansionAttempt) {
+        const expandedMaxOutputTokens = Math.min(Math.max(Number(maxOutputTokens) * 2, 2048), 4096);
+        console.warn('[AI] ' + model + ' hit MAX_TOKENS; retrying once with maxOutputTokens=' + expandedMaxOutputTokens);
+        return askGemini({
+          apiKey,
+          model,
+          prompt,
+          retries: 1,
+          temperature,
+          maxOutputTokens: expandedMaxOutputTokens,
+          generationConfig,
+          systemInstruction,
+          _tokenExpansionAttempt: true,
+        });
+      }
+      if (finishReason === 'MAX_TOKENS' && answer) {
+        console.warn('[AI] ' + model + ' still hit MAX_TOKENS after expanded retry; returning the available text');
       }
       if (answer) return answer;
 
@@ -339,11 +358,11 @@ function buildSystemInstruction({ basePrompt = '', summary = '', channelName = '
 }
 
 // История канала -> contents Gemini (чередование user/model, подряд идущие реплики склеиваем).
-function buildContents({ turns = [], userName = '', text = '', maxChars = 14000 }) {
+function buildContents({ turns = [], userName = '', text = '', maxChars = 20000 }) {
   const currentText = (userName || 'Пользователь') + ': ' + String(text || '').slice(-9000);
   const history = (Array.isArray(turns) ? turns : []).slice(-24).map(turn => {
     const isAssistant = turn && turn.role === 'assistant';
-    const body = String(turn && turn.text || '').slice(-1400);
+    const body = String(turn && turn.text || '').slice(-1800);
     return {
       role: isAssistant ? 'model' : 'user',
       text: isAssistant ? body : (turn && turn.name || 'Пользователь') + ': ' + body,
