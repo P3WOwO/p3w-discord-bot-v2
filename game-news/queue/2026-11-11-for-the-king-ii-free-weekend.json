@@ -1,0 +1,44 @@
+{
+  "id": "steam-for-the-king-ii-free-weekend-2026-11",
+  "category": "free",
+  "title": "For The King II — бесплатный уикенд и скидка 70%",
+  "description": "Пошаговая roguelite RPG с кооперативом до четырёх игроков: соберите отряд и исследуйте Фаррул.\\n\\n**Раздача:** Free Weekend до 12 ноября, 10:00 по времени страницы Steam (часовой пояс не указан). Это временный доступ — игра не останется в библиотеке.\\n\\n**Как получить:** открой страницу игры в Steam и нажми «Играть». Скидка на покупку действует до 23 ноября.\\n\\n**Регион/ограничения:** фактические цены США, еврозоны, Украины, Казахстана и России указаны в отдельном поле «Цены по регионам». Для Украины SteamDB фиксирует минимум 179₴.",
+  "source": "Steam / SteamDB",
+  "url": "https://store.steampowered.com/app/1676840/For_The_King_II/",
+  "price": "Бесплатно (временно)",
+  "discount": "Free Weekend; покупка −70% (RU −75%)",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1676840/bf62f88a8b154f26e92c8397bd288060365e5287/header_alt_assets_13.jpg?t=1794248102",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "7.49",
+      "old_price": "24.99",
+      "discount": "70%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "7.49",
+      "discount": "70%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "179",
+      "discount": "70%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "1935",
+      "discount": "70%"
+    },
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "415.80",
+      "discount": "75%"
+    }
+  ]
+}
