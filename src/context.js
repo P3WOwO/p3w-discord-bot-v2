@@ -2,7 +2,7 @@ const { CONTEXT_MAX_TURNS, CONTEXT_ARCHIVE_LIMIT } = require('./constants');
 const { clampText, normalizeText } = require('./utils');
 
 // Простой контекст канала: последние N сообщений + выжимка старых.
-// Никакой "умной памяти" — только окно и одна короткая авто-выжимка.
+// Долговременная выжимка + ограниченное окно последних реплик.
 
 function normalizeTurn(turn) {
   return {
@@ -29,7 +29,7 @@ function normalizeChannelContext(raw, title = '') {
   if (!raw || typeof raw !== 'object') return base;
 
   base.title = normalizeText(raw.title || title || '');
-  base.summary = clampText(raw.summary || '', 800);
+  base.summary = clampText(raw.summary || '', 1800);
   base.turns = Array.isArray(raw.turns) ? raw.turns.map(normalizeTurn).slice(-CONTEXT_MAX_TURNS) : [];
   base.archive = Array.isArray(raw.archive)
     ? raw.archive.map(normalizeTurn).slice(-CONTEXT_ARCHIVE_LIMIT)
