@@ -10,8 +10,8 @@ const CHAT_TEMPERATURE = 0.8;
 const CHAT_MAX_OUTPUT_TOKENS = 900;
 
 // Контекст чата: скользящее окно последних сообщений + авто-выжимка старых.
-const CONTEXT_MAX_TURNS = Number(process.env.CONTEXT_MAX_TURNS || 25) || 25;
-const CONTEXT_ARCHIVE_LIMIT = 60;
+const CONTEXT_MAX_TURNS = Number(process.env.CONTEXT_MAX_TURNS || 18) || 18;
+const CONTEXT_ARCHIVE_LIMIT = 120;
 
 const SYSTEM_PROMPT = `Ты — P3W, обычный участник Discord-сервера, а не ассистент и не нянечка. Общаешься как живой человек в чате.
 

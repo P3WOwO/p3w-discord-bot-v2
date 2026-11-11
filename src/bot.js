@@ -425,22 +425,20 @@ class DiscordBot {
     }
 
     try {
-      const raw = await askGemini({
+      const raw = await askGeminiWithFallback({
         apiKey: this.config.GEMINI_API_KEY,
-        model: this.config.GEMINI_CHAT_MODELS[0] || this.config.GEMINI_MODEL,
+        models: this.config.GEMINI_CHAT_MODELS,
         prompt: buildSummaryPrompt({ existingSummary: ctx.summary, oldMessages }),
-        temperature: 0.25,
-        maxOutputTokens: 300,
+        temperature: 0.2,
+        maxOutputTokens: 500,
         retries: 1,
       });
-
-      const summary = clampText(String(raw || '').trim(), 800);
+      const summary = clampText(String(raw || '').trim(), 1800);
       this.stateStore.applyChannelSummary(channelId, summary || ctx.summary);
     } catch (err) {
       console.error('Context summary failed:', err?.message || err);
     }
   }
-
   async handleAiMessage({ message, text }) {
     if (!this.config.GEMINI_API_KEY) {
       return message.reply('⚠️ Gemini пока не подключён.');

@@ -276,7 +276,7 @@ class StateStore {
 
   applyChannelSummary(channelId, summary) {
     const ctx = this.getChannelContext(channelId);
-    ctx.summary = clampText(summary || '', 800);
+    ctx.summary = clampText(summary || '', 1800);
     ctx.archive = [];
     ctx.turnsSinceSummary = 0;
     ctx.lastUpdatedAt = new Date().toISOString();

@@ -6,9 +6,9 @@ const { clampText, normalizeText } = require('./utils');
 
 function normalizeTurn(turn) {
   return {
-    role: String(turn?.role || 'user').slice(0, 20),
+    role: turn?.role === 'assistant' ? 'assistant' : 'user',
     name: clampText(turn?.name || '', 80),
-    text: clampText(turn?.text || '', 500),
+    text: clampText(turn?.text || '', 900),
     ts: turn?.ts || null,
   };
 }
@@ -75,7 +75,8 @@ function buildChatContext(ctx) {
 function buildSummarySource(ctx) {
   return (Array.isArray(ctx?.archive) ? ctx.archive : [])
     .map(buildTurnLine)
-    .join('\n');
+    .join('\n')
+    .slice(-26000);
 }
 
 module.exports = {

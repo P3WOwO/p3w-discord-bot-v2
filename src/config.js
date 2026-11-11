@@ -11,6 +11,17 @@ function parseList(value, fallback = []) {
   return [...new Set([...items, ...fallback])];
 }
 
+const DEFAULT_GEMINI_CHAT_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemma-4-31b-it',
+  'gemma-4-26b-a4b-it',
+];
+
 function cleanEnv(value) {
   return String(value || '').trim().replace(/^["'`]+/, '').replace(/["'`]+$/, '').trim();
 }
@@ -27,17 +38,17 @@ module.exports = {
 
   // ИИ
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
-  GEMINI_CHAT_MODELS: parseList(process.env.GEMINI_CHAT_MODELS, [
-    process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-  ]),
+  GEMINI_MODEL: process.env.GEMINI_MODEL || DEFAULT_GEMINI_CHAT_MODELS[0],
+  // Preserve custom models as extra fallbacks, after the recommended free-tier chain.
+  GEMINI_CHAT_MODELS: [...new Set([
+    ...DEFAULT_GEMINI_CHAT_MODELS,
+    ...String(process.env.GEMINI_CHAT_MODELS || '').split(',').map(s => s.trim()).filter(Boolean),
+  ])],
   GEMINI_IMAGE_MODELS: parseList(process.env.GEMINI_IMAGE_MODELS, ['gemini-2.5-flash-image']),
   BASE_PROMPT: process.env.BASE_PROMPT || process.env.BASE_STYLE_PROMPT || '',
   PREFIX: process.env.PREFIX || '!',
-  CONTEXT_MAX_TURNS: num(process.env.CONTEXT_MAX_TURNS, 25),
-  CONTEXT_SUMMARY_EVERY: num(process.env.CONTEXT_SUMMARY_EVERY, 30),
+  CONTEXT_MAX_TURNS: num(process.env.CONTEXT_MAX_TURNS, 18),
+  CONTEXT_SUMMARY_EVERY: num(process.env.CONTEXT_SUMMARY_EVERY, 24),
   AI_USER_COOLDOWN_MS: num(process.env.AI_USER_COOLDOWN_MS, 4000),
   IMAGE_USER_COOLDOWN_MS: num(process.env.IMAGE_USER_COOLDOWN_MS, 20000),
 
