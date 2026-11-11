@@ -392,7 +392,7 @@ class DiscordBot {
     let turns = ctx.turns;
     if (!turns.length) {
       turns = (await this.getRecentMessages(channel, 18, excludeMessageId))
-        .map(t => ({ role: t.role, name: t.name, text: clampText(t.text, 900) }));
+        .map(t => ({ role: t.role, name: t.name, text: clampText(t.text, 1800) }));
     }
 
     const answer = await askGeminiWithFallback({
@@ -462,10 +462,10 @@ class DiscordBot {
       });
       const parts = splitMessage(String(answer || ''), 1900);
       await status.edit({ content: parts[0] || '…', allowedMentions: { parse: [] } }).catch(() => {});
-      for (const extra of parts.slice(1, 3)) {
+      for (const extra of parts.slice(1)) {
         await message.channel.send({ content: extra, allowedMentions: { parse: [] } }).catch(() => {});
       }
-      await this.rememberExchange(message.channel, userName, text, clampText(parts.join('\n'), 1900));
+      await this.rememberExchange(message.channel, userName, text, parts.join('\n'));
     } catch (err) {
       console.error('Gemini error:', err);
       await status.edit('❌ Gemini сейчас перегружен или ответ не прошёл.').catch(() => {});
@@ -486,10 +486,10 @@ class DiscordBot {
       const { answer } = await this.generateChatReply({ channel: interaction.channel, userName, text });
       const parts = splitMessage(String(answer || ''), 1900);
       await interaction.editReply({ content: parts[0] || '…', allowedMentions: { parse: [] } });
-      for (const extra of parts.slice(1, 3)) {
+      for (const extra of parts.slice(1)) {
         await interaction.followUp({ content: extra, allowedMentions: { parse: [] } }).catch(() => {});
       }
-      await this.rememberExchange(interaction.channel, userName, text, clampText(parts.join('\n'), 1900));
+      await this.rememberExchange(interaction.channel, userName, text, parts.join('\n'));
     } catch (err) {
       console.error('Gemini slash error:', err);
       await interaction.editReply({ content: '❌ Gemini сейчас перегружен или ответ не прошёл.' });
