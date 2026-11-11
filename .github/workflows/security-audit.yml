@@ -55,7 +55,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-audit-report
-          path: |\n            npm-audit.json\n            package-lock.json
+          path: |
+            npm-audit.json
+            package-lock.json
           if-no-files-found: warn
           retention-days: 3
       - name: Keep diagnostic run successful
