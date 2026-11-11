@@ -23,5 +23,9 @@
     "@distube/ytdl-core": "^5.2.1",
     "distube-yandex-music-plugin": "^1.0.5",
     "@zibot/scdl": "^0.1.6"
+  },
+  "overrides": {
+    "tar": "7.5.22",
+    "undici": "6.29.1"
   }
 }
