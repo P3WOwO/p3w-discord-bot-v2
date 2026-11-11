@@ -8,7 +8,7 @@ function normalizeTurn(turn) {
   return {
     role: turn?.role === 'assistant' ? 'assistant' : 'user',
     name: clampText(turn?.name || '', 80),
-    text: clampText(turn?.text || '', 900),
+    text: clampText(turn?.text || '', 1800),
     ts: turn?.ts || null,
   };
 }
