@@ -6,7 +6,7 @@ on:
       - security/audit-review
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   audit:
@@ -20,6 +20,23 @@ jobs:
           node-version: '24.22.1'
       - name: Install dependencies and regenerate lockfile
         run: npm install --no-audit
+      - name: Smoke test Discord and audio dependencies
+        run: |
+          node <<'NODE'
+          const modules = [
+            '@discordjs/opus',
+            '@discordjs/voice',
+            'discord.js',
+            'distube',
+            '@distube/spotify',
+            '@distube/youtube',
+            'distube-yandex-music-plugin',
+          ];
+          for (const name of modules) {
+            require(name);
+            console.log('OK ' + name);
+          }
+          NODE
       - name: Run npm audit
         id: audit
         shell: bash
@@ -60,6 +77,16 @@ jobs:
             package-lock.json
           if-no-files-found: warn
           retention-days: 3
+      - name: Save regenerated lockfile on diagnostic branch
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "test: commit audited dependency lockfile [skip ci]"
+            git push origin HEAD:security/audit-review
+          fi
       - name: Keep diagnostic run successful
         if: always()
         run: echo "Audit finished; advisory details are in the uploaded artifact and job summary."
