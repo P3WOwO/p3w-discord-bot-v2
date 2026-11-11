@@ -21,6 +21,34 @@ function isRetryableMessage(message) {
   return ['429', '500', '503', '504', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout', 'aborted', 'fetch failed'].some(token => lower.includes(token));
 }
 
+// Remember exhausted models for this process so every new message does not
+// hammer the same model again. Quota exhaustion is treated as a 24h outage;
+// ordinary rate limits and transient network failures get a short cooldown.
+const modelUnavailableUntil = new Map();
+const QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
+const TRANSIENT_COOLDOWN_MS = 30 * 1000;
+
+function getModelCooldown(err) {
+  const message = String(err && err.message || err).toLowerCase();
+  if (/(quota|resource_exhausted|billing|exceeded.*limit|limit.*exceeded)/i.test(message)) {
+    return QUOTA_COOLDOWN_MS;
+  }
+  const status = Number(err && (err.statusCode || err.status) || 0);
+  if (status === 429) return RATE_LIMIT_COOLDOWN_MS;
+  if (!status && isRetryableMessage(message)) return TRANSIENT_COOLDOWN_MS;
+  return 0;
+}
+
+function getModelCooldownRemaining(model) {
+  const until = modelUnavailableUntil.get(model) || 0;
+  if (until <= Date.now()) {
+    modelUnavailableUntil.delete(model);
+    return 0;
+  }
+  return until - Date.now();
+}
+
 function shouldTryNextModel(err) {
   const status = Number(err && (err.statusCode || err.status) || 0);
   // A bad key or malformed request affects every model; don't waste fallback attempts.
@@ -162,6 +190,12 @@ async function askGeminiWithFallback({
   const errors = [];
   let lastError = null;
   for (const model of modelList) {
+    const cooldownRemaining = getModelCooldownRemaining(model);
+    if (cooldownRemaining > 0) {
+      console.info('[AI] Пропускаю ' + model + ': модель временно недоступна ещё ' + Math.ceil(cooldownRemaining / 60000) + ' мин.');
+      continue;
+    }
+
     try {
       const answer = await askGemini({
         apiKey, model, prompt, retries, temperature, maxOutputTokens, generationConfig, systemInstruction,
@@ -172,6 +206,12 @@ async function askGeminiWithFallback({
       lastError = err;
       const message = String(err && err.message || err).slice(0, 220);
       const fallback = shouldTryNextModel(err);
+      const cooldownMs = getModelCooldown(err);
+      if (cooldownMs > 0) {
+        modelUnavailableUntil.set(model, Date.now() + cooldownMs);
+        const cooldownLabel = cooldownMs >= QUOTA_COOLDOWN_MS ? '24 часа (квота исчерпана)' : Math.ceil(cooldownMs / 1000) + ' сек.';
+        console.warn('[AI] ' + model + ' отключена на ' + cooldownLabel + '; переключаюсь на следующую модель.', message);
+      }
       errors.push(model + ': ' + message);
       console.warn('[AI] ' + model + ' failed; ' + (fallback ? 'trying next model' : 'stopping fallback'), message);
       if (!fallback) throw err;
