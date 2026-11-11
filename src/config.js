@@ -38,7 +38,8 @@ module.exports = {
 
   // ИИ
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-  GEMINI_MODEL: process.env.GEMINI_MODEL || DEFAULT_GEMINI_CHAT_MODELS[0],
+  // Kept as a compatibility alias; Render's GEMINI_MODEL env var is intentionally ignored.
+  GEMINI_MODEL: DEFAULT_GEMINI_CHAT_MODELS[0],
   // Preserve custom models as extra fallbacks, after the recommended free-tier chain.
   GEMINI_CHAT_MODELS: [...new Set([
     ...DEFAULT_GEMINI_CHAT_MODELS,
