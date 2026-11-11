@@ -208,14 +208,14 @@ class DiscordBot {
 
   // ===== Утилиты чата =====
 
-  async getRecentMessages(channel, limit = 8) {
-    const messages = await channel.messages.fetch({ limit }).catch(() => null);
+  async getRecentMessages(channel, limit = 18, excludeMessageId = null) {
+    const messages = await channel.messages.fetch({ limit: Math.min(50, limit + 5) }).catch(() => null);
     if (!messages) return [];
     return [...messages.values()]
       .reverse()
-      .filter(msg => msg.content && !msg.author?.bot)
+      .filter(msg => msg.id !== excludeMessageId && msg.content && (!msg.author?.bot || msg.author.id === this.client.user?.id))
       .map(msg => ({
-        role: msg.author?.bot ? 'assistant' : 'user',
+        role: msg.author?.id === this.client.user?.id ? 'assistant' : 'user',
         name: msg.member?.displayName || msg.author?.username || 'user',
         text: msg.content,
       }))
@@ -383,14 +383,16 @@ class DiscordBot {
 
   // ===== Чат с ИИ =====
 
-  async generateChatReply({ channel, userName, text }) {
+  async generateChatReply({ channel, userName, text, excludeMessageId = null }) {
     const channelName = channel?.name || '';
     const ctx = this.stateStore.getChannelContext(channel.id);
 
-    // Страховка: если память канала пуста, берём свежие сообщения из Discord.
+    // Если локальной памяти ещё нет, восстанавливаем недавний диалог из Discord,
+    // включая ответы самого P3W, но исключая текущее сообщение, чтобы не дублировать его.
     let turns = ctx.turns;
     if (!turns.length) {
-      turns = (await this.getRecentMessages(channel, 10)).map(t => ({ role: t.role, name: t.name, text: clampText(t.text, 500) }));
+      turns = (await this.getRecentMessages(channel, 18, excludeMessageId))
+        .map(t => ({ role: t.role, name: t.name, text: clampText(t.text, 900) }));
     }
 
     const answer = await askGeminiWithFallback({
@@ -452,7 +454,12 @@ class DiscordBot {
     await message.channel.sendTyping().catch(() => {});
 
     try {
-      const { answer } = await this.generateChatReply({ channel: message.channel, userName, text });
+      const { answer } = await this.generateChatReply({
+        channel: message.channel,
+        userName,
+        text,
+        excludeMessageId: message.id,
+      });
       const parts = splitMessage(String(answer || ''), 1900);
       await status.edit({ content: parts[0] || '…', allowedMentions: { parse: [] } }).catch(() => {});
       for (const extra of parts.slice(1, 3)) {
