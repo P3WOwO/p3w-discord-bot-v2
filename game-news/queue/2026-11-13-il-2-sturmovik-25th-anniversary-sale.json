@@ -1,0 +1,47 @@
+{
+  "id": "steam-il2-battle-of-stalingrad-85-sale-2026-11",
+  "category": "sales",
+  "title": "IL-2 Sturmovik: Battle of Stalingrad — скидка 85% к 25-летию серии",
+  "description": "К 25-летию серии IL-2 разработчики запустили распродажу и бесплатный уикенд для авиасимулятора Battle of Stalingrad.\n\n**Скидка:** 85% на базовую игру; многие кампании и самолёты серии также снижены до 85%. Покупка по акции доступна до 15 ноября (точное время окончания Steam не указал).\n\n**Free Weekend:** до 16 ноября, 18:00 UTC. Это временный доступ — игра не останется в библиотеке.\n\n**Регион/ограничения:** региональные цены указаны в поле «Цены по регионам»; SteamDB отмечает 138₴ как исторический минимум для Украины.",
+  "source": "Steam / SteamDB",
+  "url": "https://store.steampowered.com/app/307960/IL2_Sturmovik_Battle_of_Stalingrad/",
+  "source_url": "https://steamcommunity.com/app/307960/allnews/",
+  "price": "$7.49",
+  "old_price": "$49.99",
+  "discount": "85%",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/307960/header_russian.jpg",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "7.49",
+      "old_price": "49.99",
+      "discount": "85%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "7.34",
+      "old_price": "48.99",
+      "discount": "85%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "138",
+      "discount": "85%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "1485",
+      "discount": "85%"
+    },
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "299",
+      "discount": "85%"
+    }
+  ]
+}
