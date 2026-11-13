@@ -1,0 +1,47 @@
+{
+  "id": "steam-company-of-heroes-3-20th-anniversary-weekend-2026-11",
+  "category": "free",
+  "title": "Company of Heroes 3 — бесплатный уикенд и рекордная скидка 67%",
+  "description": "Стратегия о Второй мировой с кампаниями в Италии и Северной Африке. К 20-летию серии Relic выпустила обновление 3.0 — крупнейшее с момента релиза.\n\n**Free Weekend:** до 16 ноября, 18:00 UTC. Это временный доступ — игра не останется в библиотеке.\n\n**Скидка:** 67% — самая глубокая для Company of Heroes 3; покупка по акции доступна до 19 ноября.\n\n**Как получить:** открой страницу игры в Steam и нажми «Играть». Региональные цены указаны в поле «Цены по регионам».",
+  "source": "Steam / Relic Entertainment / SteamDB",
+  "url": "https://store.steampowered.com/app/1677280/Company_of_Heroes_3/",
+  "source_url": "https://steamcommunity.com/app/1677280/announcements/",
+  "price": "$19.79",
+  "old_price": "$59.99",
+  "discount": "67%",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1677280/header.jpg?t=1794506606",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "19.79",
+      "old_price": "59.99",
+      "discount": "67%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "18.14",
+      "old_price": "54.99",
+      "discount": "67%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "362",
+      "discount": "67%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "4950",
+      "discount": "67%"
+    },
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "824",
+      "discount": "67%"
+    }
+  ]
+}
