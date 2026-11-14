@@ -1,0 +1,45 @@
+{
+  "id": "steam-cities-skylines-ii-free-weekend-2026-11-16",
+  "category": "free",
+  "title": "Cities: Skylines II — бесплатные выходные и скидка 30%",
+  "description": "В Steam можно бесплатно играть в Cities: Skylines II до 16 ноября, 10:00 (часовой пояс на странице не указан). Это временный доступ — игра не останется в библиотеке.\n\n**Покупка:** скидка 30% действует до 19 ноября. Подтверждённые цены по регионам вынесены в поле «Цены по регионам»; старые локальные цены, кроме США, не отображаются.",
+  "source": "Steam (региональные цены: SteamDB)",
+  "url": "https://store.steampowered.com/app/949230/Cities_Skylines_II/",
+  "price": "Бесплатно (Free Weekend)",
+  "discount": "Временный доступ; покупная скидка −30%",
+  "expires_at": "2026-11-16",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/257297826/ecc455362a26e2c0d09da9016409a5634c7640a3/movie_full.jpg",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "34.99",
+      "old_price": "49.99",
+      "discount": "30%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "34.99",
+      "discount": "30%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "944",
+      "discount": "30%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "14070",
+      "discount": "30%"
+    },
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "2134",
+      "discount": "30%"
+    }
+  ]
+}
