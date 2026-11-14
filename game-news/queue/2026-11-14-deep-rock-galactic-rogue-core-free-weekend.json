@@ -1,0 +1,45 @@
+{
+  "id": "steam-deep-rock-galactic-rogue-core-free-weekend-2026-11-16",
+  "category": "free",
+  "title": "Deep Rock Galactic: Rogue Core — бесплатные выходные и скидка 50%",
+  "description": "Кооперативный roguelite-шутер во вселенной Deep Rock Galactic открыт для бесплатной пробы до 16 ноября, 10:00 (часовой пояс Steam не указан). Это не Free-to-Keep: после уикенда доступ закроется, если игру не купить.\n\n**Покупка:** скидка 50% действует до 26 ноября. Подтверждённые цены по регионам вынесены в поле «Цены по регионам»; SteamDB фиксирует текущую цену как исторический минимум во всех пяти отображаемых рынках.\n\n**🎬 Официальный Launch Trailer:** [Смотреть ролик Ghost Ship Games](https://www.youtube.com/watch?v=lu6FyQsTYHM).",
+  "source": "Steam (региональные цены: SteamDB)",
+  "url": "https://store.steampowered.com/app/2605790/Deep_Rock_Galactic_Rogue_Core/",
+  "price": "Бесплатно (Free Weekend)",
+  "discount": "Временный доступ; покупная скидка −50%",
+  "expires_at": "2026-11-16",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/2605790/33b0aef214c4b17af3205e091a569f68d340e914/header.jpg",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "14.99",
+      "old_price": "29.99",
+      "discount": "50%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "14.99",
+      "discount": "50%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "254",
+      "discount": "50%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "2649",
+      "discount": "50%"
+    },
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "539",
+      "discount": "50%"
+    }
+  ]
+}
