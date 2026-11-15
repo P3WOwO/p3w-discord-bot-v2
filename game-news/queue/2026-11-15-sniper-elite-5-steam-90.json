@@ -1,0 +1,43 @@
+{
+  "id": "steam-1029690-2026-11-10-90off",
+  "category": "sales",
+  "title": "Sniper Elite 5 — скидка 90%",
+  "description": "Sniper Elite 5 — тактический стелс-шутер Rebellion о скрытных операциях во Франции 1944 года.\n\n**Скидка:** 90% на стандартное издание, до 17 ноября 2026 года.\n\n**Как получить:** купить в Steam; игра останется в библиотеке навсегда.\n\n**Регион/ограничения:** подтверждены витрины Казахстана, Украины, США и еврозоны. Для России (RUB) SteamDB показывает N/A; цену CIS USD не использую как российскую. Украинская цена 57₴ — минимальная зафиксированная SteamDB.",
+  "source": "Steam / Rebellion; SteamDB — региональные цены и история",
+  "url": "https://store.steampowered.com/app/1029690/Sniper_Elite_5/",
+  "price": "$4.99",
+  "old_price": "$49.99",
+  "discount": "90%",
+  "expires_at": "2026-11-17",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1029690/header.jpg?t=1770633150",
+  "regional_prices": [
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "1499",
+      "old_price": "14999",
+      "discount": "90%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "57",
+      "old_price": "579",
+      "discount": "90%"
+    },
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "4.99",
+      "old_price": "49.99",
+      "discount": "90%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "4.99",
+      "old_price": "49.99",
+      "discount": "90%"
+    }
+  ]
+}
