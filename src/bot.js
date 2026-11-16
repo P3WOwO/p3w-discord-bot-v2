@@ -92,11 +92,26 @@ function formatAiProgress(event) {
 
 function createAiProgressUpdater(update) {
   let lastStatus = '';
+  let slowTimer = null;
+
   return async event => {
+    if (slowTimer) clearTimeout(slowTimer);
+    slowTimer = null;
+
     const nextStatus = formatAiProgress(event);
-    if (!nextStatus || nextStatus === lastStatus) return;
-    lastStatus = nextStatus;
-    await update(nextStatus);
+    if (nextStatus && nextStatus !== lastStatus) {
+      lastStatus = nextStatus;
+      await update(nextStatus);
+    }
+
+    if (event?.phase === 'trying' && event?.model) {
+      const model = event.model;
+      slowTimer = setTimeout(() => {
+        const slowStatus = '🥴 OwO тупит на `' + model + '`… модель долго отвечает, жду или переключусь на запасную.';
+        lastStatus = slowStatus;
+        Promise.resolve(update(slowStatus)).catch(() => {});
+      }, 7000);
+    }
   };
 }
 
