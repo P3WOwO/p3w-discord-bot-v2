@@ -147,7 +147,9 @@ function formatAiProgress(event) {
 
   switch (event?.phase) {
     case 'context':
-      return '🧩 Собираю историю переписки...';
+      return event.imageCount
+        ? '👀 Рассматриваю фото и собираю контекст...'
+        : '🧩 Собираю историю переписки...';
     case 'skipping':
       return '🔎 Пропускаю временно недоступную модель ' + model + '...';
     case 'trying':
