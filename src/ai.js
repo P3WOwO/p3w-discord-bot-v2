@@ -1,10 +1,11 @@
 const { SYSTEM_PROMPT, CHAT_TEMPERATURE, CHAT_MAX_OUTPUT_TOKENS } = require('./constants');
 
 const API_BASE = 'https://generativelanguage.googleapis.com';
-const REQUEST_TIMEOUT_MS = 12 * 1000;
+const REQUEST_TIMEOUT_MS = 8 * 1000;
 const PROBE_TIMEOUT_MS = 6 * 1000;
-const SLOW_RESPONSE_THRESHOLD_MS = 8 * 1000;
+const SLOW_RESPONSE_THRESHOLD_MS = 6 * 1000;
 const MODEL_PROBE_INTERVAL_MS = 10 * 60 * 1000;
+const MAX_MODELS_PER_REQUEST = 3;
 
 function timeoutSignal(ms = REQUEST_TIMEOUT_MS) {
   return AbortSignal.timeout(ms);
@@ -388,12 +389,15 @@ async function askGeminiWithFallback({
   const configuredModels = [...new Set((Array.isArray(models) ? models : [models]).filter(Boolean))];
   if (!configuredModels.length) throw new Error('Не настроен список GEMINI_CHAT_MODELS');
 
-  const modelCandidates = selectModelsByHealth(configuredModels);
-  if (!modelCandidates.length) {
+  const availableCandidates = selectModelsByHealth(configuredModels);
+  if (!availableCandidates.length) {
     await reportModelStatus(onStatus, { phase: 'unavailable' });
     throw new Error('Все модели Gemini сейчас проверяются или находятся в cooldown. Повторная проверка будет выполнена автоматически.');
   }
 
+  // Cap one reply to three model attempts. Failed candidates are cooled down,
+  // so the next message naturally continues further down the fallback chain.
+  const modelCandidates = availableCandidates.slice(0, MAX_MODELS_PER_REQUEST);
   const errors = [];
   let lastError = null;
   let skippedModels = configuredModels.length - modelCandidates.length;
