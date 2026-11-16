@@ -64,6 +64,42 @@ function buildRandomStatus() {
   return `${pickRandom(STATUS_VERBS)} ${pickRandom(STATUS_NOUNS)}`;
 }
 
+function formatAiProgress(event) {
+  const model = event?.model ? '`' + event.model + '`' : '';
+  const nextModel = event?.nextModel ? '`' + event.nextModel + '`' : '';
+
+  switch (event?.phase) {
+    case 'context':
+      return '🧩 Собираю историю переписки...';
+    case 'skipping':
+      return '🔎 Пропускаю временно недоступную модель ' + model + '...';
+    case 'trying':
+      return event.fallback
+        ? '🧠 Проверяю запасную модель ' + model + '...'
+        : '💭 Думаю на ' + model + '...';
+    case 'fallback':
+      return '🥴 Туплю на ' + model + '. Переключаюсь на ' + nextModel + '...';
+    case 'exhausted':
+      return '🥴 ' + model + ' не отвечает, проверяю оставшиеся варианты...';
+    case 'failed':
+      return '😵 Модель ' + model + ' отклонила запрос...';
+    case 'unavailable':
+      return '😵 Все модели Gemini сейчас недоступны.';
+    default:
+      return '';
+  }
+}
+
+function createAiProgressUpdater(update) {
+  let lastStatus = '';
+  return async event => {
+    const nextStatus = formatAiProgress(event);
+    if (!nextStatus || nextStatus === lastStatus) return;
+    lastStatus = nextStatus;
+    await update(nextStatus);
+  };
+}
+
 const { buildChatContext, buildSummarySource } = require('./context');
 
 const ADMIN_COMMANDS = new Set(['msg', 'jtm', 'forget', 'news']);
@@ -130,7 +166,7 @@ class DiscordBot {
 
   buildPresenceActivity() {
     return {
-      name: 'p3w',
+      name: 'OwO',
       type: ActivityType.Custom,
       state: this.ensureStatusPair(),
     };
@@ -279,7 +315,7 @@ class DiscordBot {
         .toJSON(),
       new SlashCommandBuilder()
         .setName('news')
-        .setDescription('Настроить игровые новости P3W')
+        .setDescription('Настроить игровые новости OwO')
         .setDefaultMemberPermissions(adminOnly)
         .addSubcommand(subcommand => subcommand
           .setName('channel')
@@ -383,12 +419,13 @@ class DiscordBot {
 
   // ===== Чат с ИИ =====
 
-  async generateChatReply({ channel, userName, text, excludeMessageId = null }) {
+  async generateChatReply({ channel, userName, text, excludeMessageId = null, onStatus = null }) {
+    if (typeof onStatus === 'function') await onStatus({ phase: 'context' }).catch(() => {});
     const channelName = channel?.name || '';
     const ctx = this.stateStore.getChannelContext(channel.id);
 
     // Если локальной памяти ещё нет, восстанавливаем недавний диалог из Discord,
-    // включая ответы самого P3W, но исключая текущее сообщение, чтобы не дублировать его.
+    // включая ответы самого OwO, но исключая текущее сообщение, чтобы не дублировать его.
     let turns = ctx.turns;
     if (!turns.length) {
       turns = (await this.getRecentMessages(channel, 18, excludeMessageId))
@@ -400,6 +437,7 @@ class DiscordBot {
       models: this.config.GEMINI_CHAT_MODELS,
       systemInstruction: buildSystemInstruction({ basePrompt: this.config.BASE_PROMPT, summary: ctx.summary, channelName }),
       prompt: buildContents({ turns, userName, text }),
+      onStatus,
     });
 
     return { answer, channelName };
@@ -450,8 +488,10 @@ class DiscordBot {
     if (wait) return message.react('⏳').catch(() => {});
 
     const userName = message.member?.displayName || message.author.username;
-    const status = await message.reply({ content: '💭 Думаю...', allowedMentions: { repliedUser: false } });
-    await message.channel.sendTyping().catch(() => {});
+    const status = await message.reply({ content: '🧠 Думаю...', allowedMentions: { repliedUser: false } });
+    const reportProgress = createAiProgressUpdater(async content => {
+      await status.edit({ content, allowedMentions: { parse: [] } }).catch(() => {});
+    });
 
     try {
       const { answer } = await this.generateChatReply({
@@ -459,6 +499,7 @@ class DiscordBot {
         userName,
         text,
         excludeMessageId: message.id,
+        onStatus: reportProgress,
       });
       const parts = splitMessage(String(answer || ''), 1900);
       await status.edit({ content: parts[0] || '…', allowedMentions: { parse: [] } }).catch(() => {});
@@ -481,9 +522,18 @@ class DiscordBot {
 
     await interaction.deferReply();
     const userName = interaction.member?.displayName || interaction.user.username;
+    const reportProgress = createAiProgressUpdater(async content => {
+      await interaction.editReply({ content }).catch(() => {});
+    });
+    await interaction.editReply('🧠 Думаю...').catch(() => {});
 
     try {
-      const { answer } = await this.generateChatReply({ channel: interaction.channel, userName, text });
+      const { answer } = await this.generateChatReply({
+        channel: interaction.channel,
+        userName,
+        text,
+        onStatus: reportProgress,
+      });
       const parts = splitMessage(String(answer || ''), 1900);
       await interaction.editReply({ content: parts[0] || '…', allowedMentions: { parse: [] } });
       for (const extra of parts.slice(1)) {
@@ -570,7 +620,7 @@ class DiscordBot {
       ];
       if (!permissions?.has(required)) {
         return interaction.reply({
-          content: '❌ У P3W нет прав просматривать канал, отправлять сообщения или встраивать ссылки.',
+          content: '❌ У OwO нет прав просматривать канал, отправлять сообщения или встраивать ссылки.',
           ephemeral: true,
         });
       }
@@ -612,16 +662,16 @@ class DiscordBot {
       }
       try {
         const newsMessage = await buildGameNewsMessage({
-          title: 'Тестовое уведомление P3W',
+          title: 'Тестовое уведомление OwO',
           description: 'Настройка работает. Здесь будут появляться игровые скидки и бесплатные раздачи.',
           url: 'https://store.steampowered.com/',
-          source: 'P3W · Проверка',
+          source: 'OwO · Проверка',
         });
         await channel.send(newsMessage);
         return interaction.reply({ content: '✅ Тестовое сообщение отправлено в ' + channel + '.', ephemeral: true });
       } catch (err) {
         console.error('Game news test failed:', err);
-        return interaction.reply({ content: '❌ Не удалось отправить тест. Проверь права P3W в выбранном канале.', ephemeral: true });
+        return interaction.reply({ content: '❌ Не удалось отправить тест. Проверь права OwO в выбранном канале.', ephemeral: true });
       }
     }
   }
@@ -669,11 +719,11 @@ class DiscordBot {
       PermissionFlagsBits.EmbedLinks,
     ];
     if (!permissions?.has(required)) {
-      throw Object.assign(new Error('У P3W недостаточно прав в выбранном канале.'), { statusCode: 403 });
+      throw Object.assign(new Error('У OwO недостаточно прав в выбранном канале.'), { statusCode: 403 });
     }
     if (!targetRole.mentionable && !permissions.has(PermissionFlagsBits.MentionEveryone)) {
       throw Object.assign(
-        new Error('Роль @' + targetRoleName + ' нельзя упоминать. Включи для неё «Разрешить упоминать эту роль» или выдай P3W право Mention Everyone.'),
+        new Error('Роль @' + targetRoleName + ' нельзя упоминать. Включи для неё «Разрешить упоминать эту роль» или выдай OwO право Mention Everyone.'),
         { statusCode: 403 },
       );
     }
