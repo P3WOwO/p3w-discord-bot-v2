@@ -30,10 +30,10 @@ function isRetryableMessage(message) {
 const modelHealth = new Map();
 const MODEL_UNAVAILABLE_COOLDOWN_MS = 30 * 60 * 1000;
 const MODEL_ACCESS_COOLDOWN_MS = 10 * 60 * 1000;
-const EMPTY_RESPONSE_COOLDOWN_MS = 2 * 60 * 1000;
+const EMPTY_RESPONSE_COOLDOWN_MS = MODEL_PROBE_INTERVAL_MS;
 const QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const RATE_LIMIT_COOLDOWN_MS = 2 * 60 * 1000;
-const TRANSIENT_COOLDOWN_MS = 2 * 60 * 1000;
+const RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
+const TRANSIENT_COOLDOWN_MS = MODEL_PROBE_INTERVAL_MS;
 
 function getModelHealth(model) {
   if (!modelHealth.has(model)) {
