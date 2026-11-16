@@ -32,7 +32,7 @@ class StateStore {
     this.state = {
       voiceTimes: {},
       lifeState: clone(DEFAULT_LIFE_STATE),
-      aiMemory: { channels: {}, gameNews: {} },
+      aiMemory: { channels: {}, gameNews: {}, modelHealth: {} },
     };
   }
 
@@ -100,6 +100,12 @@ class StateStore {
       ...(this.state.aiMemory.gameNews || {}),
       ...(localSnapshot.aiMemory?.gameNews || {}),
     };
+    // Keep cooldown timers from the local snapshot too; this may be newer
+    // than the last successful Supabase write before a service restart.
+    this.state.aiMemory.modelHealth = {
+      ...(this.state.aiMemory.modelHealth || {}),
+      ...(localSnapshot.aiMemory?.modelHealth || {}),
+    };
   }
 
   startReconnectTimer() {
@@ -118,6 +124,7 @@ class StateStore {
   normalizeAiMemory(raw) {
     const channels = raw?.channels && typeof raw.channels === 'object' ? raw.channels : {};
     const gameNews = raw?.gameNews && typeof raw.gameNews === 'object' ? raw.gameNews : {};
+    const modelHealth = raw?.modelHealth && typeof raw.modelHealth === 'object' ? raw.modelHealth : {};
     return {
       channels: Object.fromEntries(
         Object.entries(channels).map(([channelId, channelMemory]) => [
@@ -126,6 +133,7 @@ class StateStore {
         ])
       ),
       gameNews,
+      modelHealth,
     };
   }
 
@@ -281,6 +289,18 @@ class StateStore {
     ctx.turnsSinceSummary = 0;
     ctx.lastUpdatedAt = new Date().toISOString();
     this.setChannelContext(channelId, ctx);
+  }
+
+  getGeminiModelHealth() {
+    const memory = this.normalizeAiMemory(this.state.aiMemory);
+    this.state.aiMemory = memory;
+    return memory.modelHealth || {};
+  }
+
+  setGeminiModelHealth(snapshot) {
+    const memory = this.normalizeAiMemory(this.state.aiMemory);
+    memory.modelHealth = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    this.state.aiMemory = memory;
   }
 
   getGameNewsSettings(guildId) {
