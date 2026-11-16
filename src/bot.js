@@ -29,6 +29,7 @@ const { pickRandom, formatTime, formatTopTime, clampText, normalizeText, escapeR
 const {
   askGemini,
   askGeminiWithFallback,
+  configureGeminiModelHealth,
   buildSystemInstruction,
   buildContents,
   buildSummaryPrompt,
@@ -77,6 +78,8 @@ function formatAiProgress(event) {
       return event.fallback
         ? '🧠 Проверяю запасную модель ' + model + '...'
         : '💭 Думаю на ' + model + '...';
+    case 'quota':
+      return '🌙 Дневной лимит ' + model + ' исчерпан. Ставлю таймер на 24 часа и потом попробую снова...';
     case 'fallback':
       return '🥴 Туплю на ' + model + '. Переключаюсь на ' + nextModel + '...';
     case 'exhausted':
@@ -123,6 +126,13 @@ class DiscordBot {
   constructor(config, stateStore) {
     this.config = config;
     this.stateStore = stateStore;
+    configureGeminiModelHealth(
+      this.stateStore.getGeminiModelHealth(),
+      snapshot => {
+        this.stateStore.setGeminiModelHealth(snapshot);
+        return this.stateStore.save();
+      },
+    );
 
     this.client = new Client({
       intents: [
