@@ -200,12 +200,13 @@ function isModelSpecificFailure(err) {
 }
 
 function isShortRateLimitError(message) {
-  return /(per[_ -]?(minute|second)|requests?[_ -]?per[_ -]?(minute|second)|tokens?[_ -]?per[_ -]?(minute|second)|requestsperminute|tokensperminute|rpm|tpm|retry[_ -]?after|retrydelay)/i.test(message);
+  return /(per[_ -]?(minute|second)|requests?[_ -]?per[_ -]?(minute|second)|tokens?[_ -]?per[_ -]?(minute|second)|requestsperminute|tokensperminute|\brpm\b|\btpm\b)/i.test(message);
 }
 
 function isDailyQuotaError(message) {
+  if (/(daily quota|per[_ -]?day|requests?[_ -]?per[_ -]?day|generateRequestsPerDay|free[_ -]?tier.*day)/i.test(message)) return true;
   if (isShortRateLimitError(message)) return false;
-  return /(daily quota|per[_ -]?day|requests?[_ -]?per[_ -]?day|generateRequestsPerDay|quota exceeded|exceeded.*quota|resource[_ -]?exhausted|limit:\\s*0|free[_ -]?tier.*quota)/i.test(message);
+  return /(quota exceeded|exceeded.*quota|resource[_ -]?exhausted|limit:\s*0|free[_ -]?tier.*quota)/i.test(message);
 }
 
 function getModelCooldown(err) {
@@ -441,15 +442,6 @@ async function askGeminiWithFallback({
 
       if (isProbe) getModelHealth(model).probeInFlight = false;
 
-      if (cooldownMs >= QUOTA_COOLDOWN_MS) {
-        await reportModelStatus(onStatus, {
-          phase: 'quota',
-          model,
-          retryAt: Date.now() + cooldownMs,
-          cooldownMs,
-        });
-      }
-
       if (cooldownMs > 0) {
         console.warn('[AI] ' + model + ' временно исключена на ' + Math.ceil(cooldownMs / 60000) + ' мин.; проверю снова после cooldown. Ошибка после '
           + (elapsedMs / 1000).toFixed(1) + 'с:', message);
@@ -464,10 +456,13 @@ async function askGeminiWithFallback({
       }
 
       const nextCandidate = modelCandidates[position + 1];
+      const quotaCooldown = cooldownMs >= QUOTA_COOLDOWN_MS;
       await reportModelStatus(onStatus, {
-        phase: nextCandidate ? 'fallback' : 'exhausted',
+        phase: quotaCooldown ? 'quota' : nextCandidate ? 'fallback' : 'exhausted',
         model,
         nextModel: nextCandidate?.model || null,
+        retryAt: quotaCooldown ? Date.now() + cooldownMs : null,
+        cooldownMs,
       });
     } finally {
       if (isProbe) getModelHealth(model).probeInFlight = false;
