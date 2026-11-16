@@ -1,4 +1,4 @@
-![League of Legends: New Dawn — официальный арт Riot Games](https://www.riotgames.com/darkroom/1000/5360e209dfe28b26c4ff9db5ecd00e62%3A9307527ec0d0e2e5dca5b0bb6fad497a/lol-s326-teaspoon-thumbnail-textless-1920x1080.jpg)
+![League of Legends: New Dawn — официальный арт Riot Games](https://gamesbeat.com/wp-content/uploads/2026/11/new-dawn.jpg)
 
 # Riot уточнила: New Dawn — не LoL 2, руны и скины останутся
 
