@@ -420,7 +420,9 @@ class DiscordBot {
   // ===== Чат с ИИ =====
 
   async generateChatReply({ channel, userName, text, excludeMessageId = null, onStatus = null }) {
-    if (typeof onStatus === 'function') await onStatus({ phase: 'context' }).catch(() => {});
+    if (typeof onStatus === 'function') {
+      try { await onStatus({ phase: 'context' }); } catch {}
+    }
     const channelName = channel?.name || '';
     const ctx = this.stateStore.getChannelContext(channel.id);
 
