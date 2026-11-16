@@ -79,7 +79,9 @@ function formatAiProgress(event) {
         ? '🧠 Проверяю запасную модель ' + model + '...'
         : '💭 Думаю на ' + model + '...';
     case 'quota':
-      return '🌙 Дневной лимит ' + model + ' исчерпан. Ставлю таймер на 24 часа и потом попробую снова...';
+      return nextModel
+        ? '🌙 Дневной лимит ' + model + ' исчерпан. Таймер: 24 часа; переключаюсь на ' + nextModel + '...'
+        : '🌙 Дневной лимит ' + model + ' исчерпан. Таймер: 24 часа; затем попробую снова...';
     case 'fallback':
       return '🥴 Туплю на ' + model + '. Переключаюсь на ' + nextModel + '...';
     case 'exhausted':
