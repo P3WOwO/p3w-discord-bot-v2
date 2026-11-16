@@ -686,7 +686,7 @@ function buildContents({ turns = [], userName = '', text = '', images = [], maxC
   const contents = [];
   const push = (role, line) => {
     const last = contents[contents.length - 1];
-    if (last && last.role === role) last.parts[0].text += '\\n' + line;
+    if (last && last.role === role) last.parts[0].text += '\n' + line;
     else contents.push({ role, parts: [{ text: line }] });
   };
   for (const turn of selected) push(turn.role, turn.text);
@@ -706,7 +706,7 @@ function buildContents({ turns = [], userName = '', text = '', images = [], maxC
 
   const last = contents[contents.length - 1];
   if (last && last.role === 'user') {
-    last.parts[0].text += '\\n' + currentText;
+    last.parts[0].text += '\n' + currentText;
     last.parts.push(...currentParts.slice(1));
   } else {
     contents.push({ role: 'user', parts: currentParts });
