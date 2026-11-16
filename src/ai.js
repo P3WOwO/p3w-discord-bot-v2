@@ -43,6 +43,7 @@ function getModelHealth(model) {
       failures: 0,
       cooldownUntil: 0,
       nextProbeAt: 0,
+      needsProbe: false,
       probeInFlight: false,
       lastError: '',
       lastSuccessAt: 0,
@@ -62,12 +63,13 @@ function selectModelsByHealth(models) {
 
   for (const [index, model] of models.entries()) {
     const health = getModelHealth(model);
-    const coolingDown = health.cooldownUntil > now;
-
     if (health.probeInFlight) continue;
-    if (coolingDown && health.nextProbeAt > now) continue;
 
-    const isProbe = coolingDown;
+    // Keep a degraded model out of the normal pool even after its cooldown
+    // expires; it re-enters only as a scheduled probe.
+    if (health.needsProbe && health.nextProbeAt > now) continue;
+
+    const isProbe = health.needsProbe && health.nextProbeAt <= now;
     if (isProbe) {
       // Reserve this probe so concurrent messages don't all hit the same sick model.
       health.probeInFlight = true;
@@ -105,10 +107,12 @@ function recordModelSuccess(model, elapsedMs, comparisonModels = []) {
   const isSlow = elapsedMs >= SLOW_RESPONSE_THRESHOLD_MS || muchSlowerThanAlternative;
 
   if (isSlow) {
+    health.needsProbe = true;
     health.cooldownUntil = Date.now() + MODEL_PROBE_INTERVAL_MS;
     health.nextProbeAt = health.cooldownUntil;
     console.warn('[AI] ' + model + ' медленнее оптимального варианта (' + (elapsedMs / 1000).toFixed(1) + 'с); убираю её из обычного выбора на 10 мин. и позже проверю снова.');
   } else {
+    health.needsProbe = false;
     health.cooldownUntil = 0;
     health.nextProbeAt = 0;
   }
@@ -120,6 +124,7 @@ function recordModelFailure(model, err, cooldownMs) {
   health.lastError = String(err && err.message || err || '').slice(0, 220);
 
   if (cooldownMs > 0) {
+    health.needsProbe = true;
     health.cooldownUntil = Date.now() + cooldownMs;
     health.nextProbeAt = health.cooldownUntil;
   }
@@ -366,7 +371,7 @@ async function askGeminiWithFallback({
       const message = String(err && err.message || err).slice(0, 220);
       const fallback = shouldTryNextModel(err);
       const cooldownMs = getModelCooldown(err);
-      recordModelFailure(model, err, cooldownMs);
+      recordModelFailure(model, err, cooldownMs || (fallback ? MODEL_PROBE_INTERVAL_MS : 0));
 
       if (isProbe) getModelHealth(model).probeInFlight = false;
 
