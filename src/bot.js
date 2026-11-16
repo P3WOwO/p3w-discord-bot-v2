@@ -1176,7 +1176,7 @@ class DiscordBot {
 
       if (cmd === 'help' || cmd === 'h') {
         return message.reply({
-          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\`, \`${prefix}image текст\`, slash: /ping /say /image /time /user /top /life /news, админ: /clear /msg /forget /jtm /news`,
+          content: `Команды: \`${prefix}ping\`, \`${prefix}say текст\` (можно приложить фото), \`${prefix}image текст\`, slash: /ping /say (текст или фото) /image /time /user /top /life /news, админ: /clear /msg /forget /jtm /news`,
           allowedMentions: { repliedUser: false },
         });
       }
