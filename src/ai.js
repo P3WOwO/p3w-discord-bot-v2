@@ -1,9 +1,9 @@
 const { SYSTEM_PROMPT, CHAT_TEMPERATURE, CHAT_MAX_OUTPUT_TOKENS } = require('./constants');
 
 const API_BASE = 'https://generativelanguage.googleapis.com';
-const REQUEST_TIMEOUT_MS = 18 * 1000;
-const PROBE_TIMEOUT_MS = 10 * 1000;
-const SLOW_RESPONSE_THRESHOLD_MS = 12 * 1000;
+const REQUEST_TIMEOUT_MS = 15 * 1000;
+const PROBE_TIMEOUT_MS = 8 * 1000;
+const SLOW_RESPONSE_THRESHOLD_MS = 14 * 1000;
 const MODEL_PROBE_INTERVAL_MS = 10 * 60 * 1000;
 
 function timeoutSignal(ms = REQUEST_TIMEOUT_MS) {
@@ -87,7 +87,7 @@ function selectModelsByHealth(models) {
   return candidates;
 }
 
-function recordModelSuccess(model, elapsedMs) {
+function recordModelSuccess(model, elapsedMs, comparisonModels = []) {
   const health = getModelHealth(model);
   health.successes++;
   health.lastSuccessAt = Date.now();
@@ -96,10 +96,18 @@ function recordModelSuccess(model, elapsedMs) {
     ? elapsedMs
     : health.averageLatencyMs * 0.7 + elapsedMs * 0.3;
 
-  if (elapsedMs >= SLOW_RESPONSE_THRESHOLD_MS) {
+  const fastestAlternative = comparisonModels
+    .filter(candidate => candidate !== model)
+    .map(candidate => getModelHealth(candidate).averageLatencyMs)
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b)[0];
+  const muchSlowerThanAlternative = fastestAlternative != null && elapsedMs > fastestAlternative * 1.8;
+  const isSlow = elapsedMs >= SLOW_RESPONSE_THRESHOLD_MS || muchSlowerThanAlternative;
+
+  if (isSlow) {
     health.cooldownUntil = Date.now() + MODEL_PROBE_INTERVAL_MS;
     health.nextProbeAt = health.cooldownUntil;
-    console.warn('[AI] ' + model + ' ответила медленно (' + (elapsedMs / 1000).toFixed(1) + 'с); убираю её из обычного выбора на 10 мин. и позже проверю снова.');
+    console.warn('[AI] ' + model + ' медленнее оптимального варианта (' + (elapsedMs / 1000).toFixed(1) + 'с); убираю её из обычного выбора на 10 мин. и позже проверю снова.');
   } else {
     health.cooldownUntil = 0;
     health.nextProbeAt = 0;
@@ -346,7 +354,7 @@ async function askGeminiWithFallback({
       });
 
       const elapsedMs = Date.now() - attemptStartedAt;
-      recordModelSuccess(model, elapsedMs);
+      recordModelSuccess(model, elapsedMs, configuredModels);
       console.info('[AI] Ответ получен от ' + model + ' за ' + (elapsedMs / 1000).toFixed(1) + 'с'
         + (position > 0 ? ' (fallback)' : '')
         + (isProbe ? ' (повторная проба)' : '') + '.');
