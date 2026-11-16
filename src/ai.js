@@ -659,8 +659,8 @@ function buildSystemInstruction({ basePrompt = '', summary = '', channelName = '
 }
 
 // История канала -> contents Gemini (чередование user/model, подряд идущие реплики склеиваем).
-function buildContents({ turns = [], userName = '', text = '', maxChars = 20000 }) {
-  const currentText = (userName || 'Пользователь') + ': ' + String(text || '').slice(-9000);
+function buildContents({ turns = [], userName = '', text = '', images = [], maxChars = 20000 }) {
+  const currentText = (userName || 'Пользователь') + ': ' + String(text || (images.length ? 'Посмотри на прикреплённое изображение.' : '')).slice(-9000);
   const history = (Array.isArray(turns) ? turns : []).slice(-24).map(turn => {
     const isAssistant = turn && turn.role === 'assistant';
     const body = String(turn && turn.text || '').slice(-1800);
@@ -686,11 +686,32 @@ function buildContents({ turns = [], userName = '', text = '', maxChars = 20000 
   const contents = [];
   const push = (role, line) => {
     const last = contents[contents.length - 1];
-    if (last && last.role === role) last.parts[0].text += '\n' + line;
+    if (last && last.role === role) last.parts[0].text += '\\n' + line;
     else contents.push({ role, parts: [{ text: line }] });
   };
   for (const turn of selected) push(turn.role, turn.text);
-  push('user', currentText);
+
+  // Images belong only to the current user turn. Keep raw bytes out of saved
+  // chat history; Gemini receives the inlineData part in this one request.
+  const currentParts = [{ text: currentText }];
+  for (const image of Array.isArray(images) ? images.slice(0, 3) : []) {
+    if (!image || !image.mimeType || !image.data) continue;
+    currentParts.push({
+      inlineData: {
+        mimeType: image.mimeType,
+        data: image.data,
+      },
+    });
+  }
+
+  const last = contents[contents.length - 1];
+  if (last && last.role === 'user') {
+    last.parts[0].text += '\\n' + currentText;
+    last.parts.push(...currentParts.slice(1));
+  } else {
+    contents.push({ role: 'user', parts: currentParts });
+  }
+
   while (contents.length && contents[0].role !== 'user') contents.shift();
   return contents;
 }
