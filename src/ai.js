@@ -277,7 +277,14 @@ async function askGemini({
     const firstUser = contents.find(item => item.role === 'user');
     const prefix = 'Инструкции для OwO и долговременная память:\n' + systemInstruction + '\n\nПереписка:\n';
     if (firstUser && firstUser.parts && firstUser.parts.length) {
-      firstUser.parts[0].text = prefix + String(firstUser.parts[0].text || '');
+      // Multimodal prompts put image parts first. Add instructions to the
+      // first text part only, never combine text and inline_data in one Part.
+      const firstTextPart = firstUser.parts.find(part => typeof part?.text === 'string');
+      if (firstTextPart) {
+        firstTextPart.text = prefix + firstTextPart.text;
+      } else {
+        firstUser.parts.push({ text: prefix });
+      }
     } else {
       contents.unshift({ role: 'user', parts: [{ text: prefix }] });
     }
