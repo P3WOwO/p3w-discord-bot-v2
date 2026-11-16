@@ -693,9 +693,11 @@ function buildContents({ turns = [], userName = '', text = '', images = [], maxC
 
   // Images belong only to the current user turn. Keep raw bytes out of saved
   // chat history; Gemini receives the inlineData part in this one request.
-  const currentParts = [{ text: currentText }];
+  const currentParts = [];
   for (const image of Array.isArray(images) ? images.slice(0, 3) : []) {
     if (!image || !image.mimeType || !image.data) continue;
+    // Put image parts before the current question (recommended for Gemma 4
+    // and also accepted by Gemini multimodal generateContent requests).
     currentParts.push({
       inline_data: {
         mime_type: image.mimeType,
@@ -703,11 +705,12 @@ function buildContents({ turns = [], userName = '', text = '', images = [], maxC
       },
     });
   }
+  currentParts.push({ text: currentText });
 
   const last = contents[contents.length - 1];
   if (last && last.role === 'user') {
-    last.parts[0].text += '\n' + currentText;
-    last.parts.push(...currentParts.slice(1));
+    if (currentParts.length > 1) last.parts.push(...currentParts);
+    else last.parts[0].text += '\n' + currentText;
   } else {
     contents.push({ role: 'user', parts: currentParts });
   }
