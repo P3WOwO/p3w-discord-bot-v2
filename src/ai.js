@@ -55,7 +55,9 @@ function configureGeminiModelHealth(snapshot = {}, persist = null) {
     for (const [model, raw] of Object.entries(snapshot)) {
       if (!raw || typeof raw !== 'object') continue;
       modelHealth.set(model, {
-        averageLatencyMs: Number.isFinite(Number(raw.averageLatencyMs)) ? Number(raw.averageLatencyMs) : null,
+        averageLatencyMs: raw.averageLatencyMs == null
+          ? null
+          : Number.isFinite(Number(raw.averageLatencyMs)) ? Number(raw.averageLatencyMs) : null,
         successes: Number(raw.successes || 0),
         failures: Number(raw.failures || 0),
         cooldownUntil: Number(raw.cooldownUntil || 0),
