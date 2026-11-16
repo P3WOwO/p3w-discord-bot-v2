@@ -192,7 +192,7 @@ function getErrorMessage(err) {
 function isModelSpecificFailure(err) {
   const message = getErrorMessage(err);
   const modelMention = /models?\/[a-z0-9._-]+|\bmodel\b|unknown model/i.test(message);
-  const unavailable = /not found|not supported|not available|not enabled|not permitted|not authorized|permission denied|does not exist/i.test(message);
+  const unavailable = /not found|not supported|does not support|not available|not enabled|not permitted|not authorized|permission denied|does not exist/i.test(message);
   return /model_not_found|model_not_supported/i.test(message) || (modelMention && unavailable);
 }
 
