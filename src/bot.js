@@ -58,7 +58,7 @@ function formatImageError(err) {
   if (raw.includes('429') && /quota/i.test(raw)) {
     return '🖼 Лимит генерации картинок на ключе Gemini исчерпан (429). На бесплатном тарифе он очень маленький и сбрасывается примерно раз в сутки. Варианты: попробовать позже или подключить биллинг / другой ключ (GEMINI_API_KEY).';
   }
-  return \`❌ Ошибка генерации: \${clampText(raw, 1800)}\`;
+  return `❌ Ошибка генерации: ${clampText(raw, 1800)}`;
 }
 
 const VISION_IMAGE_MIME_TYPES = new Set([
@@ -378,7 +378,7 @@ class DiscordBot {
         .setDescription('Попросить OwO ответить через Gemini (можно приложить фото)')
         .addStringOption(option => option.setName('text').setDescription('Текст или вопрос по изображению').setRequired(false))
         .addAttachmentOption(option => option.setName('image').setDescription('Фото для анализа').setRequired(false))
-        .toJSON(),       .toJSON(),
+        .toJSON(),
       new SlashCommandBuilder()
         .setName('image')
         .setDescription('Сгенерировать картинку через Gemini')
@@ -651,7 +651,7 @@ class DiscordBot {
       return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
     }
     const wait = this.checkCooldown('ai', interaction.user.id, this.config.AI_USER_COOLDOWN_MS);
-    if (wait) return interaction.reply({ content: \`⏳ Подожди \${wait}с.\`, ephemeral: true });
+    if (wait) return interaction.reply({ content: '⏳ Подожди ' + wait + 'с.', ephemeral: true });
 
     await interaction.deferReply();
     const userName = interaction.member?.displayName || interaction.user.username;
@@ -1038,7 +1038,7 @@ class DiscordBot {
         return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
       }
       const wait = this.checkCooldown('image', interaction.user.id, this.config.IMAGE_USER_COOLDOWN_MS);
-      if (wait) return interaction.reply({ content: `⏳ Подожди ${wait}с.`, ephemeral: true });
+    if (wait) return interaction.reply({ content: '⏳ Подожди ' + wait + 'с.', ephemeral: true });
       await interaction.deferReply();
       await interaction.editReply('🖼 Генерирую изображение...');
       try {
@@ -1162,7 +1162,7 @@ class DiscordBot {
       if (cmd === 'say') {
         const promptText = args.join(' ').trim();
         const imageAttachments = getImageAttachments(message);
-        if (!promptText && !imageAttachments.length) return message.reply(\`Напиши текст после \\\`\${prefix}say\\\` или приложи фото.\`);
+        if (!promptText && !imageAttachments.length) return message.reply('Напиши текст после ' + prefix + 'say или приложи фото.');
         return this.handleAiMessage({ message, text: promptText, imageAttachments });
       }
 
