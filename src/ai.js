@@ -25,6 +25,10 @@ function isRetryableMessage(message) {
 // hammer the same model again. Quota exhaustion is treated as a 24h outage;
 // ordinary rate limits and transient network failures get a short cooldown.
 const modelUnavailableUntil = new Map();
+let preferredChatModel = null;
+const MODEL_UNAVAILABLE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const MODEL_ACCESS_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const EMPTY_RESPONSE_COOLDOWN_MS = 30 * 1000;
 const QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
 const TRANSIENT_COOLDOWN_MS = 30 * 1000;
@@ -35,7 +39,7 @@ function getErrorMessage(err) {
 
 function isModelSpecificFailure(err) {
   const message = getErrorMessage(err);
-  const modelMention = /models?\\/[a-z0-9._-]+|\\bmodel\\b|unknown model/i.test(message);
+  const modelMention = /models?\/[a-z0-9._-]+|\bmodel\b|unknown model/i.test(message);
   const unavailable = /not found|not supported|not available|not enabled|not permitted|not authorized|permission denied|does not exist/i.test(message);
   return /model_not_found|model_not_supported/i.test(message) || (modelMention && unavailable);
 }
@@ -120,7 +124,7 @@ async function askGemini({
     : [{ role: 'user', parts: [{ text: String(prompt || '') }] }];
   if (isGemma && systemInstruction) {
     const firstUser = contents.find(item => item.role === 'user');
-    const prefix = 'Инструкции для P3W и долговременная память:\n' + systemInstruction + '\n\nПереписка:\n';
+    const prefix = 'Инструкции для OwO и долговременная память:\n' + systemInstruction + '\n\nПереписка:\n';
     if (firstUser && firstUser.parts && firstUser.parts.length) {
       firstUser.parts[0].text = prefix + String(firstUser.parts[0].text || '');
     } else {
