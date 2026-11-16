@@ -697,8 +697,8 @@ function buildContents({ turns = [], userName = '', text = '', images = [], maxC
   for (const image of Array.isArray(images) ? images.slice(0, 3) : []) {
     if (!image || !image.mimeType || !image.data) continue;
     currentParts.push({
-      inlineData: {
-        mimeType: image.mimeType,
+      inline_data: {
+        mime_type: image.mimeType,
         data: image.data,
       },
     });
