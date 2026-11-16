@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Музыкальный модуль P3W.
+ * Музыкальный модуль OwO.
  *
  * Всё, что относится к музыке, живёт здесь: источники (YouTube / Audius /
  * Spotify / Яндекс Музыка), очередь, слэш-команды, панель управления с кнопками
@@ -283,16 +283,16 @@ function formatMusicError(err) {
   const all = `${code} ${raw} ${cause}`;
 
   if (code === 'VOICE_SERVER_MUTED') {
-    return '🔇 P3W заглушён модератором на уровне сервера. Нажмите правой кнопкой по P3W в списке участников войса и снимите «Отключить микрофон» (Server Mute), затем повторите /play.';
+    return '🔇 OwO заглушён модератором на уровне сервера. Нажмите правой кнопкой по OwO в списке участников войса и снимите «Отключить микрофон» (Server Mute), затем повторите /play.';
   }
   if (code === 'VOICE_SELF_UNDEAF_FAILED') {
-    return '🎧 Не удалось отключить режим deafened у P3W. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
+    return '🎧 Не удалось отключить режим deafened у OwO. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
   }
   if (code === 'VOICE_SELF_UNMUTE_FAILED') {
-    return '🔇 Не удалось снять самозаглушение P3W. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
+    return '🔇 Не удалось снять самозаглушение OwO. Попробуй /leave, затем /play ещё раз; подробности есть в логах.';
   }
   if (/VOICE_ALREADY_CREATED|VOICE_CHANNEL_DIFFERENT|QUEUE_EXIST/i.test(code)) {
-    return '❌ P3W уже подключён к другому голосовому каналу. Сначала используй /leave.';
+    return '❌ OwO уже подключён к другому голосовому каналу. Сначала используй /leave.';
   }
   if (/YOUTUBE_EXTRACTORS_FAILED/.test(code)) {
     return '❌ YouTube не удалось извлечь ни основным загрузчиком, ни резервным yt-dlp. Подробная причина записана в Render Logs.';
@@ -516,7 +516,7 @@ class StreamBridge {
 
 // @distube/audius resolves and searches tracks, while this maintained stream client
 // assembles Audius's AAC HLS init segment + media fragments into one readable stream.
-class P3WAudiusPlugin extends ExtractorPlugin {
+class OwOAudiusPlugin extends ExtractorPlugin {
   constructor(options = {}) {
     super();
     this.base = (options.base || AUDIUS_API_BASE).replace(/\/+$/, '');
@@ -637,7 +637,7 @@ class P3WAudiusPlugin extends ExtractorPlugin {
   async getStreamURL(song) {
     if (!song?.id) throw new Error('Audius song is missing its track ID');
     const url = new URL(this.base + '/tracks/' + encodeURIComponent(song.id) + '/stream');
-    url.searchParams.set('app_name', 'P3WDiscordBot');
+    url.searchParams.set('app_name', 'OwODiscordBot');
     if (this.apiKey) url.searchParams.set('api_key', this.apiKey);
     return url.toString();
   }
@@ -649,12 +649,12 @@ class P3WAudiusPlugin extends ExtractorPlugin {
 
 // ───────────────────────────── SoundCloud AAC-HLS + safe source fallback ─────────────────────────────
 
-class P3WSoundCloudPlugin extends ExtractorPlugin {
+class OwOSoundCloudPlugin extends ExtractorPlugin {
   constructor(bridge) {
     super();
     this.bridge = bridge;
     // SoundCloud client ID discovery is an external network dependency.
-    // Initialize lazily so a SoundCloud outage cannot prevent P3W from booting.
+    // Initialize lazily so a SoundCloud outage cannot prevent OwO from booting.
     this.streamClient = null;
     this.streamClientPromise = null;
     this.streamClientError = null;
@@ -950,7 +950,7 @@ class P3WSoundCloudPlugin extends ExtractorPlugin {
 
 // ───────────────────────────── YouTube-плагин с несколькими запасными источниками ─────────────────────────────
 
-class P3WYouTubePlugin extends YouTubePlugin {
+class OwOYouTubePlugin extends YouTubePlugin {
   constructor(options, bridge) {
     super(options);
     this.bridge = bridge;
@@ -1286,7 +1286,7 @@ class P3WYouTubePlugin extends YouTubePlugin {
 
 // Yandex Music direct playback with mirror fallback when its stream endpoint fails.
 // Metadata resolution still requires the user's Yandex OAuth token and UID.
-class P3WYandexMusicPlugin extends YandexMusicPlugin {
+class OwOYandexMusicPlugin extends YandexMusicPlugin {
   constructor(options, sources) {
     super(options);
     this.sources = sources || {};
@@ -1442,7 +1442,7 @@ function renderQueue(queue, requestedPage) {
 
   const embed = new EmbedBuilder()
     .setColor(COLORS.playing)
-    .setTitle('🎶 Очередь P3W')
+    .setTitle('🎶 Очередь OwO')
     .setDescription(clampText(lines.join('\n'), 4000))
     .setFooter({ text: `Страница ${page + 1}/${pages} · треков: ${queue.songs.length} · ${queue.formattedDuration || ''} · 🔊 ${queue.volume}%` });
 
@@ -1497,7 +1497,7 @@ function buildCommands() {
         .addChoices(choice('Выключить', 'off'), choice('Текущий трек', 'track'), choice('Всю очередь', 'queue')))
       .toJSON(),
     new SlashCommandBuilder().setName('shuffle').setDescription('Перемешать очередь').toJSON(),
-    new SlashCommandBuilder().setName('leave').setDescription('Остановить музыку и отключить P3W от войса').toJSON(),
+    new SlashCommandBuilder().setName('leave').setDescription('Остановить музыку и отключить OwO от войса').toJSON(),
     new SlashCommandBuilder()
       .setName('musictest')
       .setDescription('Проверить доступность источников YouTube, SoundCloud, Spotify, Audius и Яндекс Музыки')
@@ -1546,9 +1546,9 @@ class MusicModule {
     }
     const cookie = this.config.YT_COOKIE;
 
-    this.youtube = new P3WYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);
-    this.soundcloud = new P3WSoundCloudPlugin(this.bridge);
-    this.audius = new P3WAudiusPlugin({ apiKey: this.config.AUDIUS_API_KEY });
+    this.youtube = new OwOYouTubePlugin({ ytdlOptions: cookie ? { cookie } : {} }, this.bridge);
+    this.soundcloud = new OwOSoundCloudPlugin(this.bridge);
+    this.audius = new OwOAudiusPlugin({ apiKey: this.config.AUDIUS_API_KEY });
     this.spotify = new SpotifyPlugin();
 
     // Источники соединены в одну fallback-цепочку: YouTube -> SoundCloud -> Audius.
@@ -1563,7 +1563,7 @@ class MusicModule {
     // Яндекс играет напрямую; Spotify использует общую цепочку поиска плеера.
     this.yandex = null;
     if (this.config.YANDEX_MUSIC_OAUTH_TOKEN && this.config.YANDEX_MUSIC_UID) {
-      this.yandex = new P3WYandexMusicPlugin({
+      this.yandex = new OwOYandexMusicPlugin({
         oauthToken: this.config.YANDEX_MUSIC_OAUTH_TOKEN,
         uid: this.config.YANDEX_MUSIC_UID,
       }, { youtube: this.youtube, soundcloud: this.soundcloud, audius: this.audius });
@@ -1662,16 +1662,16 @@ class MusicModule {
     // заходит deafened: музыкальному боту нужно и то и другое снять.
     const undeafenRequested = voice.setSelfDeaf(false);
     if (!undeafenRequested && voice.selfDeaf) {
-      throw Object.assign(new Error('P3W could not clear its self-deaf state'), { code: 'VOICE_SELF_UNDEAF_FAILED' });
+      throw Object.assign(new Error('OwO could not clear its self-deaf state'), { code: 'VOICE_SELF_UNDEAF_FAILED' });
     }
     const unmuteRequested = voice.setSelfMute(false);
     if (!unmuteRequested && voice.selfMute) {
-      throw Object.assign(new Error('P3W could not clear its self-mute state'), { code: 'VOICE_SELF_UNMUTE_FAILED' });
+      throw Object.assign(new Error('OwO could not clear its self-mute state'), { code: 'VOICE_SELF_UNMUTE_FAILED' });
     }
 
     // Server mute снимает только модератор.
     if (channel.guild.members.me?.voice?.serverMute) {
-      throw Object.assign(new Error('P3W is server-muted by a moderator'), { code: 'VOICE_SERVER_MUTED' });
+      throw Object.assign(new Error('OwO is server-muted by a moderator'), { code: 'VOICE_SERVER_MUTED' });
     }
     return voice;
   }
@@ -1683,13 +1683,13 @@ class MusicModule {
 
     if (newState.id === this.client.user?.id) {
       if (newState.serverMute && newState.channelId) {
-        console.error('P3W is server-muted in voice; a moderator must unmute the bot.');
+        console.error('OwO is server-muted in voice; a moderator must unmute the bot.');
       } else if (newState.selfDeaf && newState.channelId) {
         this.distube.voices.get(guild.id)?.setSelfDeaf(false);
-        console.warn('P3W self-deaf detected; requested self-undeafen.');
+        console.warn('OwO self-deaf detected; requested self-undeafen.');
       } else if (newState.selfMute && newState.channelId) {
         this.distube.voices.get(guild.id)?.setSelfMute(false);
-        console.warn('P3W self-mute detected; requested self-unmute.');
+        console.warn('OwO self-mute detected; requested self-unmute.');
       }
       if (!newState.channelId) this.#clearTimer(this.emptyTimers, guild.id);
       return true;
@@ -1784,7 +1784,7 @@ class MusicModule {
     await check('YouTube: аудиопоток (ytdl-core → yt-dlp fallback)', async () => {
       const streamUrl = await this.youtube.getDirectStreamURL({
         url: SELF_TEST_VIDEO,
-        name: 'P3W YouTube self-test',
+        name: 'OwO YouTube self-test',
         duration: 0,
       });
       const probe = await probeAudioUrl(streamUrl, 35_000);
@@ -1947,12 +1947,12 @@ class MusicModule {
 
     const permissions = memberVoice.permissionsFor(this.client.user);
     if (!permissions?.has([PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
-      return this.#say(interaction, '❌ У P3W нет прав подключаться и говорить в этом голосовом канале.');
+      return this.#say(interaction, '❌ У OwO нет прав подключаться и говорить в этом голосовом канале.');
     }
 
     const existing = this.distube.getQueue(guildId);
     if (existing && existing.voiceChannel?.id !== memberVoice.id) {
-      return this.#say(interaction, '❌ P3W уже играет в другом голосовом канале. Используй /leave, чтобы переместить его.');
+      return this.#say(interaction, '❌ OwO уже играет в другом голосовом канале. Используй /leave, чтобы переместить его.');
     }
 
     const query = interaction.options.getString('query', true).trim();
@@ -2024,10 +2024,10 @@ class MusicModule {
     const botChannel = interaction.guild.members.me?.voice?.channel;
     if (!botChannel) {
       try { this.distube.voices.leave(guildId); } catch { /* уже отключён */ }
-      return this.#say(interaction, 'ℹ️ P3W уже не подключён к голосовому каналу.');
+      return this.#say(interaction, 'ℹ️ OwO уже не подключён к голосовому каналу.');
     }
     if (interaction.member?.voice?.channel?.id !== botChannel.id) {
-      return this.#say(interaction, '❌ Чтобы отключить P3W, зайди в тот же голосовой канал.');
+      return this.#say(interaction, '❌ Чтобы отключить OwO, зайди в тот же голосовой канал.');
     }
     await interaction.deferReply();
     const queue = this.distube.getQueue(guildId);
@@ -2067,7 +2067,7 @@ class MusicModule {
 
     const memberVoice = interaction.member?.voice?.channel;
     if (!memberVoice || memberVoice.id !== queue.voiceChannel?.id) {
-      return this.#say(interaction, '❌ Зайди в тот же голосовой канал, где сейчас находится P3W.');
+      return this.#say(interaction, '❌ Зайди в тот же голосовой канал, где сейчас находится OwO.');
     }
 
     switch (action) {
@@ -2138,7 +2138,7 @@ class MusicModule {
     }
     const memberVoice = interaction.member?.voice?.channel;
     if (!memberVoice || memberVoice.id !== queue.voiceChannel?.id) {
-      await this.#say(interaction, '❌ Зайди в тот же голосовой канал, где сейчас находится P3W.');
+      await this.#say(interaction, '❌ Зайди в тот же голосовой канал, где сейчас находится OwO.');
       return null;
     }
     return queue;
@@ -2257,9 +2257,9 @@ class MusicModule {
     if (connection && connection !== 'ready') {
       problem = `Голосовое соединение не готово (статус «${connection}»), поэтому звука нет. Попробуй /leave и снова /play. Если повторяется, на хостинге блокируется UDP или не работает шифрование голоса (подробности в логах).`;
     } else if (me?.serverMute || me?.suppress) {
-      problem = 'P3W заглушён на сервере (Server Mute / «подавлен»): в канале его не слышно. Снимите заглушение у бота или выдайте право «Говорить» в этом канале.';
+      problem = 'OwO заглушён на сервере (Server Mute / «подавлен»): в канале его не слышно. Снимите заглушение у бота или выдайте право «Говорить» в этом канале.';
     } else if (me?.selfMute) {
-      problem = 'P3W остаётся в режиме «микрофон выключен», поэтому его не слышно. Попробуй /leave и снова /play.';
+      problem = 'OwO остаётся в режиме «микрофон выключен», поэтому его не слышно. Попробуй /leave и снова /play.';
     } else if (ffmpeg && ffmpeg.exitCode !== null && ffmpeg.exitCode !== 0) {
       problem = `ffmpeg завершился с ошибкой (код ${ffmpeg.exitCode}), звука нет. Подробности в логах (строки [ffmpeg]).`;
     } else if (player === 'playing' && played === 0) {
@@ -2338,5 +2338,5 @@ module.exports = {
   renderPanel,
   renderQueue,
   renderIdle,
-  P3WYouTubePlugin,
+  OwOYouTubePlugin,
 };

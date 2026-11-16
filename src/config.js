@@ -26,6 +26,7 @@ function cleanEnv(value) {
   return String(value || '').trim().replace(/^["'`]+/, '').replace(/["'`]+$/, '').trim();
 }
 
+
 function num(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -38,9 +39,9 @@ module.exports = {
 
   // ИИ
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-  // Kept as a compatibility alias; Render's GEMINI_MODEL env var is intentionally ignored.
+  // Render's GEMINI_MODEL does not pin a model. The list in code is the
+  // baseline; optional custom models are appended only as additional fallbacks.
   GEMINI_MODEL: DEFAULT_GEMINI_CHAT_MODELS[0],
-  // Preserve custom models as extra fallbacks, after the recommended free-tier chain.
   GEMINI_CHAT_MODELS: [...new Set([
     ...DEFAULT_GEMINI_CHAT_MODELS,
     ...String(process.env.GEMINI_CHAT_MODELS || '').split(',').map(s => s.trim()).filter(Boolean),

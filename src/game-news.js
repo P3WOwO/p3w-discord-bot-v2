@@ -217,7 +217,7 @@ async function downloadNewsImage(imageUrl) {
   // The file is validated here; Discord receives the direct HTTPS image
   // URL in the embed below. This avoids relying on attachment:// resolution.
   return {
-    filename: 'p3w-news-image.' + extension,
+    filename: 'owo-news-image.' + extension,
     contentType: response.headers.get('content-type') || '',
     byteLength: buffer.length,
   };
@@ -280,7 +280,7 @@ function buildGameNewsEmbed(raw) {
   const parsed = parseDescription(item.description);
   const embed = new EmbedBuilder()
     .setColor(getEmbedColor(item))
-    .setAuthor({ name: 'P3W  /  ' + item.source.toUpperCase() })
+    .setAuthor({ name: 'OwO  /  ' + item.source.toUpperCase() })
     .setTitle(item.title)
     .setURL(item.url)
     .setTimestamp();
@@ -337,7 +337,7 @@ function buildGameNewsEmbed(raw) {
   }
 
   if (fields.length) embed.addFields(fields);
-  embed.setFooter({ text: 'P3W  •  ИГРОВЫЕ НОВОСТИ' });
+  embed.setFooter({ text: 'OwO  •  ИГРОВЫЕ НОВОСТИ' });
   return embed;
 }
 

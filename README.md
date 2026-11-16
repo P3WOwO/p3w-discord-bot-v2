@@ -1,4 +1,4 @@
-# P3W Discord Bot v5
+# OwO Discord Bot v5
 
 ИИ-чат (Gemini) + базовая модерация + статистика войса. RPG-модуль удалён.
 
@@ -7,7 +7,8 @@
 Обязательные: `TOKEN`, `CLIENT_ID`, `GUILD_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 
 ИИ:
-- `GEMINI_API_KEY`, `GEMINI_MODEL` (по умолч. `gemini-2.5-flash-lite`), `GEMINI_CHAT_MODELS` (fallback-список), `GEMINI_IMAGE_MODELS`
+- `GEMINI_API_KEY`, `GEMINI_IMAGE_MODELS`. Модели чат-ИИ выбираются автоматически по скорости и доступности; `GEMINI_MODEL` из Render не задаёт приоритет. `GEMINI_CHAT_MODELS` может только добавить дополнительные fallback-модели в конец списка.
+- OwO выбирает модель автоматически по измеренной скорости и доступности: обычный запрос прерывается через 8 секунд, на один ответ приходится максимум 3 попытки, а медленные/недоступные модели уходят на повторную проверку примерно через 10 минут (короткая проба — 6 секунд). Скорость и таймеры сохраняются в Supabase (`ai_memory.modelHealth`), поэтому переживают перезапуск Render. При исчерпании дневной квоты модель ставится на 24 часа и повторно проверяется после таймера; минутные rate-limit ошибки получают паузу 5 минут.
 - `BASE_PROMPT` — доп. стиль общения; `PREFIX` — префикс команд (`!`)
 - `CONTEXT_MAX_TURNS` (25), `CONTEXT_SUMMARY_EVERY` (30)
 - `AI_USER_COOLDOWN_MS` (4000), `IMAGE_USER_COOLDOWN_MS` (20000) — антиспам на пользователя
