@@ -1,8 +1,8 @@
 const { SYSTEM_PROMPT, CHAT_TEMPERATURE, CHAT_MAX_OUTPUT_TOKENS } = require('./constants');
 
 const API_BASE = 'https://generativelanguage.googleapis.com';
-const REQUEST_TIMEOUT_MS = 8 * 1000;
-const PROBE_TIMEOUT_MS = 6 * 1000;
+const REQUEST_TIMEOUT_MS = 30 * 1000;
+const PROBE_TIMEOUT_MS = 25 * 1000;
 const SLOW_RESPONSE_THRESHOLD_MS = 6 * 1000;
 const MODEL_PROBE_INTERVAL_MS = 10 * 60 * 1000;
 const MAX_MODELS_PER_REQUEST = 3;
