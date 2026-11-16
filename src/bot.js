@@ -62,15 +62,18 @@ function formatImageError(err) {
 }
 
 const VISION_IMAGE_MIME_TYPES = new Set([
-  'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',
+  'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif', 'image/avif',
 ]);
 const VISION_IMAGE_EXTENSIONS = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
+  jpe: 'image/jpeg',
   png: 'image/png',
   webp: 'image/webp',
   heic: 'image/heic',
   heif: 'image/heif',
+  gif: 'image/gif',
+  avif: 'image/avif',
 };
 const MAX_VISION_IMAGES = 3;
 const MAX_VISION_IMAGE_BYTES = 8 * 1024 * 1024;
