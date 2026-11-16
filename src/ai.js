@@ -1,7 +1,7 @@
 const { SYSTEM_PROMPT, CHAT_TEMPERATURE, CHAT_MAX_OUTPUT_TOKENS } = require('./constants');
 
 const API_BASE = 'https://generativelanguage.googleapis.com';
-const REQUEST_TIMEOUT_MS = 45 * 1000;
+const REQUEST_TIMEOUT_MS = 30 * 1000;
 
 function timeoutSignal(ms = REQUEST_TIMEOUT_MS) {
   return AbortSignal.timeout(ms);
@@ -29,14 +29,38 @@ const QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
 const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 
+function getErrorMessage(err) {
+  return String(err && err.message || err || '').toLowerCase();
+}
+
+function isModelSpecificFailure(err) {
+  const message = getErrorMessage(err);
+  const modelMention = /models?\\/[a-z0-9._-]+|\\bmodel\\b|unknown model/i.test(message);
+  const unavailable = /not found|not supported|not available|not enabled|not permitted|not authorized|permission denied|does not exist/i.test(message);
+  return /model_not_found|model_not_supported/i.test(message) || (modelMention && unavailable);
+}
+
 function getModelCooldown(err) {
-  const message = String(err && err.message || err).toLowerCase();
-  if (/(quota|resource_exhausted|billing|exceeded.*limit|limit.*exceeded)/i.test(message)) {
+  const message = getErrorMessage(err);
+  const status = Number(err && (err.statusCode || err.status) || 0);
+
+  if (/per[_ ]day|daily quota|requests per day|per_day|free[_ ]tier.*day|quota exceeded.*day/i.test(message)) {
     return QUOTA_COOLDOWN_MS;
   }
-  const status = Number(err && (err.statusCode || err.status) || 0);
-  if (status === 429) return RATE_LIMIT_COOLDOWN_MS;
-  if (!status && isRetryableMessage(message)) return TRANSIENT_COOLDOWN_MS;
+  if (status === 404 || (status === 400 && isModelSpecificFailure(err))) {
+    return MODEL_UNAVAILABLE_COOLDOWN_MS;
+  }
+  if (status === 403 && isModelSpecificFailure(err)) {
+    return MODEL_ACCESS_COOLDOWN_MS;
+  }
+  if (status === 429 || ((status === 403 || !status) && /quota|resource_exhausted|rate limit|too many requests/i.test(message))) {
+    return RATE_LIMIT_COOLDOWN_MS;
+  }
+  if ([500, 502, 503, 504].includes(status)) return TRANSIENT_COOLDOWN_MS;
+  if (/api вернул пустой ответ|empty response/i.test(message)) return EMPTY_RESPONSE_COOLDOWN_MS;
+  if (!status && /timeout|aborted|fetch failed|network|econn|socket/i.test(message)) {
+    return TRANSIENT_COOLDOWN_MS;
+  }
   return 0;
 }
 
@@ -51,17 +75,32 @@ function getModelCooldownRemaining(model) {
 
 function shouldTryNextModel(err) {
   const status = Number(err && (err.statusCode || err.status) || 0);
-  // A bad key or malformed request affects every model; don't waste fallback attempts.
-  if ([400, 401].includes(status)) return false;
-  if ([403, 404, 408, 409, 429, 500, 502, 503, 504].includes(status)) return true;
-  return Boolean(err && err.fallbackable) || isRetryableMessage(err && err.message || err);
+  const message = getErrorMessage(err);
+
+  // Неверный ключ, отключённый API и общие ошибки запроса не исправятся сменой модели.
+  if (status === 401) return false;
+  if (status === 400) return isModelSpecificFailure(err);
+  if (status === 403) {
+    return isModelSpecificFailure(err) || /quota|resource_exhausted|rate limit|too many requests/i.test(message);
+  }
+  if ([404, 408, 409, 429, 500, 502, 503, 504].includes(status)) return true;
+  return Boolean(err && err.fallbackable) || isRetryableMessage(message);
+}
+
+async function reportModelStatus(onStatus, event) {
+  if (typeof onStatus !== 'function') return;
+  try {
+    await onStatus(event);
+  } catch {
+    // Updating a Discord progress message must never break model generation.
+  }
 }
 
 async function askGemini({
   apiKey,
   model,
   prompt,
-  retries = 2,
+  retries = 1,
   temperature = CHAT_TEMPERATURE,
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
@@ -178,50 +217,94 @@ async function askGeminiWithFallback({
   apiKey,
   models,
   prompt,
-  retries = 2,
+  retries = 1,
   temperature = CHAT_TEMPERATURE,
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
   systemInstruction = '',
+  onStatus = null,
 }) {
-  const modelList = [...new Set((Array.isArray(models) ? models : [models]).filter(Boolean))];
-  if (!modelList.length) throw new Error('Не настроен список GEMINI_CHAT_MODELS');
+  const configuredModels = [...new Set((Array.isArray(models) ? models : [models]).filter(Boolean))];
+  if (!configuredModels.length) throw new Error('Не настроен список GEMINI_CHAT_MODELS');
+
+  // Start with the last model that actually answered. Fallback order is only
+  // scanned again when that model becomes unavailable.
+  const modelList = preferredChatModel && configuredModels.includes(preferredChatModel)
+    ? [preferredChatModel, ...configuredModels.filter(model => model !== preferredChatModel)]
+    : configuredModels;
 
   const errors = [];
   let lastError = null;
-  for (const model of modelList) {
+  let skippedModels = 0;
+  let attemptedModels = 0;
+
+  for (let index = 0; index < modelList.length; index++) {
+    const model = modelList[index];
     const cooldownRemaining = getModelCooldownRemaining(model);
     if (cooldownRemaining > 0) {
-      console.info('[AI] Пропускаю ' + model + ': модель временно недоступна ещё ' + Math.ceil(cooldownRemaining / 60000) + ' мин.');
+      skippedModels++;
+      console.info('[AI] Пропускаю ' + model + ': cooldown ещё ' + Math.ceil(cooldownRemaining / 60000) + ' мин.');
+      if (skippedModels === 1) {
+        await reportModelStatus(onStatus, { phase: 'skipping', model, index, total: modelList.length });
+      }
       continue;
     }
+
+    attemptedModels++;
+    await reportModelStatus(onStatus, {
+      phase: 'trying',
+      model,
+      index,
+      total: modelList.length,
+      fallback: attemptedModels > 1 || skippedModels > 0,
+    });
 
     try {
       const answer = await askGemini({
         apiKey, model, prompt, retries, temperature, maxOutputTokens, generationConfig, systemInstruction,
       });
-      console.info('[AI] Ответ получен от ' + model);
+      preferredChatModel = model;
+      console.info('[AI] Ответ получен от ' + model + (index > 0 ? ' (fallback)' : ''));
+      await reportModelStatus(onStatus, { phase: 'success', model });
       return answer;
     } catch (err) {
       lastError = err;
       const message = String(err && err.message || err).slice(0, 220);
       const fallback = shouldTryNextModel(err);
       const cooldownMs = getModelCooldown(err);
+
       if (cooldownMs > 0) {
         modelUnavailableUntil.set(model, Date.now() + cooldownMs);
-        const cooldownLabel = cooldownMs >= QUOTA_COOLDOWN_MS ? '24 часа (квота исчерпана)' : Math.ceil(cooldownMs / 1000) + ' сек.';
-        console.warn('[AI] ' + model + ' отключена на ' + cooldownLabel + '; переключаюсь на следующую модель.', message);
+        const cooldownLabel = cooldownMs >= QUOTA_COOLDOWN_MS
+          ? '24 часа (дневная квота)'
+          : Math.ceil(cooldownMs / 1000) + ' сек.';
+        console.warn('[AI] ' + model + ' временно отключена на ' + cooldownLabel + '.', message);
       }
+
       errors.push(model + ': ' + message);
       console.warn('[AI] ' + model + ' failed; ' + (fallback ? 'trying next model' : 'stopping fallback'), message);
-      if (!fallback) throw err;
+
+      if (!fallback) {
+        await reportModelStatus(onStatus, { phase: 'failed', model });
+        throw err;
+      }
+
+      const nextModel = modelList.slice(index + 1).find(candidate => getModelCooldownRemaining(candidate) === 0);
+      await reportModelStatus(onStatus, {
+        phase: nextModel ? 'fallback' : 'exhausted',
+        model,
+        nextModel: nextModel || null,
+      });
     }
   }
 
-  const error = new Error('Все модели Gemini/Gemma недоступны. ' + errors.join(' | '));
+  await reportModelStatus(onStatus, { phase: 'unavailable' });
+  const detail = errors.length ? errors.join(' | ') : 'Все модели находятся в cooldown после предыдущих ошибок.';
+  const error = new Error('Все модели Gemini/Gemma недоступны. ' + detail);
   error.cause = lastError;
   throw error;
 }
+
 // ===== Картинки =====
 
 function buildImagePrompt(text, aspectRatio = '16:9') {
