@@ -26,18 +26,6 @@ function cleanEnv(value) {
   return String(value || '').trim().replace(/^["'`]+/, '').replace(/["'`]+$/, '').trim();
 }
 
-// Respect the model priority explicitly configured in Render. Built-in models
-// are appended only as fallbacks, never placed ahead of the user's selection.
-const configuredGeminiModel = cleanEnv(process.env.GEMINI_MODEL);
-const configuredChatModels = String(process.env.GEMINI_CHAT_MODELS || '')
-  .split(',')
-  .map(model => model.trim())
-  .filter(Boolean);
-const GEMINI_CHAT_MODELS = [...new Set([
-  ...(configuredGeminiModel ? [configuredGeminiModel] : []),
-  ...configuredChatModels,
-  ...DEFAULT_GEMINI_CHAT_MODELS,
-])];
 
 function num(value, fallback) {
   const n = Number(value);
@@ -51,9 +39,13 @@ module.exports = {
 
   // ИИ
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-  // The first explicitly configured model is the primary model.
-  GEMINI_MODEL: GEMINI_CHAT_MODELS[0],
-  GEMINI_CHAT_MODELS,
+  // Render's GEMINI_MODEL does not pin a model. The list in code is the
+  // baseline; optional custom models are appended only as additional fallbacks.
+  GEMINI_MODEL: DEFAULT_GEMINI_CHAT_MODELS[0],
+  GEMINI_CHAT_MODELS: [...new Set([
+    ...DEFAULT_GEMINI_CHAT_MODELS,
+    ...String(process.env.GEMINI_CHAT_MODELS || '').split(',').map(s => s.trim()).filter(Boolean),
+  ])],
   GEMINI_IMAGE_MODELS: parseList(process.env.GEMINI_IMAGE_MODELS, ['gemini-2.5-flash-image']),
   BASE_PROMPT: process.env.BASE_PROMPT || process.env.BASE_STYLE_PROMPT || '',
   PREFIX: process.env.PREFIX || '!',
