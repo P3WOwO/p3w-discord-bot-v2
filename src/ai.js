@@ -28,6 +28,61 @@ function isRetryableMessage(message) {
 // models rise to the top; slow or failing models are temporarily sidelined
 // and probed again every 10 minutes.
 const modelHealth = new Map();
+let persistModelHealth = null;
+
+function getGeminiModelHealthSnapshot() {
+  return Object.fromEntries([...modelHealth.entries()].map(([model, health]) => [
+    model,
+    {
+      averageLatencyMs: Number.isFinite(health.averageLatencyMs) ? health.averageLatencyMs : null,
+      successes: Number(health.successes || 0),
+      failures: Number(health.failures || 0),
+      cooldownUntil: Number(health.cooldownUntil || 0),
+      nextProbeAt: Number(health.nextProbeAt || 0),
+      needsProbe: Boolean(health.needsProbe),
+      probeInFlight: false,
+      lastError: String(health.lastError || '').slice(0, 220),
+      lastSuccessAt: Number(health.lastSuccessAt || 0),
+    },
+  ]));
+}
+
+function configureGeminiModelHealth(snapshot = {}, persist = null) {
+  modelHealth.clear();
+  const now = Date.now();
+
+  if (snapshot && typeof snapshot === 'object') {
+    for (const [model, raw] of Object.entries(snapshot)) {
+      if (!raw || typeof raw !== 'object') continue;
+      modelHealth.set(model, {
+        averageLatencyMs: Number.isFinite(Number(raw.averageLatencyMs)) ? Number(raw.averageLatencyMs) : null,
+        successes: Number(raw.successes || 0),
+        failures: Number(raw.failures || 0),
+        cooldownUntil: Number(raw.cooldownUntil || 0),
+        nextProbeAt: Number(raw.nextProbeAt || 0),
+        needsProbe: Boolean(raw.needsProbe),
+        probeInFlight: false,
+        lastError: String(raw.lastError || '').slice(0, 220),
+        lastSuccessAt: Number(raw.lastSuccessAt || 0),
+      });
+      const health = modelHealth.get(model);
+      if (health.needsProbe && health.nextProbeAt < now && health.cooldownUntil < now) {
+        health.nextProbeAt = now;
+      }
+    }
+  }
+
+  persistModelHealth = typeof persist === 'function' ? persist : null;
+}
+
+function saveGeminiModelHealth() {
+  if (!persistModelHealth) return;
+  const snapshot = getGeminiModelHealthSnapshot();
+  Promise.resolve(persistModelHealth(snapshot)).catch(err => {
+    console.warn('[AI] Не удалось сохранить состояние Gemini-моделей:', err?.message || err);
+  });
+}
+
 const MODEL_UNAVAILABLE_COOLDOWN_MS = 30 * 60 * 1000;
 const MODEL_ACCESS_COOLDOWN_MS = 10 * 60 * 1000;
 const EMPTY_RESPONSE_COOLDOWN_MS = MODEL_PROBE_INTERVAL_MS;
@@ -86,6 +141,7 @@ function selectModelsByHealth(models) {
   }
 
   candidates.sort((a, b) => a.score - b.score || a.index - b.index);
+  if (candidates.some(candidate => candidate.isProbe)) saveGeminiModelHealth();
   return candidates;
 }
 
@@ -116,6 +172,7 @@ function recordModelSuccess(model, elapsedMs, comparisonModels = []) {
     health.cooldownUntil = 0;
     health.nextProbeAt = 0;
   }
+  saveGeminiModelHealth();
 }
 
 function recordModelFailure(model, err, cooldownMs) {
@@ -128,6 +185,7 @@ function recordModelFailure(model, err, cooldownMs) {
     health.cooldownUntil = Date.now() + cooldownMs;
     health.nextProbeAt = health.cooldownUntil;
   }
+  saveGeminiModelHealth();
 }
 
 function getErrorMessage(err) {
@@ -141,18 +199,26 @@ function isModelSpecificFailure(err) {
   return /model_not_found|model_not_supported/i.test(message) || (modelMention && unavailable);
 }
 
+function isShortRateLimitError(message) {
+  return /(per[_ -]?(minute|second)|requests?[_ -]?per[_ -]?(minute|second)|tokens?[_ -]?per[_ -]?(minute|second)|requestsperminute|tokensperminute|rpm|tpm|retry[_ -]?after|retrydelay)/i.test(message);
+}
+
+function isDailyQuotaError(message) {
+  if (isShortRateLimitError(message)) return false;
+  return /(daily quota|per[_ -]?day|requests?[_ -]?per[_ -]?day|generateRequestsPerDay|quota exceeded|exceeded.*quota|resource[_ -]?exhausted|limit:\\s*0|free[_ -]?tier.*quota)/i.test(message);
+}
+
 function getModelCooldown(err) {
   const message = getErrorMessage(err);
   const status = Number(err && (err.statusCode || err.status) || 0);
 
-  if (/daily quota|per[_ ]day|requests per day|quota exceeded.*day|per_day/i.test(message)) {
-    return QUOTA_COOLDOWN_MS;
-  }
+  // A depleted daily/free-tier quota is parked for a full day, then retried.
+  if (isDailyQuotaError(message)) return QUOTA_COOLDOWN_MS;
   if (status === 404 || (status === 400 && isModelSpecificFailure(err))) {
     return MODEL_UNAVAILABLE_COOLDOWN_MS;
   }
   if (status === 403 && isModelSpecificFailure(err)) return MODEL_ACCESS_COOLDOWN_MS;
-  if (status === 429 || ((status === 403 || !status) && /quota|resource_exhausted|rate limit|too many requests/i.test(message))) {
+  if (status === 429 || ((status === 403 || !status) && isShortRateLimitError(message))) {
     return RATE_LIMIT_COOLDOWN_MS;
   }
   if ([500, 502, 503, 504].includes(status)) return TRANSIENT_COOLDOWN_MS;
@@ -374,6 +440,15 @@ async function askGeminiWithFallback({
       recordModelFailure(model, err, cooldownMs || (fallback ? MODEL_PROBE_INTERVAL_MS : 0));
 
       if (isProbe) getModelHealth(model).probeInFlight = false;
+
+      if (cooldownMs >= QUOTA_COOLDOWN_MS) {
+        await reportModelStatus(onStatus, {
+          phase: 'quota',
+          model,
+          retryAt: Date.now() + cooldownMs,
+          cooldownMs,
+        });
+      }
 
       if (cooldownMs > 0) {
         console.warn('[AI] ' + model + ' временно исключена на ' + Math.ceil(cooldownMs / 60000) + ' мин.; проверю снова после cooldown. Ошибка после '
@@ -634,6 +709,8 @@ function buildSummaryPrompt({ existingSummary = '', oldMessages = '' }) {
   ].join('\n');
 }
 module.exports = {
+  configureGeminiModelHealth,
+  getGeminiModelHealthSnapshot,
   askGemini,
   askGeminiWithFallback,
   buildSystemInstruction,
