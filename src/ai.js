@@ -128,12 +128,6 @@ function selectModelsByHealth(models) {
     if (health.needsProbe && health.nextProbeAt > now) continue;
 
     const isProbe = health.needsProbe && health.nextProbeAt <= now;
-    if (isProbe) {
-      // Reserve this probe so concurrent messages don't all hit the same sick model.
-      health.probeInFlight = true;
-      health.nextProbeAt = now + MODEL_PROBE_INTERVAL_MS;
-    }
-
     const score = isProbe
       ? -1000 + index
       : health.averageLatencyMs == null
@@ -417,6 +411,13 @@ async function askGeminiWithFallback({
 
     const attemptStartedAt = Date.now();
     const timeoutMs = isProbe ? PROBE_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+    if (isProbe) {
+      // Reserve only the probe we are actually about to run. Unused probes
+      // must remain eligible for the next request instead of being stuck busy.
+      const health = getModelHealth(model);
+      health.probeInFlight = true;
+      health.nextProbeAt = Date.now() + MODEL_PROBE_INTERVAL_MS;
+    }
 
     try {
       const answer = await askGemini({
