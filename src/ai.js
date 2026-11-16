@@ -262,13 +262,14 @@ async function askGeminiWithFallback({
       total: modelList.length,
       fallback: attemptedModels > 1 || skippedModels > 0,
     });
+    const attemptStartedAt = Date.now();
 
     try {
       const answer = await askGemini({
         apiKey, model, prompt, retries, temperature, maxOutputTokens, generationConfig, systemInstruction,
       });
       preferredChatModel = model;
-      console.info('[AI] Ответ получен от ' + model + (index > 0 ? ' (fallback)' : ''));
+      console.info('[AI] Ответ получен от ' + model + ' за ' + ((Date.now() - attemptStartedAt) / 1000).toFixed(1) + 'с' + (index > 0 ? ' (fallback)' : '') + '.');
       await reportModelStatus(onStatus, { phase: 'success', model });
       return answer;
     } catch (err) {
@@ -286,7 +287,7 @@ async function askGeminiWithFallback({
       }
 
       errors.push(model + ': ' + message);
-      console.warn('[AI] ' + model + ' failed; ' + (fallback ? 'trying next model' : 'stopping fallback'), message);
+      console.warn('[AI] ' + model + ' failed after ' + ((Date.now() - attemptStartedAt) / 1000).toFixed(1) + 'с; ' + (fallback ? 'trying next model' : 'stopping fallback'), message);
 
       if (!fallback) {
         await reportModelStatus(onStatus, { phase: 'failed', model });
