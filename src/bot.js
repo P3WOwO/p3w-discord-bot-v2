@@ -78,10 +78,14 @@ function formatAiProgress(event) {
       return event.fallback
         ? '🧠 Проверяю запасную модель ' + model + '...'
         : '💭 Думаю на ' + model + '...';
-    case 'quota':
+    case 'quota': {
+      const retryTime = event.retryAt
+        ? '<t:' + Math.floor(event.retryAt / 1000) + ':R>'
+        : 'через 24 часа';
       return nextModel
-        ? '🌙 Дневной лимит ' + model + ' исчерпан. Таймер: 24 часа; переключаюсь на ' + nextModel + '...'
-        : '🌙 Дневной лимит ' + model + ' исчерпан. Таймер: 24 часа; затем попробую снова...';
+        ? '🌙 Дневной лимит ' + model + ' исчерпан. Повторная проверка ' + retryTime + '; переключаюсь на ' + nextModel + '...'
+        : '🌙 Дневной лимит ' + model + ' исчерпан. Повторная проверка ' + retryTime + '...';
+    }
     case 'fallback':
       return '🥴 Туплю на ' + model + '. Переключаюсь на ' + nextModel + '...';
     case 'exhausted':
