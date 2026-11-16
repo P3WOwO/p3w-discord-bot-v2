@@ -58,7 +58,83 @@ function formatImageError(err) {
   if (raw.includes('429') && /quota/i.test(raw)) {
     return '🖼 Лимит генерации картинок на ключе Gemini исчерпан (429). На бесплатном тарифе он очень маленький и сбрасывается примерно раз в сутки. Варианты: попробовать позже или подключить биллинг / другой ключ (GEMINI_API_KEY).';
   }
-  return `❌ Ошибка генерации: ${clampText(raw, 1800)}`;
+  return \`❌ Ошибка генерации: \${clampText(raw, 1800)}\`;
+}
+
+const VISION_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',
+]);
+const VISION_IMAGE_EXTENSIONS = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+};
+const MAX_VISION_IMAGES = 3;
+const MAX_VISION_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_VISION_TOTAL_BYTES = 12 * 1024 * 1024;
+
+function getImageAttachments(message) {
+  const attachments = message?.attachments;
+  const values = attachments?.values
+    ? [...attachments.values()]
+    : Array.isArray(attachments) ? attachments : [];
+  return values.filter(attachment => {
+    const mimeType = String(attachment?.contentType || attachment?.content_type || '').split(';')[0].toLowerCase();
+    const extension = String(attachment?.name || attachment?.filename || '').split('.').pop().toLowerCase();
+    return VISION_IMAGE_MIME_TYPES.has(mimeType) || Boolean(VISION_IMAGE_EXTENSIONS[extension]);
+  });
+}
+
+async function downloadGeminiImages(attachments) {
+  const files = Array.isArray(attachments) ? attachments : [];
+  if (files.length > MAX_VISION_IMAGES) {
+    throw new Error('Можно отправить не больше ' + MAX_VISION_IMAGES + ' изображений за один запрос.');
+  }
+
+  const images = [];
+  let totalBytes = 0;
+
+  for (const attachment of files) {
+    const url = new URL(String(attachment?.url || ''));
+    if (!['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) {
+      throw new Error('Не удалось проверить ссылку на изображение Discord.');
+    }
+
+    const extension = String(attachment?.name || attachment?.filename || '').split('.').pop().toLowerCase();
+    const declaredMimeType = String(attachment?.contentType || attachment?.content_type || '').split(';')[0].toLowerCase();
+    const fallbackMimeType = VISION_IMAGE_EXTENSIONS[extension];
+    const mimeType = VISION_IMAGE_MIME_TYPES.has(declaredMimeType) ? declaredMimeType : fallbackMimeType;
+    if (!mimeType) {
+      throw new Error('Поддерживаются изображения JPG, PNG, WebP, HEIC и HEIF.');
+    }
+
+    const declaredSize = Number(attachment?.size || 0);
+    if (declaredSize > MAX_VISION_IMAGE_BYTES) {
+      throw new Error('Файл «' + (attachment.name || 'изображение') + '» больше 8 МБ. Сожми его или отправь уменьшенную копию.');
+    }
+
+    const response = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error('Discord не смог отдать изображение (HTTP ' + response.status + ').');
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!bytes.length) throw new Error('Discord вернул пустой файл вместо изображения.');
+    if (bytes.length > MAX_VISION_IMAGE_BYTES) {
+      throw new Error('Файл «' + (attachment.name || 'изображение') + '» больше 8 МБ. Сожми его или отправь уменьшенную копию.');
+    }
+    totalBytes += bytes.length;
+    if (totalBytes > MAX_VISION_TOTAL_BYTES) {
+      throw new Error('Суммарный размер изображений превышает 12 МБ. Отправь меньше фото или уменьши их размер.');
+    }
+
+    const responseMimeType = String(response.headers?.get('content-type') || '').split(';')[0].toLowerCase();
+    const finalMimeType = VISION_IMAGE_MIME_TYPES.has(responseMimeType) ? responseMimeType : mimeType;
+    images.push({ mimeType: finalMimeType, data: bytes.toString('base64') });
+  }
+
+  return images;
 }
 
 function buildRandomStatus() {
@@ -299,9 +375,10 @@ class DiscordBot {
         .toJSON(),
       new SlashCommandBuilder()
         .setName('say')
-        .setDescription('Попросить бота ответить через Gemini')
-        .addStringOption(option => option.setName('text').setDescription('Текст сообщения').setRequired(true))
-        .toJSON(),
+        .setDescription('Попросить OwO ответить через Gemini (можно приложить фото)')
+        .addStringOption(option => option.setName('text').setDescription('Текст или вопрос по изображению').setRequired(false))
+        .addAttachmentOption(option => option.setName('image').setDescription('Фото для анализа').setRequired(false))
+        .toJSON(),       .toJSON(),
       new SlashCommandBuilder()
         .setName('image')
         .setDescription('Сгенерировать картинку через Gemini')
@@ -450,9 +527,9 @@ class DiscordBot {
 
   // ===== Чат с ИИ =====
 
-  async generateChatReply({ channel, userName, text, excludeMessageId = null, onStatus = null }) {
+  async generateChatReply({ channel, userName, text, images = [], excludeMessageId = null, onStatus = null }) {
     if (typeof onStatus === 'function') {
-      try { await onStatus({ phase: 'context' }); } catch {}
+      try { await onStatus({ phase: 'context', imageCount: images.length }); } catch {}
     }
     const channelName = channel?.name || '';
     const ctx = this.stateStore.getChannelContext(channel.id);
@@ -469,7 +546,7 @@ class DiscordBot {
       apiKey: this.config.GEMINI_API_KEY,
       models: this.config.GEMINI_CHAT_MODELS,
       systemInstruction: buildSystemInstruction({ basePrompt: this.config.BASE_PROMPT, summary: ctx.summary, channelName }),
-      prompt: buildContents({ turns, userName, text }),
+      prompt: buildContents({ turns, userName, text, images }),
       onStatus,
     });
 
@@ -512,7 +589,7 @@ class DiscordBot {
       console.error('Context summary failed:', err?.message || err);
     }
   }
-  async handleAiMessage({ message, text }) {
+  async handleAiMessage({ message, text, imageAttachments = null }) {
     if (!this.config.GEMINI_API_KEY) {
       return message.reply('⚠️ Gemini пока не подключён.');
     }
@@ -520,17 +597,36 @@ class DiscordBot {
     const wait = this.checkCooldown('ai', message.author.id, this.config.AI_USER_COOLDOWN_MS);
     if (wait) return message.react('⏳').catch(() => {});
 
+    const candidates = imageAttachments || getImageAttachments(message);
     const userName = message.member?.displayName || message.author.username;
-    const status = await message.reply({ content: '🧠 Думаю...', allowedMentions: { repliedUser: false } });
+    const status = await message.reply({
+      content: candidates.length ? '👀 Получил фото, сейчас рассмотрю...' : '🧠 Думаю...',
+      allowedMentions: { repliedUser: false },
+    });
     const reportProgress = createAiProgressUpdater(async content => {
       await status.edit({ content, allowedMentions: { parse: [] } }).catch(() => {});
     });
 
     try {
+      let images = [];
+      if (candidates.length) {
+        await status.edit('📥 Загружаю изображение для Gemini...').catch(() => {});
+        try {
+          images = await downloadGeminiImages(candidates);
+        } catch (imageError) {
+          console.warn('Gemini vision image download failed:', imageError?.message || imageError);
+          await status.edit('❌ Не получилось прочитать фото: ' + clampText(imageError?.message || imageError, 900)).catch(() => {});
+          return;
+        }
+      }
+
+      const requestText = String(text || '').trim()
+        || (images.length ? 'Посмотри на прикреплённое изображение и расскажи, что на нём.' : '');
       const { answer } = await this.generateChatReply({
         channel: message.channel,
         userName,
-        text,
+        text: requestText,
+        images,
         excludeMessageId: message.id,
         onStatus: reportProgress,
       });
@@ -539,32 +635,44 @@ class DiscordBot {
       for (const extra of parts.slice(1)) {
         await message.channel.send({ content: extra, allowedMentions: { parse: [] } }).catch(() => {});
       }
-      await this.rememberExchange(message.channel, userName, text, parts.join('\n'));
+
+      const memoryText = images.length && !String(text || '').trim()
+        ? '[прикреплено изображение]'
+        : requestText;
+      await this.rememberExchange(message.channel, userName, memoryText, parts.join('\n'));
     } catch (err) {
       console.error('Gemini error:', err);
       await status.edit('❌ Gemini сейчас перегружен или ответ не прошёл.').catch(() => {});
     }
   }
 
-  async handleSlashAi(interaction, text) {
+  async handleSlashAi(interaction, text, imageAttachment = null) {
     if (!this.config.GEMINI_API_KEY) {
       return interaction.reply({ content: '⚠️ Gemini пока не подключён.', ephemeral: true });
     }
     const wait = this.checkCooldown('ai', interaction.user.id, this.config.AI_USER_COOLDOWN_MS);
-    if (wait) return interaction.reply({ content: `⏳ Подожди ${wait}с.`, ephemeral: true });
+    if (wait) return interaction.reply({ content: \`⏳ Подожди \${wait}с.\`, ephemeral: true });
 
     await interaction.deferReply();
     const userName = interaction.member?.displayName || interaction.user.username;
     const reportProgress = createAiProgressUpdater(async content => {
       await interaction.editReply({ content }).catch(() => {});
     });
-    await interaction.editReply('🧠 Думаю...').catch(() => {});
+    await interaction.editReply(imageAttachment ? '👀 Получил фото, сейчас рассмотрю...' : '🧠 Думаю...').catch(() => {});
 
     try {
+      const images = imageAttachment ? await downloadGeminiImages([imageAttachment]) : [];
+      const requestText = String(text || '').trim()
+        || (images.length ? 'Посмотри на прикреплённое изображение и расскажи, что на нём.' : '');
+      if (!requestText) {
+        return interaction.editReply({ content: 'Напиши вопрос или приложи фото для анализа.' });
+      }
+
       const { answer } = await this.generateChatReply({
         channel: interaction.channel,
         userName,
-        text,
+        text: requestText,
+        images,
         onStatus: reportProgress,
       });
       const parts = splitMessage(String(answer || ''), 1900);
@@ -572,10 +680,11 @@ class DiscordBot {
       for (const extra of parts.slice(1)) {
         await interaction.followUp({ content: extra, allowedMentions: { parse: [] } }).catch(() => {});
       }
-      await this.rememberExchange(interaction.channel, userName, text, parts.join('\n'));
+      const memoryText = images.length && !String(text || '').trim() ? '[прикреплено изображение]' : requestText;
+      await this.rememberExchange(interaction.channel, userName, memoryText, parts.join('\n'));
     } catch (err) {
       console.error('Gemini slash error:', err);
-      await interaction.editReply({ content: '❌ Gemini сейчас перегружен или ответ не прошёл.' });
+      await interaction.editReply({ content: '❌ Gemini сейчас перегружен или ответ не прошёл: ' + clampText(err?.message || err, 700) });
     }
   }
 
@@ -914,7 +1023,12 @@ class DiscordBot {
     }
 
     if (interaction.commandName === 'say') {
-      return this.handleSlashAi(interaction, interaction.options.getString('text', true));
+      const text = interaction.options.getString('text') || '';
+      const image = interaction.options.getAttachment('image');
+      if (!text.trim() && !image) {
+        return interaction.reply({ content: 'Напиши вопрос или приложи фото для анализа.', ephemeral: true });
+      }
+      return this.handleSlashAi(interaction, text, image);
     }
 
     if (interaction.commandName === 'image') {
@@ -1003,6 +1117,7 @@ class DiscordBot {
 
     const botId = this.client.user?.id;
     const rawContent = String(message.content || '').trim();
+    const imageAttachments = getImageAttachments(message);
     const prefix = String(this.config.PREFIX || '!').trim() || '!';
     const prefixUsed = rawContent.startsWith(prefix)
       ? prefix
@@ -1046,8 +1161,9 @@ class DiscordBot {
 
       if (cmd === 'say') {
         const promptText = args.join(' ').trim();
-        if (!promptText) return message.reply(`Напиши текст после \`${prefix}say\`.`);
-        return this.handleAiMessage({ message, text: promptText });
+        const imageAttachments = getImageAttachments(message);
+        if (!promptText && !imageAttachments.length) return message.reply(\`Напиши текст после \\\`\${prefix}say\\\` или приложи фото.\`);
+        return this.handleAiMessage({ message, text: promptText, imageAttachments });
       }
 
       if (cmd === 'image' || cmd === 'img') {
@@ -1065,12 +1181,12 @@ class DiscordBot {
     }
 
     if (directMention || isReplyToBot) {
-      const text = cleanMentionText.replace(/^[\s,:\-]+/, '').trim();
-      if (!text) {
+      const text = cleanMentionText.replace(/^[\s,:-]+/, '').trim();
+      if (!text && !imageAttachments.length) {
         return message.reply({ content: 'Да, я тут. Напиши, что нужно.', allowedMentions: { repliedUser: false } }).catch(() => {});
       }
-      if (isImageRequest(text)) return this.handleImageRequest({ message, text, ratio: '16:9' });
-      return this.handleAiMessage({ message, text });
+      if (text && isImageRequest(text)) return this.handleImageRequest({ message, text, ratio: '16:9' });
+      return this.handleAiMessage({ message, text, imageAttachments });
     }
   }
 
