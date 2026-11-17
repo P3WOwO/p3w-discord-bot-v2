@@ -1,0 +1,50 @@
+{
+  "id": "steam-394360-2026-11-14-70off",
+  "category": "sales",
+  "title": "Hearts of Iron IV — скидка 70% в Steam",
+  "description": "Hearts of Iron IV — глобальная стратегия Paradox о Второй мировой войне.\n\n**Скидка:** 70% на базовую игру, предложение действует до 26 ноября 2026 года.\n\n**Как получить:** купить в Steam; после покупки игра останется в библиотеке навсегда.\n\n**Регион/ограничения:** подтверждены витрины России (RUB), Казахстана (KZT), Украины (UAH), США (USD) и еврозоны (EUR). В Украине текущие 404 UAH выше минимума 269 UAH, зафиксированного SteamDB с 2 июля 2026 года. Точное время окончания Steam не указывает. [История региональных цен SteamDB](https://steamdb.com/en/tools/steam-price-history/hearts-of-iron-iv).",
+  "source": "Steam / Paradox Interactive; SteamDB — региональные цены и история",
+  "url": "https://store.steampowered.com/app/394360/Hearts_of_Iron_IV/",
+  "price": "$14.99",
+  "old_price": "$49.99",
+  "discount": "70%",
+  "expires_at": "2026-11-26",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/394360/67bbd0057627fc2244793bcdd09260c2539499cf/header.jpg?t=1782396105",
+  "regional_prices": [
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "914",
+      "old_price": "3049",
+      "discount": "70%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "6030",
+      "old_price": "20100",
+      "discount": "70%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "404",
+      "old_price": "1349",
+      "discount": "70%"
+    },
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "14.99",
+      "old_price": "49.99",
+      "discount": "70%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "14.99",
+      "old_price": "49.99",
+      "discount": "70%"
+    }
+  ]
+}
