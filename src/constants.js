@@ -6,7 +6,7 @@ const MAX_RECENT_FETCH = 10;
 
 const HOME_GUILD_ONLY_REPLY = 'Увы, я не на родном сервере, тут я молчу :(';
 
-const CHAT_TEMPERATURE = 0.8;
+const CHAT_TEMPERATURE = 1.0;
 const CHAT_MAX_OUTPUT_TOKENS = 900;
 
 // Контекст чата: скользящее окно последних сообщений + авто-выжимка старых.

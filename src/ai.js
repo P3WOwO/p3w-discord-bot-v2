@@ -2,10 +2,10 @@ const { SYSTEM_PROMPT, CHAT_TEMPERATURE, CHAT_MAX_OUTPUT_TOKENS } = require('./c
 
 const API_BASE = 'https://generativelanguage.googleapis.com';
 const REQUEST_TIMEOUT_MS = 30 * 1000;
-const PROBE_TIMEOUT_MS = 25 * 1000;
-const SLOW_RESPONSE_THRESHOLD_MS = 6 * 1000;
+const PROBE_TIMEOUT_MS = REQUEST_TIMEOUT_MS;
+const SLOW_RESPONSE_THRESHOLD_MS = 12 * 1000;
 const MODEL_PROBE_INTERVAL_MS = 10 * 60 * 1000;
-const MAX_MODELS_PER_REQUEST = 3;
+const MAX_MODELS_PER_REQUEST = 5;
 
 function timeoutSignal(ms = REQUEST_TIMEOUT_MS) {
   return AbortSignal.timeout(ms);
@@ -69,7 +69,17 @@ function configureGeminiModelHealth(snapshot = {}, persist = null) {
         lastSuccessAt: Number(raw.lastSuccessAt || 0),
       });
       const health = modelHealth.get(model);
-      if (health.needsProbe && health.nextProbeAt < now && health.cooldownUntil < now) {
+      const previousError = String(health.lastError || '').toLowerCase();
+      const explicitDailyQuota = /(daily quota|per[_ -]?day|perday|generateRequestsPerDay|requestsPerDay|tokensPerDay)/i.test(previousError);
+      const legacyTransientFailure = /\b503\b|\b429\b|resource[_ -]?exhausted|high demand|temporarily unavailable|timeout|aborted|fetch failed/i.test(previousError);
+
+      // Older releases incorrectly persisted generic 503/429/RESOURCE_EXHAUSTED
+      // responses as a 10-minute or 24-hour outage. Recheck these once after
+      // deploy unless the stored error explicitly identifies a daily quota.
+      if (health.needsProbe && legacyTransientFailure && !explicitDailyQuota) {
+        health.cooldownUntil = 0;
+        health.nextProbeAt = now;
+      } else if (health.needsProbe && health.nextProbeAt < now && health.cooldownUntil < now) {
         health.nextProbeAt = now;
       }
     }
@@ -90,8 +100,9 @@ const MODEL_UNAVAILABLE_COOLDOWN_MS = 30 * 60 * 1000;
 const MODEL_ACCESS_COOLDOWN_MS = 10 * 60 * 1000;
 const EMPTY_RESPONSE_COOLDOWN_MS = MODEL_PROBE_INTERVAL_MS;
 const QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
-const TRANSIENT_COOLDOWN_MS = MODEL_PROBE_INTERVAL_MS;
+const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
+const OVERLOAD_COOLDOWN_MS = 45 * 1000;
+const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 
 function getModelHealth(model) {
   if (!modelHealth.has(model)) {
@@ -128,8 +139,10 @@ function selectModelsByHealth(models) {
     if (health.needsProbe && health.nextProbeAt > now) continue;
 
     const isProbe = health.needsProbe && health.nextProbeAt <= now;
+    // A recovery probe must not jump ahead of a model that is already known
+    // to work; test degraded models only after healthy/untested candidates.
     const score = isProbe
-      ? -1000 + index
+      ? REQUEST_TIMEOUT_MS * 4 + index * 1000
       : health.averageLatencyMs == null
         ? REQUEST_TIMEOUT_MS + index * 1000
         : health.averageLatencyMs;
@@ -142,7 +155,7 @@ function selectModelsByHealth(models) {
   return candidates;
 }
 
-function recordModelSuccess(model, elapsedMs, comparisonModels = []) {
+function recordModelSuccess(model, elapsedMs) {
   const health = getModelHealth(model);
   health.successes++;
   health.lastSuccessAt = Date.now();
@@ -151,23 +164,13 @@ function recordModelSuccess(model, elapsedMs, comparisonModels = []) {
     ? elapsedMs
     : health.averageLatencyMs * 0.7 + elapsedMs * 0.3;
 
-  const fastestAlternative = comparisonModels
-    .filter(candidate => candidate !== model)
-    .map(candidate => getModelHealth(candidate).averageLatencyMs)
-    .filter(value => Number.isFinite(value) && value > 0)
-    .sort((a, b) => a - b)[0];
-  const muchSlowerThanAlternative = fastestAlternative != null && elapsedMs > fastestAlternative * 1.8;
-  const isSlow = elapsedMs >= SLOW_RESPONSE_THRESHOLD_MS || muchSlowerThanAlternative;
-
-  if (isSlow) {
-    health.needsProbe = true;
-    health.cooldownUntil = Date.now() + MODEL_PROBE_INTERVAL_MS;
-    health.nextProbeAt = health.cooldownUntil;
-    console.warn('[AI] ' + model + ' медленнее оптимального варианта (' + (elapsedMs / 1000).toFixed(1) + 'с); убираю её из обычного выбора на 10 мин. и позже проверю снова.');
-  } else {
-    health.needsProbe = false;
-    health.cooldownUntil = 0;
-    health.nextProbeAt = 0;
+  // Latency affects preference, not availability. A slow successful model
+  // remains a valid fallback and must never be quarantined just for being slow.
+  health.needsProbe = false;
+  health.cooldownUntil = 0;
+  health.nextProbeAt = 0;
+  if (elapsedMs >= SLOW_RESPONSE_THRESHOLD_MS) {
+    console.info('[AI] ' + model + ' успешно ответила за ' + (elapsedMs / 1000).toFixed(1) + 'с; оставляю её доступной как fallback.');
   }
   saveGeminiModelHealth();
 }
@@ -200,18 +203,33 @@ function isShortRateLimitError(message) {
   return /(per[_ -]?(minute|second)|requests?[_ -]?per[_ -]?(minute|second)|tokens?[_ -]?per[_ -]?(minute|second)|requestsperminute|tokensperminute|\brpm\b|\btpm\b)/i.test(message);
 }
 
-function isDailyQuotaError(message) {
-  if (/(daily quota|per[_ -]?day|requests?[_ -]?per[_ -]?day|generateRequestsPerDay|free[_ -]?tier.*day)/i.test(message)) return true;
-  if (isShortRateLimitError(message)) return false;
-  return /(quota exceeded|exceeded.*quota|resource[_ -]?exhausted|limit:\s*0|free[_ -]?tier.*quota)/i.test(message);
+function getQuotaDiagnosticText(err) {
+  const apiError = err && err.apiError;
+  const details = Array.isArray(apiError?.details) ? apiError.details : [];
+  return [
+    apiError?.status,
+    apiError?.message,
+    ...details.map(detail => {
+      try { return JSON.stringify(detail); } catch { return ''; }
+    }),
+    err?.message,
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function isDailyQuotaError(err) {
+  const diagnostic = getQuotaDiagnosticText(err);
+  if (isShortRateLimitError(diagnostic)) return false;
+  // RESOURCE_EXHAUSTED alone is ambiguous: Google also uses it for short
+  // rate limits. Only a per-day marker or the explicit QUOTA_EXCEEDED reason
+  // is allowed to create a 24-hour cooldown.
+  return /(daily quota|per[_ -]?day|perday|generateRequestsPerDay|requestsPerDay|tokensPerDay|quota[_ -]?exceeded)/i.test(diagnostic);
 }
 
 function getModelCooldown(err) {
   const message = getErrorMessage(err);
   const status = Number(err && (err.statusCode || err.status) || 0);
 
-  // A depleted daily/free-tier quota is parked for a full day, then retried.
-  if (isDailyQuotaError(message)) return QUOTA_COOLDOWN_MS;
+  if (isDailyQuotaError(err)) return QUOTA_COOLDOWN_MS;
   if (status === 404 || (status === 400 && isModelSpecificFailure(err))) {
     return MODEL_UNAVAILABLE_COOLDOWN_MS;
   }
@@ -219,10 +237,11 @@ function getModelCooldown(err) {
   if (status === 429 || ((status === 403 || !status) && isShortRateLimitError(message))) {
     return RATE_LIMIT_COOLDOWN_MS;
   }
-  if ([500, 502, 503, 504].includes(status)) return TRANSIENT_COOLDOWN_MS;
+  if (status === 503) return OVERLOAD_COOLDOWN_MS;
+  if ([500, 502, 504].includes(status)) return TRANSIENT_COOLDOWN_MS;
   if (/api вернул пустой ответ|empty response/i.test(message)) return EMPTY_RESPONSE_COOLDOWN_MS;
   if (!status && /timeout|aborted|fetch failed|network|econn|socket/i.test(message)) {
-    return MODEL_PROBE_INTERVAL_MS;
+    return TRANSIENT_COOLDOWN_MS;
   }
   return 0;
 }
@@ -254,19 +273,19 @@ async function askGemini({
   apiKey,
   model,
   prompt,
-  retries = 1,
+  retries = 2,
   timeoutMs = REQUEST_TIMEOUT_MS,
   temperature = CHAT_TEMPERATURE,
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
   systemInstruction = '',
-  _tokenExpansionAttempt = false,
 }) {
   if (!apiKey) throw new Error('Нет GEMINI_API_KEY');
 
   const url = API_BASE + '/v1beta/models/' + model + ':generateContent';
-  const maxAttempts = Math.max(1, Math.min(Number(retries) || 1, 2));
+  const maxAttempts = Math.max(1, Math.min(Number(retries) || 2, 3));
   const isGemma = /^gemma-/i.test(model);
+  const isGemini3 = /^gemini-3(?:[.-])/i.test(model);
 
   // Gemma 4's hosted API is used without systemInstruction. Fold the character
   // and memory into the first user turn instead of sending an unsupported field.
@@ -303,9 +322,9 @@ async function askGemini({
           ...(!isGemma && systemInstruction ? { systemInstruction: { parts: [{ text: systemInstruction }] } } : {}),
           contents,
           generationConfig: {
-            temperature,
+            // Gemini 3 recommends keeping sampling parameters at API defaults.
+            ...(!isGemini3 ? { temperature, topP: 0.95 } : {}),
             maxOutputTokens,
-            topP: 0.95,
             ...generationConfig,
           },
         }),
@@ -313,12 +332,50 @@ async function askGemini({
 
       if (!res.ok) {
         const errText = await res.text();
-        const error = new Error('Gemini ' + model + ' ' + res.status + ': ' + String(errText).slice(0, 700));
+        let apiError = null;
+        try {
+          const parsed = JSON.parse(errText);
+          apiError = parsed?.error || null;
+        } catch {}
+        const detailSummary = Array.isArray(apiError?.details)
+          ? apiError.details.map(detail => [
+              detail?.reason,
+              detail?.quotaId,
+              detail?.quotaMetric,
+              detail?.metadata?.quotaId,
+              detail?.metadata?.quotaMetric,
+            ].filter(Boolean).join(' ')).filter(Boolean).join('; ')
+          : '';
+        const errorSummary = [
+          apiError?.status,
+          apiError?.message,
+          detailSummary,
+        ].filter(Boolean).join(' | ') || String(errText).replace(/\s+/g, ' ').trim().slice(0, 350);
+        const error = new Error('Gemini ' + model + ' ' + res.status + ': ' + errorSummary.slice(0, 500));
         error.statusCode = res.status;
         error.model = model;
-        // 429/403/404 are handled by moving to the next model. Only retry transient 5xx here.
-        if ([500, 502, 503, 504].includes(res.status) && attempt < maxAttempts) {
-          await sleep(1000);
+        error.apiError = apiError;
+
+        const retryAfter = res.headers.get('retry-after');
+        if (retryAfter) {
+          const seconds = Number(retryAfter);
+          const dateMs = Date.parse(retryAfter);
+          error.retryAfterMs = Number.isFinite(seconds) && seconds > 0
+            ? seconds * 1000
+            : Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : 0;
+        }
+        if (!error.retryAfterMs && Array.isArray(apiError?.details)) {
+          const retryInfo = apiError.details.find(detail => /RetryInfo/i.test(detail?.['@type'] || ''));
+          const match = String(retryInfo?.retryDelay || '').match(/^(\d+(?:\.\d+)?)s$/);
+          if (match) error.retryAfterMs = Number(match[1]) * 1000;
+        }
+
+        // Retry transient server overloads briefly. A long Retry-After is
+        // handed to the next model instead of blocking the whole Discord reply.
+        if ([500, 502, 503, 504].includes(res.status) && attempt < maxAttempts
+          && (!error.retryAfterMs || error.retryAfterMs <= 8000)) {
+          const delayMs = Math.max(250, Math.min(error.retryAfterMs || 800 * (2 ** (attempt - 1)), 5000));
+          await sleep(delayMs);
           continue;
         }
         throw error;
@@ -336,24 +393,11 @@ async function askGemini({
       if (blockReason || ['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
         return 'Не могу ответить на это.';
       }
-      if (finishReason === 'MAX_TOKENS' && answer && !_tokenExpansionAttempt) {
-        const expandedMaxOutputTokens = Math.min(Math.max(Number(maxOutputTokens) * 2, 2048), 4096);
-        console.warn('[AI] ' + model + ' hit MAX_TOKENS; retrying once with maxOutputTokens=' + expandedMaxOutputTokens);
-        return askGemini({
-          apiKey,
-          model,
-          prompt,
-          retries: 1,
-          timeoutMs,
-          temperature,
-          maxOutputTokens: expandedMaxOutputTokens,
-          generationConfig,
-          systemInstruction,
-          _tokenExpansionAttempt: true,
-        });
-      }
       if (finishReason === 'MAX_TOKENS' && answer) {
-        console.warn('[AI] ' + model + ' still hit MAX_TOKENS after expanded retry; returning the available text');
+        // A MAX_TOKENS response still contains usable text. Never discard it
+        // for a second identical generation request that can time out.
+        console.warn('[AI] ' + model + ' hit MAX_TOKENS; returning the available partial answer.');
+        return answer;
       }
       if (answer) return answer;
 
@@ -380,7 +424,7 @@ async function askGeminiWithFallback({
   apiKey,
   models,
   prompt,
-  retries = 1,
+  retries = 2,
   temperature = CHAT_TEMPERATURE,
   maxOutputTokens = CHAT_MAX_OUTPUT_TOKENS,
   generationConfig = {},
