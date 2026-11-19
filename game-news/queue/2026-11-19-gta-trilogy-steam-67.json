@@ -1,0 +1,43 @@
+{
+  "id": "steam-sub-817628-2026-11-19",
+  "category": "sales",
+  "title": "GTA: The Trilogy – The Definitive Edition — скидка 67% в Steam",
+  "description": "Сборник включает ремастеры GTA III, Vice City и San Andreas — три отдельные сюжетные кампании в Definitive Edition.\n\n**Скидка:** 67%; цена в США — $19.79 вместо $59.99.\n\n**Как получить:** купить пакет в Steam. После покупки все три игры останутся в библиотеке навсегда.\n\n**Регион/ограничения:** подтверждены витрины Казахстана (KZT), Украины (UAH), США (USD) и еврозоны (EUR). Для России SteamDB показывает N/A — цена не подтверждена. Предложение заканчивается 19 ноября 2026 года в 18:00 UTC (21:00 Europe/Minsk).",
+  "source": "Steam; SteamDB (региональные цены)",
+  "url": "https://store.steampowered.com/sub/817628/",
+  "price": "$19.79",
+  "old_price": "$59.99",
+  "discount": "67%",
+  "expires_at": "2026-11-19T18:00:00Z",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/subs/817628/capsule_616x353.jpg?t=1752520763",
+  "regional_prices": [
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "6599",
+      "old_price": "19999",
+      "discount": "67%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "494",
+      "old_price": "1499",
+      "discount": "67%"
+    },
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "19.79",
+      "old_price": "59.99",
+      "discount": "67%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "19.79",
+      "old_price": "59.99",
+      "discount": "67%"
+    }
+  ]
+}
