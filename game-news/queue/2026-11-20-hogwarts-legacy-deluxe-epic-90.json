@@ -1,0 +1,30 @@
+{
+  "id": "epic-hogwarts-legacy-deluxe-black-friday-2026",
+  "category": "sales",
+  "title": "Hogwarts Legacy: Digital Deluxe Edition — скидка 90% в Epic Games Store",
+  "description": "Открытая RPG во вселенной Гарри Поттера. Digital Deluxe Edition включает Thestral Mount, Dark Arts Battle Arena, косметический набор Dark Arts и квест Haunted Hogsmeade Shop.\n\n**Скидка:** 90% на Digital Deluxe Edition.\n\n**Как получить:** купить издание в Epic Games Store.\n\n**Регион/ограничения:** подтверждены витрины США (USD) и еврозоны (EUR); RUB, KZT и UAH не подтверждены. Акция заканчивается 1 декабря 2026 года в 16:00 UTC. Зачёркнутая цена Epic со звёздочкой — минимум за 30 дней до скидки.",
+  "source": "Epic Games Store",
+  "url": "https://store.epicgames.com/p/hogwarts-legacy--digital-deluxe-edition",
+  "source_url": "https://store.epicgames.com/sales-and-specials/black-friday",
+  "price": "$6.99",
+  "old_price": "$69.99",
+  "discount": "90%",
+  "expires_at": "2026-12-01T16:00:00Z",
+  "image_url": "https://cdn2.unrealengine.com/egs-hogwartslegacydigitaldeluxeedition-avalanchesoftware-editions-g1c-00-1920x1080-a9d302b8a7c4.jpg?h=720&quality=medium&resize=1&w=1280",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "6.99",
+      "old_price": "69.99",
+      "discount": "90%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "6.99",
+      "old_price": "69.99",
+      "discount": "90%"
+    }
+  ]
+}
