@@ -1,0 +1,21 @@
+{
+  "id": "steam-far-cry-franchise-bundle-2026-11-20",
+  "category": "sales",
+  "title": "Far Cry Franchise Bundle — 9 игр серии со скидкой 68% в Steam",
+  "description": "Девять игр серии в одном наборе: Far Cry, Far Cry 2, Far Cry 3, Blood Dragon, Far Cry 4, Primal, Far Cry 5, New Dawn и Far Cry 6.\n\n**Скидка:** 68% на Far Cry Franchise Bundle.\n\n**Как получить:** купить набор в Steam.\n\n**Регион/ограничения:** подтверждена цена Казахстана (KZT); цены и доступность в RUB, UAH, USD и EUR не подтверждены. Дата окончания на странице набора не указана.",
+  "source": "Steam",
+  "url": "https://store.steampowered.com/bundle/5583/Far_Cry_Franchise_Bundle/",
+  "price": "23 555 ₸",
+  "old_price": "72 519 ₸",
+  "discount": "68%",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/bundles/5583/dpxcgoi8rd496ok8/1e4fe8b26e7aac746ff5e79e72268bea3583de06/header_ratio.jpg?t=1770744156",
+  "regional_prices": [
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "23555",
+      "old_price": "72519",
+      "discount": "68%"
+    }
+  ]
+}
