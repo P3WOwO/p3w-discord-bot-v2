@@ -1,0 +1,30 @@
+{
+  "id": "epic-red-dead-redemption-2-ultimate-black-friday-2026",
+  "category": "sales",
+  "title": "Red Dead Redemption 2: Ultimate Edition — скидка 80% в Epic Games Store",
+  "description": "Ultimate Edition включает Red Dead Redemption 2, Red Dead Online, весь контент Special Edition и дополнительные бонусы для сюжетного режима и онлайна.\n\n**Скидка:** 80% на Ultimate Edition.\n\n**Как получить:** купить издание в Epic Games Store; для Red Dead Online потребуется Rockstar Social Club.\n\n**Регион/ограничения:** подтверждены витрины США (USD) и еврозоны (EUR); RUB, KZT и UAH не подтверждены. Акция заканчивается 1 декабря 2026 года в 16:00 UTC. Зачёркнутая цена Epic со звёздочкой — минимум за 30 дней до скидки.",
+  "source": "Epic Games Store",
+  "url": "https://store.epicgames.com/p/red-dead-redemption-2--ultimate-edition",
+  "source_url": "https://store.epicgames.com/sales-and-specials/black-friday",
+  "price": "$19.99",
+  "old_price": "$99.99",
+  "discount": "80%",
+  "expires_at": "2026-12-01T16:00:00Z",
+  "image_url": "https://cdn2.unrealengine.com/Diesel/productv2/red-dead-redemption-2/ultimate-edition/RDR2PC1339_EditionOverview_PC_Stadia_UE_V02-1920x1080-5f4418d0837352ad0a8043b81676f374fa25de1f.jpg?h=720&quality=medium&resize=1&w=1280",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "19.99",
+      "old_price": "99.99",
+      "discount": "80%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "19.99",
+      "old_price": "99.99",
+      "discount": "80%"
+    }
+  ]
+}
