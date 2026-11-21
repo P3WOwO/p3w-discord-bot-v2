@@ -1,0 +1,43 @@
+{
+  "id": "steam-watch-dogs-complete-2026-12-02",
+  "title": "Watch_Dogs Complete — скидка 80% в Steam",
+  "description": "Полное издание первой Watch_Dogs: базовая игра, Season Pass, Bad Blood, Access Granted Pack и Conspiracy.\n\n**Скидка:** 80% до 2 декабря 2026 года (точное время окончания Steam не указывает).\n\n**Как получить:** купить пакет Watch_Dogs Complete в Steam.\n\n**Регион/ограничения:** подтверждены USD, EUR, UAH и KZT; для России SteamDB показывает отсутствие установленной цены. Некоторые компоненты могут требовать сторонний аккаунт Ubisoft/Uplay.",
+  "source": "Steam (региональные цены сверены по SteamDB)",
+  "url": "https://store.steampowered.com/sub/85571/",
+  "price": "5.99",
+  "old_price": "29.99",
+  "discount": "80%",
+  "expires_at": "2026-12-02",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/subs/85571/header.jpg?t=1554742301",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "5.99",
+      "old_price": "29.99",
+      "discount": "80%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "5.99",
+      "old_price": "29.99",
+      "discount": "80%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "129",
+      "old_price": "649",
+      "discount": "80%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "2259",
+      "old_price": "11299",
+      "discount": "80%"
+    }
+  ],
+  "category": "sales"
+}
