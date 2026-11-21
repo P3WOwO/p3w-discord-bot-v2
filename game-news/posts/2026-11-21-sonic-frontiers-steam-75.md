@@ -1,4 +1,4 @@
-![Sonic Frontiers]( https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1237320/header.jpg?t=1783493175 )
+![Sonic Frontiers](https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1237320/header.jpg?t=1783493175)
 
 # Sonic Frontiers — скидка 75% в Steam
 
