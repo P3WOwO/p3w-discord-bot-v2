@@ -1,0 +1,22 @@
+{
+  "id": "epic-watch-dogs-2-gold-black-friday-2026",
+  "title": "Watch Dogs 2 Gold Edition — скидка 85% в Epic Games Store",
+  "description": "Gold Edition включает базовую игру, Deluxe Pack с двумя наборами кастомизации и Season Pass.\n\n**Скидка:** 85%; цена США — $11.99 вместо отображаемых $79.99. Акция заканчивается 1 декабря 2026 года в 16:00 UTC. Сноска Epic уточняет, что зачёркнутая цена — минимальная цена в Epic Games Store за 30 дней до скидки.\n\n**Как получить:** купить в Epic Games Store; для активации и игры нужны интернет и действующий аккаунт Ubisoft.\n\n**Регион/ограничения:** подтверждена только витрина США (USD); цены и доступность для RUB, KZT, UAH и EUR не подтверждены.",
+  "source": "Epic Games Store",
+  "url": "https://store.epicgames.com/p/watch-dogs-2--gold-edition",
+  "price": "11.99",
+  "old_price": "79.99",
+  "discount": "85%",
+  "expires_at": "2026-12-01T16:00:00Z",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/447040/header.jpg?t=1751986887",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "11.99",
+      "old_price": "79.99",
+      "discount": "85%"
+    }
+  ],
+  "category": "sales"
+}
