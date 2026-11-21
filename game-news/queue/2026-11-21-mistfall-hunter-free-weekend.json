@@ -1,0 +1,46 @@
+{
+  "id": "steam-mistfall-hunter-free-weekend-2026-11-23",
+  "title": "Mistfall Hunter — бесплатные выходные в Steam",
+  "description": "Mistfall Hunter — тёмное фэнтези с PvPvE-экстракцией и боями в формате action RPG.\n\n**Раздача:** Free Weekend до 23 ноября 2026 года, 18:00 UTC. Доступен полный контент, но это временный доступ — игра не останется в библиотеке.\n\n**Как получить:** открыть страницу Steam и нажать «Играть»; подписка не нужна. После окончания выходных для продолжения понадобится покупка.\n\n**Регион/ограничения:** покупная версия также со скидкой 20% до окончания акции; цены по регионам указаны отдельно.",
+  "source": "Steam (официальное объявление Bellring Games; региональные цены сверены по SteamDB)",
+  "url": "https://store.steampowered.com/app/3282300/Mistfall_Hunter/",
+  "source_url": "https://steamcommunity.com/app/3282300/allnews/",
+  "price": "Бесплатно (Free Weekend)",
+  "discount": "Временный доступ; покупная скидка 20%",
+  "expires_at": "2026-11-23T18:00:00Z",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/3282300/0eaea5dea9ba676b9d32148d2c650093a20d5b6f/header_alt_assets_11.jpg?t=1795002765",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "19.99",
+      "old_price": "24.99",
+      "discount": "20%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "19.99",
+      "discount": "20%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "424",
+      "discount": "20%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "5632",
+      "discount": "20%"
+    },
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "799",
+      "discount": "20%"
+    }
+  ],
+  "category": "free"
+}
