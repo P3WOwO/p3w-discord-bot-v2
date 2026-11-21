@@ -1,0 +1,40 @@
+{
+  "id": "steam-sonic-frontiers-black-friday-2026",
+  "title": "Sonic Frontiers — скидка 75% в Steam",
+  "description": "Приключение Sonic Team с открытыми зонами, скоростными боями и исследованием островов; предложение относится к базовой игре.\n\n**Скидка:** 75% до 30 ноября 2026 года (точное время окончания Steam не указывает).\n\n**Как получить:** купить базовую игру в Steam; подписка не нужна.\n\n**Регион/ограничения:** подтверждены USD, EUR, UAH и KZT; RUB в SteamDB отмечен как N/A. Текущая цена в Украине совпадает с минимумом, зафиксированным SteamDB.",
+  "source": "Steam (региональные цены и история сверены по SteamDB)",
+  "url": "https://store.steampowered.com/app/1237320/Sonic_Frontiers/",
+  "price": "9.99",
+  "old_price": "39.99",
+  "discount": "75%",
+  "expires_at": "2026-11-30",
+  "image_url": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1237320/header.jpg?t=1783493175",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "9.99",
+      "old_price": "39.99",
+      "discount": "75%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "9.99",
+      "discount": "75%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "374",
+      "discount": "75%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "4737",
+      "discount": "75%"
+    }
+  ],
+  "category": "sales"
+}
