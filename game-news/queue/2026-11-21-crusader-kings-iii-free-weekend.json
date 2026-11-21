@@ -1,0 +1,46 @@
+{
+  "id": "steam-crusader-kings-iii-free-weekend-2026-11-23",
+  "title": "Crusader Kings III — бесплатные выходные в Steam",
+  "description": "Базовая Crusader Kings III временно доступна для игры в Steam.\n\n**Раздача:** Free Weekend до 23 ноября 2026 года, 10:00 (часовой пояс на странице Steam не указан). Это временный доступ — игра не останется в библиотеке.\n\n**Как получить:** открыть страницу Steam и нажать «Играть»; подписка не нужна. DLC не входят.\n\n**Регион/ограничения:** покупная версия одновременно со скидкой 70% до 30 ноября; цены по регионам указаны отдельно.",
+  "source": "Steam (региональные цены сверены по SteamDB)",
+  "url": "https://store.steampowered.com/app/1158310/Crusader_Kings_III/",
+  "price": "Бесплатно (Free Weekend)",
+  "discount": "Временный доступ; покупная скидка 70%",
+  "expires_at": "2026-11-23",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1158310/9d06a62089bd4747589431ac1c8bc3112841d528/header_alt_assets_12.jpg?t=1795167672",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "14.99",
+      "old_price": "49.99",
+      "discount": "70%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "14.99",
+      "old_price": "49.99",
+      "discount": "70%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "404",
+      "discount": "70%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "6030",
+      "discount": "70%"
+    },
+    {
+      "region": "Россия",
+      "currency": "RUB",
+      "price": "914",
+      "discount": "70%"
+    }
+  ],
+  "category": "free"
+}
