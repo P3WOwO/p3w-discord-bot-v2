@@ -1,0 +1,40 @@
+{
+  "id": "steam-total-war-warhammer-iii-black-friday-2026",
+  "title": "Total War: WARHAMMER III — скидка 85% в Steam",
+  "description": "Масштабная стратегия Creative Assembly по вселенной Warhammer; предложение относится к базовой игре, DLC продаются отдельно.\n\n**Скидка:** 85% до 30 ноября 2026 года (точное время окончания Steam не указывает).\n\n**Как получить:** купить базовую игру в Steam; подписка не нужна.\n\n**Регион/ограничения:** подтверждены USD, EUR, UAH и KZT; RUB в SteamDB отмечен как N/A. Текущая цена в Украине совпадает с минимумом, зафиксированным SteamDB.",
+  "source": "Steam (региональные цены и история сверены по SteamDB)",
+  "url": "https://store.steampowered.com/app/1142710/Total_War_WARHAMMER_III/",
+  "price": "8.99",
+  "old_price": "59.99",
+  "discount": "85%",
+  "expires_at": "2026-11-30",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1142710/header.jpg?t=1790321531",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "8.99",
+      "old_price": "59.99",
+      "discount": "85%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "8.99",
+      "discount": "85%"
+    },
+    {
+      "region": "Украина",
+      "currency": "UAH",
+      "price": "284",
+      "discount": "85%"
+    },
+    {
+      "region": "Казахстан",
+      "currency": "KZT",
+      "price": "3375",
+      "discount": "85%"
+    }
+  ],
+  "category": "sales"
+}
