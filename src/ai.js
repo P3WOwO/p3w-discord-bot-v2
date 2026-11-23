@@ -56,7 +56,7 @@ function isSupportedChatModel(model) {
   const majorVersion = Number(versionText.split('.')[0] || 0);
   if (family === 'gemini' && majorVersion < 3) return false;
   if (family === 'gemma' && majorVersion < 4) return false;
-  if (/(?:^|-)(?:image|imagen|live|tts|transcribe|audio|embedding|robotics|veo|omni|computer-use)(?:-|$)/i.test(id)) {
+  if (/(?:^|-)(?:image|imagen|live|tts|transcribe|audio|embedding|robotics|veo|omni|computer-use|customtools)(?:-|$)/i.test(id)) {
     return false;
   }
 
@@ -154,43 +154,53 @@ async function probePreferredGeminiModel({ apiKey, models = [] } = {}) {
     ...discoveredChatModels,
   ]);
   const now = Date.now();
-  const model = ordered.find(candidate => {
+  const candidates = ordered.filter(candidate => {
     const health = getModelHealth(candidate);
     if (health.probeInFlight) return false;
     const isPersistedDailyQuota = /(daily quota|per[_ -]?day|perday|generateRequestsPerDay|requestsPerDay|tokensPerDay|quota[_ -]?exceeded)/i.test(health.lastError);
     return !(isPersistedDailyQuota && health.cooldownUntil > now);
-  });
+  }).slice(0, 3);
 
-  if (!model) return { ok: false, skipped: true, reason: 'all_candidates_busy_or_daily_limited' };
+  if (!candidates.length) return { ok: false, skipped: true, reason: 'all_candidates_busy_or_daily_limited' };
 
-  const health = getModelHealth(model);
-  health.probeInFlight = true;
-  const startedAt = Date.now();
+  const errors = [];
+  for (const model of candidates) {
+    const health = getModelHealth(model);
+    health.probeInFlight = true;
+    const startedAt = Date.now();
 
-  try {
-    const answer = await askGemini({
-      apiKey,
-      model,
-      prompt: 'Reply with only the word OK.',
-      retries: 1,
-      timeoutMs: PROBE_TIMEOUT_MS,
-      maxOutputTokens: 8,
-      systemInstruction: '',
-    });
-    if (!String(answer || '').trim()) throw new Error('Gemini вернула пустой ответ при часовой проверке.');
+    try {
+      const answer = await askGemini({
+        apiKey,
+        model,
+        prompt: 'Reply with only the word OK.',
+        retries: 1,
+        timeoutMs: PROBE_TIMEOUT_MS,
+        maxOutputTokens: 8,
+        systemInstruction: '',
+      });
+      if (!String(answer || '').trim()) throw new Error('Gemini вернула пустой ответ при часовой проверке.');
 
-    const elapsedMs = Date.now() - startedAt;
-    recordModelSuccess(model, elapsedMs);
-    console.info('[AI] Часовая проверка модели ' + model + ' успешна (' + (elapsedMs / 1000).toFixed(1) + 'с).');
-    return { ok: true, model, elapsedMs };
-  } catch (err) {
-    const cooldownMs = getModelCooldown(err) || MODEL_PROBE_INTERVAL_MS;
-    recordModelFailure(model, err, cooldownMs);
-    console.warn('[AI] Часовая проверка модели ' + model + ' не прошла; fallback сохранён. Ошибка:', String(err?.message || err).slice(0, 300));
-    return { ok: false, model, error: String(err?.message || err).slice(0, 300), cooldownMs };
-  } finally {
-    health.probeInFlight = false;
+      const elapsedMs = Date.now() - startedAt;
+      recordModelSuccess(model, elapsedMs);
+      console.info('[AI] Часовая проверка модели ' + model + ' успешна (' + (elapsedMs / 1000).toFixed(1) + 'с).');
+      return { ok: true, model, elapsedMs, failedCandidates: errors };
+    } catch (err) {
+      const cooldownMs = getModelCooldown(err) || MODEL_PROBE_INTERVAL_MS;
+      recordModelFailure(model, err, cooldownMs);
+      const message = String(err?.message || err).slice(0, 300);
+      errors.push({ model, error: message });
+      console.warn('[AI] Часовая проверка модели ' + model + ' не прошла; проверяю следующую по качеству. Ошибка:', message);
+
+      // API/auth failures that cannot be fixed by changing the model stop the
+      // probe. Quotas, overloads, timeouts and unavailable models use fallback.
+      if (!shouldTryNextModel(err)) break;
+    } finally {
+      health.probeInFlight = false;
+    }
   }
+
+  return { ok: false, error: 'No probed model answered successfully', failures: errors };
 }
 
 function isRetryableStatus(status) {
