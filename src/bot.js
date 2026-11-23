@@ -30,6 +30,9 @@ const {
   askGemini,
   askGeminiWithFallback,
   configureGeminiModelHealth,
+  refreshGeminiModelCatalog,
+  probePreferredGeminiModel,
+  MODEL_CATALOG_REFRESH_MS,
   buildSystemInstruction,
   buildContents,
   buildSummaryPrompt,
@@ -239,6 +242,35 @@ class DiscordBot {
     this.music = createMusic(this.client, this.config);
     this.cooldowns = new Map(); // `\${kind}:\${userId}` -> timestamp
     this.busyChannels = new Set();
+  }
+
+  async refreshGeminiModels() {
+    if (!this.config.GEMINI_API_KEY) return;
+
+    // Model discovery is independent from generation: if listing fails, the
+    // statically configured fallback pool remains usable.
+    try {
+      const catalog = await refreshGeminiModelCatalog({
+        apiKey: this.config.GEMINI_API_KEY,
+        models: this.config.GEMINI_CHAT_MODELS,
+      });
+      if (catalog.refreshed) {
+        console.info('[AI] Приоритетный пул Gemini: ' + catalog.models.slice(0, 6).join(', '));
+      }
+    } catch (err) {
+      console.warn('[AI] Не удалось обновить каталог Gemini; использую сохранённый пул моделей:', err?.message || err);
+    }
+
+    // A tiny real generation probe catches access and availability errors
+    // that models.list cannot detect. It runs once at startup and then hourly.
+    try {
+      await probePreferredGeminiModel({
+        apiKey: this.config.GEMINI_API_KEY,
+        models: this.config.GEMINI_CHAT_MODELS,
+      });
+    } catch (err) {
+      console.warn('[AI] Проверка приоритетной модели Gemini завершилась ошибкой:', err?.message || err);
+    }
   }
 
   // Возвращает 0, если можно, иначе сколько секунд ждать.
@@ -1212,6 +1244,10 @@ class DiscordBot {
       if (!this.config.GUILD_ID) console.warn('⚠️ GUILD_ID is empty; global commands may take time to appear.');
       await this.refreshPresence();
       await this.restoreCurrentVoiceSessions();
+
+      // Refresh the Gemini catalog immediately, then repeat every hour.
+      void this.refreshGeminiModels();
+      this.addTimer(MODEL_CATALOG_REFRESH_MS, () => this.refreshGeminiModels(), 'Gemini model refresh error');
 
       this.addTimer(CHECKPOINT_MS, () => this.checkpointVoiceSessions(false), 'Checkpoint error');
       // Ротация статуса: новая случайная пара раз в час.
