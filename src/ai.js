@@ -5,8 +5,6 @@ const REQUEST_TIMEOUT_MS = 30 * 1000;
 const PROBE_TIMEOUT_MS = REQUEST_TIMEOUT_MS;
 const SLOW_RESPONSE_THRESHOLD_MS = 12 * 1000;
 const MODEL_PROBE_INTERVAL_MS = 10 * 60 * 1000;
-const MODEL_CATALOG_REFRESH_MS = 60 * 60 * 1000;
-const MODEL_CATALOG_TIMEOUT_MS = 20 * 1000;
 const MAX_MODELS_PER_REQUEST = 5;
 
 function timeoutSignal(ms = REQUEST_TIMEOUT_MS) {
@@ -18,191 +16,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-let discoveredChatModels = [];
-let catalogRefreshInFlight = null;
-
-function getModelQuality(model) {
-  const id = String(model || '').replace(/^models\//i, '').toLowerCase();
-  const match = id.match(/^(gemini|gemma)-(\d+(?:\.\d+)*)-(.+)$/);
-  if (!match) return { family: 0, tier: 0, version: 0, stable: 0, parameters: 0 };
-
-  const [, family, versionText, variant] = match;
-  const version = versionText.split('.').reduce((score, part, index) => (
-    score + (Number(part) || 0) * (1000000 / Math.pow(1000, index))
-  ), 0);
-  const stable = /(?:preview|experimental|(?:^|-)exp(?:-|$))/i.test(id) ? 0 : 1;
-
-  if (family === 'gemini') {
-    let tier = 100;
-    if (/(?:^|-)ultra(?:-|$)/.test(variant)) tier = 600;
-    else if (/(?:^|-)pro(?:-|$)/.test(variant)) tier = 500;
-    else if (/(?:^|-)thinking(?:-|$)/.test(variant)) tier = 450;
-    else if (/(?:^|-)flash-lite(?:-|$)/.test(variant)) tier = 200;
-    else if (/(?:^|-)flash(?:-|$)/.test(variant)) tier = 300;
-    return { family: 2, tier, version, stable, parameters: 0 };
-  }
-
-  const parameterMatch = variant.match(/(\d+(?:\.\d+)?)b/i);
-  const parameters = parameterMatch ? Number(parameterMatch[1]) : 0;
-  return { family: 1, tier: 100, version, stable, parameters };
-}
-
-function isSupportedChatModel(model) {
-  const id = String(model || '').replace(/^models\//i, '').toLowerCase();
-  const match = id.match(/^(gemini|gemma)-(\d+(?:\.\d+)*)-(.+)$/);
-  if (!match) return false;
-
-  const [, family, versionText, variant] = match;
-  const majorVersion = Number(versionText.split('.')[0] || 0);
-  if (family === 'gemini' && majorVersion < 3) return false;
-  if (family === 'gemma' && majorVersion < 4) return false;
-  if (/(?:^|-)(?:image|imagen|live|tts|transcribe|audio|embedding|robotics|veo|omni|computer-use|customtools)(?:-|$)/i.test(id)) {
-    return false;
-  }
-
-  if (family === 'gemini') {
-    return /(?:^|-)pro(?:-|$)|(?:^|-)thinking(?:-|$)|(?:^|-)flash(?:-lite)?(?:-|$)/i.test(variant);
-  }
-
-  return /(?:^|-)it(?:-|$)/i.test(variant);
-}
-
-function sortModelsByQuality(models) {
-  return [...new Set((Array.isArray(models) ? models : [models]).filter(Boolean))]
-    .map((model, originalIndex) => ({ model, originalIndex, quality: getModelQuality(model) }))
-    .sort((a, b) => {
-      const qa = a.quality;
-      const qb = b.quality;
-      const qualityOrder = qb.family - qa.family
-        || qb.tier - qa.tier
-        || qb.version - qa.version
-        || qb.stable - qa.stable
-        || qb.parameters - qa.parameters;
-      if (qualityOrder) return qualityOrder;
-
-      // Speed is deliberately only a tie-breaker for models of the same
-      // generation and capability tier. It never promotes an older Lite model
-      // ahead of a newer or more capable Gemini model.
-      const latencyA = modelHealth.get(a.model)?.averageLatencyMs;
-      const latencyB = modelHealth.get(b.model)?.averageLatencyMs;
-      if (Number.isFinite(latencyA) && Number.isFinite(latencyB) && latencyA !== latencyB) {
-        return latencyA - latencyB;
-      }
-      return a.originalIndex - b.originalIndex;
-    })
-    .map(item => item.model);
-}
-
-async function refreshGeminiModelCatalog({ apiKey, models = [] } = {}) {
-  if (!apiKey) {
-    return { refreshed: false, models: sortModelsByQuality(models), discovered: discoveredChatModels.length };
-  }
-  if (catalogRefreshInFlight) return catalogRefreshInFlight;
-
-  catalogRefreshInFlight = (async () => {
-    const discovered = new Set();
-    let pageToken = '';
-
-    for (let page = 0; page < 10; page++) {
-      const url = new URL(API_BASE + '/v1beta/models');
-      url.searchParams.set('pageSize', '1000');
-      if (pageToken) url.searchParams.set('pageToken', pageToken);
-
-      const response = await fetch(url.toString(), {
-        method: 'GET',
-        signal: timeoutSignal(MODEL_CATALOG_TIMEOUT_MS),
-        headers: { 'x-goog-api-key': apiKey },
-      });
-
-      if (!response.ok) {
-        const body = (await response.text()).replace(/\s+/g, ' ').slice(0, 350);
-        throw new Error('Gemini models.list HTTP ' + response.status + ': ' + body);
-      }
-
-      const data = await response.json();
-      for (const entry of Array.isArray(data.models) ? data.models : []) {
-        const name = String(entry?.name || '').replace(/^models\//i, '');
-        const methods = Array.isArray(entry?.supportedGenerationMethods) ? entry.supportedGenerationMethods : [];
-        if (methods.includes('generateContent') && isSupportedChatModel(name)) {
-          discovered.add(name);
-        }
-      }
-
-      pageToken = String(data.nextPageToken || '');
-      if (!pageToken) break;
-    }
-
-    discoveredChatModels = sortModelsByQuality([...discovered]);
-    const merged = sortModelsByQuality([...(Array.isArray(models) ? models : [models]), ...discoveredChatModels]);
-    console.info('[AI] Каталог Gemini обновлён: найдено ' + discoveredChatModels.length
-      + ' чат-моделей, всего в пуле ' + merged.length + '.');
-    return { refreshed: true, models: merged, discovered: discoveredChatModels.length };
-  })();
-
-  try {
-    return await catalogRefreshInFlight;
-  } finally {
-    catalogRefreshInFlight = null;
-  }
-}
-
-async function probePreferredGeminiModel({ apiKey, models = [] } = {}) {
-  if (!apiKey) return { ok: false, skipped: true, reason: 'missing_api_key' };
-
-  const ordered = sortModelsByQuality([
-    ...(Array.isArray(models) ? models : [models]),
-    ...discoveredChatModels,
-  ]);
-  const now = Date.now();
-  const candidates = ordered.filter(candidate => {
-    const health = getModelHealth(candidate);
-    if (health.probeInFlight) return false;
-    const isPersistedDailyQuota = /(daily quota|per[_ -]?day|perday|generateRequestsPerDay|requestsPerDay|tokensPerDay|quota[_ -]?exceeded)/i.test(health.lastError);
-    return !(isPersistedDailyQuota && health.cooldownUntil > now);
-  }).slice(0, 3);
-
-  if (!candidates.length) return { ok: false, skipped: true, reason: 'all_candidates_busy_or_daily_limited' };
-
-  const errors = [];
-  for (const model of candidates) {
-    const health = getModelHealth(model);
-    health.probeInFlight = true;
-    const startedAt = Date.now();
-
-    try {
-      const answer = await askGemini({
-        apiKey,
-        model,
-        prompt: 'Reply with only the word OK.',
-        retries: 1,
-        timeoutMs: PROBE_TIMEOUT_MS,
-        maxOutputTokens: 8,
-        systemInstruction: '',
-      });
-      if (!String(answer || '').trim()) throw new Error('Gemini вернула пустой ответ при часовой проверке.');
-
-      const elapsedMs = Date.now() - startedAt;
-      recordModelSuccess(model, elapsedMs);
-      console.info('[AI] Часовая проверка модели ' + model + ' успешна (' + (elapsedMs / 1000).toFixed(1) + 'с).');
-      return { ok: true, model, elapsedMs, failedCandidates: errors };
-    } catch (err) {
-      const cooldownMs = getModelCooldown(err) || MODEL_PROBE_INTERVAL_MS;
-      recordModelFailure(model, err, cooldownMs);
-      const message = String(err?.message || err).slice(0, 300);
-      errors.push({ model, error: message });
-      console.warn('[AI] Часовая проверка модели ' + model + ' не прошла; проверяю следующую по качеству. Ошибка:', message);
-
-      // API/auth failures that cannot be fixed by changing the model stop the
-      // probe. Quotas, overloads, timeouts and unavailable models use fallback.
-      if (!shouldTryNextModel(err)) break;
-    } finally {
-      health.probeInFlight = false;
-    }
-  }
-
-  return { ok: false, error: 'No probed model answered successfully', failures: errors };
-}
-
 function isRetryableStatus(status) {
   return [429, 500, 503, 504].includes(Number(status));
 }
@@ -212,9 +25,9 @@ function isRetryableMessage(message) {
   return ['429', '500', '503', '504', 'rate limit', 'quota', 'too many requests', 'temporarily unavailable', 'timeout', 'aborted', 'fetch failed'].some(token => lower.includes(token));
 }
 
-// Adaptive health keeps temporary failures out of the request path, but model
-// quality and generation are the primary ordering. Latency is only a tie-breaker
-// between models with the same capability tier and version.
+// Adaptive model health is kept in memory for this process. Fast, reliable
+// models rise to the top; slow or failing models are temporarily sidelined
+// and probed again every 10 minutes.
 const modelHealth = new Map();
 let persistModelHealth = null;
 
@@ -316,21 +129,28 @@ function getModelCooldownRemaining(model) {
 function selectModelsByHealth(models) {
   const now = Date.now();
   const candidates = [];
-  const orderedModels = sortModelsByQuality(models);
 
-  for (const [index, model] of orderedModels.entries()) {
+  for (const [index, model] of models.entries()) {
     const health = getModelHealth(model);
     if (health.probeInFlight) continue;
 
-    // Do not use a temporarily degraded model before its scheduled retry.
-    if (health.needsProbe && Math.max(health.nextProbeAt || 0, health.cooldownUntil || 0) > now) continue;
+    // Keep a degraded model out of the normal pool even after its cooldown
+    // expires; it re-enters only as a scheduled probe.
+    if (health.needsProbe && health.nextProbeAt > now) continue;
 
-    const isProbe = health.needsProbe;
-    candidates.push({ model, index, isProbe });
+    const isProbe = health.needsProbe && health.nextProbeAt <= now;
+    // A recovery probe must not jump ahead of a model that is already known
+    // to work; test degraded models only after healthy/untested candidates.
+    const score = isProbe
+      ? REQUEST_TIMEOUT_MS * 4 + index * 1000
+      : health.averageLatencyMs == null
+        ? REQUEST_TIMEOUT_MS + index * 1000
+        : health.averageLatencyMs;
+
+    candidates.push({ model, index, isProbe, score });
   }
 
-  // The strongest eligible model is always tried first. Faster legacy models
-  // are fallback candidates, not winners of the default selection.
+  candidates.sort((a, b) => a.score - b.score || a.index - b.index);
   if (candidates.some(candidate => candidate.isProbe)) saveGeminiModelHealth();
   return candidates;
 }
@@ -611,10 +431,7 @@ async function askGeminiWithFallback({
   systemInstruction = '',
   onStatus = null,
 }) {
-  const configuredModels = sortModelsByQuality([
-    ...(Array.isArray(models) ? models : [models]),
-    ...discoveredChatModels,
-  ]);
+  const configuredModels = [...new Set((Array.isArray(models) ? models : [models]).filter(Boolean))];
   if (!configuredModels.length) throw new Error('Не настроен список GEMINI_CHAT_MODELS');
 
   const availableCandidates = selectModelsByHealth(configuredModels);
@@ -971,9 +788,6 @@ function buildSummaryPrompt({ existingSummary = '', oldMessages = '' }) {
 module.exports = {
   configureGeminiModelHealth,
   getGeminiModelHealthSnapshot,
-  refreshGeminiModelCatalog,
-  probePreferredGeminiModel,
-  MODEL_CATALOG_REFRESH_MS,
   askGemini,
   askGeminiWithFallback,
   buildSystemInstruction,
