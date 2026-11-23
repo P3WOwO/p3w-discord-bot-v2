@@ -49,10 +49,13 @@ function getModelQuality(model) {
 
 function isSupportedChatModel(model) {
   const id = String(model || '').replace(/^models\//i, '').toLowerCase();
-  const match = id.match(/^(gemini|gemma)-\d+(?:\.\d+)*-(.+)$/);
+  const match = id.match(/^(gemini|gemma)-(\d+(?:\.\d+)*)-(.+)$/);
   if (!match) return false;
 
-  const [, family, variant] = match;
+  const [, family, versionText, variant] = match;
+  const majorVersion = Number(versionText.split('.')[0] || 0);
+  if (family === 'gemini' && majorVersion < 3) return false;
+  if (family === 'gemma' && majorVersion < 4) return false;
   if (/(?:^|-)(?:image|imagen|live|tts|transcribe|audio|embedding|robotics|veo|omni|computer-use)(?:-|$)/i.test(id)) {
     return false;
   }
@@ -598,7 +601,10 @@ async function askGeminiWithFallback({
   systemInstruction = '',
   onStatus = null,
 }) {
-  const configuredModels = [...new Set((Array.isArray(models) ? models : [models]).filter(Boolean))];
+  const configuredModels = sortModelsByQuality([
+    ...(Array.isArray(models) ? models : [models]),
+    ...discoveredChatModels,
+  ]);
   if (!configuredModels.length) throw new Error('Не настроен список GEMINI_CHAT_MODELS');
 
   const availableCandidates = selectModelsByHealth(configuredModels);
