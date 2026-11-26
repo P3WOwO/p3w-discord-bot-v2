@@ -1,0 +1,22 @@
+{
+  "id": "gog-yakuza-complete-series-black-friday-2026",
+  "title": "Yakuza Complete Series — семь игр основной саги со скидкой 50% на GOG",
+  "description": "В комплект входят Yakuza 0, Kiwami, Kiwami 2, Yakuza 3 Remastered, Yakuza 4 Remastered, Yakuza 5 Remastered и Yakuza 6: The Song of Life.\n\n**Скидка:** карточка GOG показывает 50%; USD $55.99 вместо $111.98. GOG указывает прежний минимум за 30 дней $61.59. В общем списке Black Friday заявлено −60%, но карточка набора показывает −50%; использована фактическая цена карточки.\n\n**Как получить:** купить набор на GOG; игры DRM-free, GOG Galaxy не обязателен.\n\n**Регион/ограничения:** подтверждена только витрина GOG в USD, страна не указана; цены RUB, KZT, UAH и EUR не подтверждены. Срок: 3 декабря 2026 года, 09:59 EET.",
+  "source": "GOG",
+  "url": "https://www.gog.com/en/game/yakuza_complete_series",
+  "price": "55.99",
+  "old_price": "111.98",
+  "discount": "50%",
+  "expires_at": "2026-12-03T07:59:00Z",
+  "image_url": "https://images.gog-statics.com/e03ef7fe4c227bf452ace7bd13ea0deaf7de2e5f101f096b668ec5e914c6efd5_product_card_v2_mobile_slider_639.jpg",
+  "regional_prices": [
+    {
+      "region": "Международная витрина GOG (страна не указана)",
+      "currency": "USD",
+      "price": "55.99",
+      "old_price": "111.98",
+      "discount": "50%"
+    }
+  ],
+  "category": "sales"
+}
