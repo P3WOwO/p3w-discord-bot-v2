@@ -1,0 +1,28 @@
+{
+  "id": "steam-app-2215430-black-friday-2026",
+  "category": "sales",
+  "title": "Ghost of Tsushima DIRECTOR'S CUT — скидка 50% в Steam",
+  "description": "Открытый мир в феодальной Японии: самурай Дзин Сакай защищает Цусиму от монгольского вторжения.\n\n**Скидка:** 50%. США — $29.99 вместо $59.99; еврозона — €29.99 вместо €59.99. Для США это новый минимум по отслеживаемой истории; прежде скидки обычно составляли 40%.\n\n**Как получить:** купить полное издание Director's Cut в Steam. Акция действует до 1 декабря 2026 года; точное время окончания магазин не указал.\n\n**Регион/ограничения:** подтверждены США (USD) и еврозона (EUR). SteamDB указывает ограничения покупки для пакета в Казахстане, Украине и Беларуси; цены RUB/KZT/UAH не подтверждены.",
+  "source": "Steam; SteamDB (история цен и региональные ограничения)",
+  "url": "https://store.steampowered.com/app/2215430/Ghost_of_Tsushima_DIRECTORS_CUT/",
+  "price": "$29.99",
+  "old_price": "$59.99",
+  "discount": "50%",
+  "image_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/2215430/header.jpg?t=1763409398",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "29.99",
+      "old_price": "59.99",
+      "discount": "50%"
+    },
+    {
+      "region": "Еврозона",
+      "currency": "EUR",
+      "price": "29.99",
+      "old_price": "59.99",
+      "discount": "50%"
+    }
+  ]
+}
