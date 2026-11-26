@@ -1,0 +1,23 @@
+{
+  "id": "epic-alan-wake-2-deluxe-black-friday-2026",
+  "category": "sales",
+  "title": "Alan Wake 2 Deluxe Edition — скидка 70% в Epic Games Store",
+  "description": "Делюкс-издание включает основную игру, Expansion Pass с сюжетными дополнениями Night Springs и The Lake House, а также косметические предметы.\n\n**Скидка:** 70% — $20.99 вместо $69.99 на витрине США.\n\n**Как получить:** купить Deluxe Edition в Epic Games Store; требуется Epic ID.\n\n**Регион/ограничения:** подтверждена цена США (USD). Цены и доступность RUB, KZT, UAH и EUR не подтверждены. Акция заканчивается 1 декабря 2026 года в 16:00 UTC.",
+  "source": "Epic Games Store",
+  "url": "https://store.epicgames.com/p/alan-wake-2--deluxe-edition",
+  "source_url": "https://store.epicgames.com/sales-and-specials/black-friday",
+  "price": "$20.99",
+  "old_price": "$69.99",
+  "discount": "70%",
+  "expires_at": "2026-12-01T16:00:00Z",
+  "image_url": "https://cdn2.unrealengine.com/egs-alanwake2deluxeedition-remedyentertainment-editions-g1c-00-1920x1080-524ae44dd8d5.jpg?h=720&quality=medium&resize=1&w=1280",
+  "regional_prices": [
+    {
+      "region": "США",
+      "currency": "USD",
+      "price": "20.99",
+      "old_price": "69.99",
+      "discount": "70%"
+    }
+  ]
+}
