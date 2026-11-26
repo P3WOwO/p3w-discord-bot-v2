@@ -1,0 +1,22 @@
+{
+  "id": "gog-witcher-3-goty-black-friday-2026",
+  "title": "The Witcher 3: Wild Hunt — Remastered (GOTY) — скидка 60% на GOG",
+  "description": "Это страница издания Game of the Year Edition; материалы GOG перечисляют оба крупных дополнения — Hearts of Stone и Blood and Wine. Следующая версия доступна через ветку Next-gen в GOG Galaxy или отдельные офлайн-установщики.\n\n**Скидка:** карточка GOG показывает 60%; USD $19.99 вместо $49.99. Прежний минимум за 30 дней — $24.99, текущая цена ниже. Общий список Black Friday заявляет −75%, но карточка товара показывает −60%; использована фактическая цена карточки.\n\n**Как получить:** купить на GOG; игра DRM-free, GOG Galaxy необязателен.\n\n**Регион/ограничения:** подтверждена только витрина GOG в USD, страна не указана; цены RUB, KZT, UAH и EUR не подтверждены. Срок: 3 декабря 2026 года, 09:59 EET.",
+  "source": "GOG",
+  "url": "https://www.gog.com/en/game/the_witcher_3_wild_hunt_game_of_the_year_edition",
+  "price": "19.99",
+  "old_price": "49.99",
+  "discount": "60%",
+  "expires_at": "2026-12-03T07:59:00Z",
+  "image_url": "https://images.gog-statics.com/7f90d3ceac2d240ff069544bd11ea2f5c3bab17c39a812dc2d37479e8958e243_product_card_v2_mobile_slider_639.jpg",
+  "regional_prices": [
+    {
+      "region": "Международная витрина GOG (страна не указана)",
+      "currency": "USD",
+      "price": "19.99",
+      "old_price": "49.99",
+      "discount": "60%"
+    }
+  ],
+  "category": "sales"
+}
